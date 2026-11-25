@@ -1,0 +1,125 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    color-scheme: light;
+    --surface-canvas: #ecfdf5;
+    --surface-card: #ffffff;
+    --surface-inset: #f0fdf4;
+    --surface-border: #a7f3d0;
+    --text-primary: #022c22;
+    --text-secondary: #065f46;
+  }
+
+  .dark {
+    color-scheme: dark;
+    --surface-canvas: #022c22;
+    --surface-card: rgba(6, 78, 59, 0.6);
+    --surface-inset: #022c22;
+    --surface-border: #065f46;
+    --text-primary: #f8fafc;
+    --text-secondary: #a7f3d0;
+  }
+
+  html[data-color-theme="ocean"] {
+    --surface-canvas: #f0f9ff;
+  }
+
+  html.dark[data-color-theme="ocean"] {
+    --surface-canvas: #082f49;
+  }
+
+  html[data-color-theme="sunset"] {
+    --surface-canvas: #fff7ed;
+  }
+
+  html.dark[data-color-theme="sunset"] {
+    --surface-canvas: #1c1917;
+  }
+
+  html[data-color-theme="royal"] {
+    --surface-canvas: #f5f3ff;
+  }
+
+  html.dark[data-color-theme="royal"] {
+    --surface-canvas: #1e1b4b;
+  }
+
+  html[data-font-scale="compact"] {
+    font-size: 14.5px;
+  }
+
+  html[data-font-scale="standard"] {
+    font-size: 16px;
+  }
+
+  html[data-font-scale="large"] {
+    font-size: 17.5px;
+  }
+
+  body {
+    background-color: var(--surface-canvas);
+    color: var(--text-primary);
+  }
+}
+
+html[data-reduced-motion="true"] *,
+html[data-reduced-motion="true"] *::before,
+html[data-reduced-motion="true"] *::after {
+  animation-duration: 0.01ms;
+  animation-iteration-count: 1;
+  transition-duration: 0.01ms;
+  scroll-behavior: auto;
+}
+
+@keyframes choyTickerScroll {
+  0% {
+    transform: translateX(0%);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.choy-ticker-track {
+  display: flex;
+  width: max-content;
+  animation: choyTickerScroll 24s linear infinite;
+}
+
+.choy-ticker-wrapper:hover .choy-ticker-track,
+.choy-ticker-wrapper:focus-within .choy-ticker-track {
+  animation-play-state: paused;
+}
+
+html[data-reduced-motion="true"] .choy-ticker-track {
+  animation: none !important;
+}
+
+.choy-leaflet-container .leaflet-control-attribution {
+  font-size: 9px !important;
+  background: rgba(255, 255, 255, 0.78) !important;
+  color: #064e3b !important;
+}
+
+@keyframes choyGpsPulse {
+  0% {
+    transform: scale(0.85);
+    opacity: 0.75;
+  }
+  70% {
+    transform: scale(1.75);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.75);
+    opacity: 0;
+  }
+}
+
+.choy-gps-pulse-ring {
+  animation: choyGpsPulse 1.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+
