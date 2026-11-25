@@ -249,7 +249,13 @@ function initSessionSigningKey(): string {
   return crypto.randomBytes(32).toString('hex');
 }
 
-const SESSION_SIGNING_KEY = initSessionSigningKey();
+let SESSION_SIGNING_KEY = initSessionSigningKey();
+
+function setSessionSigningKey(nextKey: string): void {
+  if (typeof nextKey === 'string' && nextKey.length >= 32) {
+    SESSION_SIGNING_KEY = nextKey;
+  }
+}
 
 export function hashPin(pin: string): string {
   const salt = crypto.randomBytes(16).toString('hex');
@@ -576,14 +582,67 @@ export class ChoyStore {
   }
 
   private stripEnvQuotes(raw: string | undefined): string {
-    const trimmed = (raw || '').trim();
+    const cleaned = (raw || '')
+      .replace(/[\u200B-\u200F\u202A-\u202E\uFEFF]/g, '')
+      .trim();
     if (
-      (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-      (trimmed.startsWith("'") && trimmed.endsWith("'"))
+      (cleaned.startsWith('"') && cleaned.endsWith('"')) ||
+      (cleaned.startsWith("'") && cleaned.endsWith("'"))
     ) {
-      return trimmed.slice(1, -1).trim();
+      return cleaned.slice(1, -1).trim();
     }
-    return trimmed;
+    return cleaned;
+  }
+
+  private async ensurePostgresSessionKey(pool: Pool): Promise<void> {
+    if ((process.env.SESSION_SECRET || '').trim().length >= 16) return;
+    try {
+      const existing = await pool.query('SELECT data FROM app_settings WHERE id = $1 LIMIT 1', ['session_secret']);
+      const storedKey = existing.rows?.[0]?.data?.key;
+      if (typeof storedKey === 'string' && storedKey.length >= 32) {
+        setSessionSigningKey(storedKey);
+        return;
+      }
+      await pool.query(
+        'INSERT INTO app_settings (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO NOTHING',
+        ['session_secret', JSON.stringify({ key: SESSION_SIGNING_KEY })]
+      );
+      const reread = await pool.query('SELECT data FROM app_settings WHERE id = $1 LIMIT 1', ['session_secret']);
+      const finalKey = reread.rows?.[0]?.data?.key;
+      if (typeof finalKey === 'string' && finalKey.length >= 32) {
+        setSessionSigningKey(finalKey);
+      }
+    } catch (err) {
+      console.error(
+        '[ChoyStore] Failed to sync persistent session key with PostgreSQL:',
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+
+  private async tryConnectPool(url: string, ssl: false | { rejectUnauthorized: false }): Promise<Pool> {
+    const pool = new Pool({
+      connectionString: url,
+      ssl,
+      max: this.poolMax,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 12000,
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10000,
+    });
+    pool.on('error', (err) => {
+      console.error(
+        '[ChoyStore] Idle PostgreSQL pool client error:',
+        err instanceof Error ? err.message : err
+      );
+    });
+    try {
+      await pool.query('SELECT 1');
+      return pool;
+    } catch (err) {
+      await pool.end().catch(() => {});
+      throw err;
+    }
   }
 
   private async init(): Promise<void> {
@@ -606,48 +665,64 @@ export class ChoyStore {
     if (directUrl && directUrl !== poolerUrl && isValidDbUrl(directUrl)) candidates.push({ url: directUrl, source: 'database_url' });
 
     if (candidates.length > 0) {
-      for (const candidate of candidates) {
-        try {
-          const isLocal = candidate.url.includes('localhost') || candidate.url.includes('127.0.0.1');
-          const pool = new Pool({
-            connectionString: candidate.url,
-            ssl: isLocal ? false : { rejectUnauthorized: false },
-            max: this.poolMax,
-            idleTimeoutMillis: 30000,
-            connectionTimeoutMillis: 10000,
-            keepAlive: true,
-            keepAliveInitialDelayMillis: 10000,
-          });
-          pool.on('error', (err) => {
-            console.error(
-              '[ChoyStore] Idle PostgreSQL pool client error:',
-              err instanceof Error ? err.message : err
-            );
-          });
-          await pool.query('SELECT 1');
-          this.pool = pool;
-          this.poolSource = candidate.source;
-          await this.createTables();
-          await this.seedIfEmptyPostgres();
-          this.usePostgres = true;
-          this._storageStatus = 'postgres_connected';
-          console.log(
-            `[ChoyStore] Connected to PostgreSQL cloud database (pool max=${this.poolMax}, source=${candidate.source}).`
-          );
-          return;
-        } catch (err) {
-          const msg = err instanceof Error ? err.message.toLowerCase() : '';
-          this._storageStatus =
-            msg.includes('password') || msg.includes('authentication') || msg.includes('28p01')
-              ? 'auth_failed'
-              : 'connection_failed';
-          console.error(
-            `[ChoyStore] PostgreSQL connection (${candidate.source}) failed:`,
-            err instanceof Error ? err.message : err
-          );
-          this.pool = null;
-          this.poolSource = 'none';
-          this.usePostgres = false;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        for (const candidate of candidates) {
+          let hostname = '';
+          let sslModeParam = '';
+          try {
+            const parsed = new URL(candidate.url);
+            hostname = parsed.hostname.toLowerCase();
+            sslModeParam = (parsed.searchParams.get('sslmode') || '').toLowerCase();
+          } catch {
+            // already validated
+          }
+          // Render Internal Postgres hostnames (e.g. dpg-xxxx-a) have no dot and default to non-SSL;
+          // External Postgres / Supabase hostnames contain dots and require SSL.
+          const isLocalOrInternal =
+            hostname === 'localhost' ||
+            hostname === '127.0.0.1' ||
+            !hostname.includes('.') ||
+            sslModeParam === 'disable';
+
+          const sslModes: Array<false | { rejectUnauthorized: false }> = isLocalOrInternal
+            ? [false, { rejectUnauthorized: false }]
+            : [{ rejectUnauthorized: false }, false];
+
+          for (const sslOpt of sslModes) {
+            try {
+              const pool = await this.tryConnectPool(candidate.url, sslOpt);
+              this.pool = pool;
+              this.poolSource = candidate.source;
+              await this.createTables();
+              await this.ensurePostgresSessionKey(pool);
+              await this.seedIfEmptyPostgres();
+              this.usePostgres = true;
+              this._storageStatus = 'postgres_connected';
+              console.log(
+                `[ChoyStore] Connected to PostgreSQL cloud database (pool max=${this.poolMax}, source=${candidate.source}, ssl=${sslOpt ? 'on' : 'off'}).`
+              );
+              return;
+            } catch (err) {
+              const msg = err instanceof Error ? err.message.toLowerCase() : '';
+              const isAuthErr =
+                msg.includes('password') || msg.includes('authentication') || msg.includes('28p01');
+              this._storageStatus = isAuthErr ? 'auth_failed' : 'connection_failed';
+              console.error(
+                `[ChoyStore] PostgreSQL connection (${candidate.source}, ssl=${sslOpt ? 'on' : 'off'}, attempt=${attempt}) failed:`,
+                err instanceof Error ? err.message : err
+              );
+              this.pool = null;
+              this.poolSource = 'none';
+              this.usePostgres = false;
+              // Don't retry opposite SSL mode on password/auth error
+              if (isAuthErr) break;
+            }
+          }
+        }
+        if (attempt === 1 && this._storageStatus === 'connection_failed') {
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        } else {
+          break;
         }
       }
       console.error('[ChoyStore] All PostgreSQL URLs failed, falling back to local disk store.');

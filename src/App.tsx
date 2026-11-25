@@ -431,6 +431,7 @@ export default function App() {
   const [authChecked, setAuthChecked] = useState(false);
   const [needsAdminSetup, setNeedsAdminSetup] = useState(false);
   const [storageMode, setStorageMode] = useState<'postgres' | 'memory'>('memory');
+  const [storageStatus, setStorageStatus] = useState<'postgres_connected' | 'no_database_url' | 'auth_failed' | 'connection_failed'>('no_database_url');
 
   // Auth form fields
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
@@ -1473,6 +1474,14 @@ export default function App() {
       setNeedsAdminSetup(Boolean(data.needsAdminSetup));
       if (data.storageMode === 'postgres' || data.storageMode === 'memory') {
         setStorageMode(data.storageMode);
+      }
+      if (
+        data.storageStatus === 'postgres_connected' ||
+        data.storageStatus === 'no_database_url' ||
+        data.storageStatus === 'auth_failed' ||
+        data.storageStatus === 'connection_failed'
+      ) {
+        setStorageStatus(data.storageStatus);
       }
       if (sessionRes.ok) {
         const sessionData = await sessionRes.json().catch(() => ({}));
@@ -5064,7 +5073,13 @@ export default function App() {
             </h1>
             <p className="text-[11px] text-emerald-700 dark:text-emerald-300 flex items-center justify-center gap-1.5">
               <Cloud className="w-3.5 h-3.5" />
-              {storageMode === 'postgres' ? 'PostgreSQL Cloud Sync Ready' : 'Render Live Sync Ready'}
+              {storageMode === 'postgres'
+                ? 'PostgreSQL Cloud Sync Connected'
+                : storageStatus === 'auth_failed'
+                ? 'PostgreSQL Auth Failed (Temporary Storage)'
+                : storageStatus === 'connection_failed'
+                ? 'PostgreSQL Connection Failed (Temporary Storage)'
+                : 'Temporary Local Storage (Set DATABASE_URL)'}
             </p>
           </div>
 
@@ -5079,6 +5094,11 @@ export default function App() {
               <div className="p-2.5 rounded-xl bg-white dark:bg-emerald-900/70 border border-emerald-500/40 text-emerald-800 dark:text-emerald-200 text-[11px] leading-relaxed">
                 <strong className="text-emerald-950 dark:text-white">First-Run Admin Setup:</strong> I-claim imong Admin account gamit imong phone number ug gusto nimong PIN.
               </div>
+              {storageMode !== 'postgres' && (
+                <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/60 border border-amber-400/60 text-amber-900 dark:text-amber-200 text-[11px] leading-relaxed">
+                  <strong>Pahinumdom:</strong> Wala pa naka-connect sa PostgreSQL ({storageStatus}). I-butang ang valid nga <code>DATABASE_URL</code> (ug optional <code>ADMIN_PHONE</code> / <code>ADMIN_PIN</code>) sa Render Environment aron dili mabalik sa Claim Admin kung mo-restart ang server.
+                </div>
+              )}
               <div>
                 <label className="block text-emerald-800 dark:text-slate-300 mb-1">Admin Name</label>
                 <input
@@ -10314,25 +10334,123 @@ export default function App() {
                     <span>GitHub Intel</span>
                   </button>
 
-                  {isAdmin && (
+                </div>
+              </div>
+
+              {/* Admin Panel Navigation Section (Mobile & Desktop Drawer) */}
+              {isAdmin && (
+                <div className="p-3.5 rounded-2xl border border-indigo-300 dark:border-indigo-700/80 bg-indigo-50/70 dark:bg-indigo-950/50 shadow-xs space-y-2.5">
+                  <div className="flex items-center justify-between px-1">
+                    <div className="flex items-center gap-1.5">
+                      <ShieldCheck className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                      <span className="text-[11px] font-black uppercase tracking-wider text-indigo-900 dark:text-indigo-200">
+                        Admin Panel
+                      </span>
+                    </div>
+                    <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-indigo-200/80 dark:bg-indigo-900 text-indigo-800 dark:text-indigo-200">
+                      Admin Only
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTab('admin_security');
+                        setIsMenuDrawerOpen(false);
+                      }}
+                      className={`col-span-2 px-3 py-2.5 rounded-xl border flex items-center justify-center gap-2 text-xs font-black transition ${
+                        activeTab === 'admin_security'
+                          ? 'bg-indigo-600 text-white border-indigo-400 shadow-sm'
+                          : 'bg-white dark:bg-indigo-900/60 border-indigo-300 dark:border-indigo-700 text-indigo-800 dark:text-indigo-100 hover:bg-indigo-100 dark:hover:bg-indigo-800'
+                      }`}
+                    >
+                      <Key className="w-4 h-4 shrink-0" />
+                      <span>Security Studio</span>
+                    </button>
+
                     <button
                       type="button"
                       onClick={() => {
                         setActiveTab('ledger');
                         setIsMenuDrawerOpen(false);
                       }}
-                      className={`col-span-2 px-3 py-2.5 rounded-xl border flex items-center justify-center gap-2 text-xs font-bold transition ${
+                      className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
                         activeTab === 'ledger'
                           ? 'bg-indigo-600 text-white border-indigo-400 shadow-sm'
-                          : `${theme.sidebarCard} text-indigo-700 dark:text-indigo-300 hover:border-indigo-400`
+                          : 'bg-white dark:bg-indigo-900/40 border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 hover:border-indigo-400'
                       }`}
                     >
                       <FileSpreadsheet className="w-4 h-4 shrink-0" />
-                      <span>Milestone Ledger (Admin)</span>
+                      <span className="truncate">Milestone</span>
                     </button>
-                  )}
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTab('admin_knowledge');
+                        setIsMenuDrawerOpen(false);
+                      }}
+                      className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
+                        activeTab === 'admin_knowledge'
+                          ? 'bg-indigo-600 text-white border-indigo-400 shadow-sm'
+                          : 'bg-white dark:bg-indigo-900/40 border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 hover:border-indigo-400'
+                      }`}
+                    >
+                      <Database className="w-4 h-4 shrink-0" />
+                      <span className="truncate">AI Brain</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTab('admin_prices');
+                        setIsMenuDrawerOpen(false);
+                      }}
+                      className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
+                        activeTab === 'admin_prices'
+                          ? 'bg-indigo-600 text-white border-indigo-400 shadow-sm'
+                          : 'bg-white dark:bg-indigo-900/40 border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 hover:border-indigo-400'
+                      }`}
+                    >
+                      <Sliders className="w-4 h-4 shrink-0" />
+                      <span className="truncate">Unit Prices</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTab('admin_newsfeeds');
+                        setIsMenuDrawerOpen(false);
+                      }}
+                      className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
+                        activeTab === 'admin_newsfeeds'
+                          ? 'bg-indigo-600 text-white border-indigo-400 shadow-sm'
+                          : 'bg-white dark:bg-indigo-900/40 border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 hover:border-indigo-400'
+                      }`}
+                    >
+                      <Globe className="w-4 h-4 shrink-0" />
+                      <span className="truncate">Newsfeeds</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTab('admin_approvals');
+                        setIsMenuDrawerOpen(false);
+                      }}
+                      className={`col-span-2 px-3 py-2 rounded-xl border flex items-center justify-center gap-2 text-xs font-bold transition ${
+                        activeTab === 'admin_approvals'
+                          ? 'bg-indigo-600 text-white border-indigo-400 shadow-sm'
+                          : 'bg-white dark:bg-indigo-900/40 border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 hover:border-indigo-400'
+                      }`}
+                    >
+                      <Users className="w-4 h-4 shrink-0" />
+                      <span>User Accounts Management</span>
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
 
               {/* Account Summary & Quick Actions */}
               <div className="space-y-2.5">

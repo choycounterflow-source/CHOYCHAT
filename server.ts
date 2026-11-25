@@ -360,7 +360,7 @@ function clearSessionCookie(req: Request, res: Response) {
 }
 
 function stripOuterQuotes(val: string): string {
-  const t = val.trim();
+  const t = val.replace(/[\u200B-\u200F\u202A-\u202E\uFEFF]/g, '').trim();
   if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
     return t.slice(1, -1).trim();
   }
@@ -429,6 +429,7 @@ app.get('/api/auth/status', async (_req, res) => {
   res.json({
     needsAdminSetup: !hasAdmin,
     storageMode: store.storageMode,
+    storageStatus: store.storageStatus,
   });
 });
 
