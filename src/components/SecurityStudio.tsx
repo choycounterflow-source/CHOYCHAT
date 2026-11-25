@@ -341,7 +341,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
     publicUrlOrigin: string;
   }>({
     configured: false,
-    bucket: 'choychat-videos',
+    bucket: 'choychat',
     hasAccountId: false,
     hasAccessKeyId: false,
     hasSecretAccessKey: false,
@@ -1417,7 +1417,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
         if (data.r2Storage && typeof data.r2Storage === 'object') {
           setR2StorageInfo({
             configured: Boolean(data.r2Storage.configured),
-            bucket: String(data.r2Storage.bucket || 'choychat-videos'),
+            bucket: String(data.r2Storage.bucket || 'choychat'),
             hasAccountId: Boolean(data.r2Storage.hasAccountId),
             hasAccessKeyId: Boolean(data.r2Storage.hasAccessKeyId),
             hasSecretAccessKey: Boolean(data.r2Storage.hasSecretAccessKey),
@@ -3639,6 +3639,30 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
               Active Public Origin: {r2StorageInfo.publicUrlOrigin}
             </div>
           )}
+          <div className="pt-2 border-t border-orange-200/70 dark:border-orange-800/50 space-y-1.5">
+            <div className="text-[10px] font-bold text-emerald-950 dark:text-white">
+              GitHub Keys Status (Render Server Environment)
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-[10px] font-mono">
+              {[
+                { key: 'GITHUB_CLIENT_ID', ok: Boolean(serverConfigured.GITHUB_CLIENT_ID) },
+                { key: 'GITHUB_CLIENT_SECRET', ok: Boolean(serverConfigured.GITHUB_CLIENT_SECRET) },
+                { key: 'GITHUB_TOKEN', ok: Boolean(serverConfigured.GITHUB_TOKEN) },
+              ].map((item) => (
+                <div
+                  key={item.key}
+                  className={`p-2 rounded-lg border ${
+                    item.ok
+                      ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-900 dark:text-emerald-200'
+                      : 'bg-white/80 dark:bg-slate-950/60 border-orange-200 dark:border-orange-800/70 text-emerald-900 dark:text-orange-200'
+                  }`}
+                >
+                  <div className="font-bold truncate">{item.key}</div>
+                  <div className="text-[10px] opacity-80">{item.ok ? 'Configured' : 'Missing in Render'}</div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
         {renderFirebaseCloudSyncCard()}
       </div>

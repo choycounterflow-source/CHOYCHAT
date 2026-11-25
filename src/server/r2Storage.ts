@@ -60,25 +60,51 @@ function stripOuterQuotes(val: string): string {
 }
 
 function getValidatedR2AccountId(): string {
-  const raw = stripOuterQuotes(process.env.R2_ACCOUNT_ID || '');
-  // Cloudflare Account IDs are hexadecimal strings (typically 32 chars)
-  return /^[a-f0-9]{16,64}$/i.test(raw) ? raw.toLowerCase() : '';
+  const raw = stripOuterQuotes(
+    process.env.R2_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID || ''
+  );
+  if (!raw) return '';
+  // Direct Cloudflare Account ID (hex string, typically 32 chars)
+  if (/^[a-f0-9]{16,64}$/i.test(raw)) {
+    return raw.toLowerCase();
+  }
+  // If user pasted the full Cloudflare R2 S3 API URL (e.g. https://<id>.r2.cloudflarestorage.com/choychat)
+  try {
+    const candidate = raw.includes('://') ? raw : `https://${raw}`;
+    const parsed = new URL(candidate);
+    const host = parsed.hostname.toLowerCase();
+    if (host.endsWith('.r2.cloudflarestorage.com')) {
+      const sub = host.slice(0, -'.r2.cloudflarestorage.com'.length);
+      if (/^[a-f0-9]{16,64}$/i.test(sub)) {
+        return sub.toLowerCase();
+      }
+    }
+  } catch {
+    // ignore invalid URL
+  }
+  return '';
 }
 
 function getR2AccessKeyId(): string {
-  return stripOuterQuotes(process.env.R2_ACCESS_KEY_ID || '');
+  return stripOuterQuotes(
+    process.env.R2_ACCESS_KEY_ID || process.env.CLOUDFLARE_R2_ACCESS_KEY_ID || ''
+  );
 }
 
 function getR2SecretAccessKey(): string {
-  return stripOuterQuotes(process.env.R2_SECRET_ACCESS_KEY || '');
+  return stripOuterQuotes(
+    process.env.R2_SECRET_ACCESS_KEY || process.env.CLOUDFLARE_R2_SECRET_ACCESS_KEY || ''
+  );
 }
 
 function getSanitizedR2Bucket(): string {
-  const raw = stripOuterQuotes(process.env.R2_BUCKET || 'choychat-videos').toLowerCase();
+  const raw = stripOuterQuotes(
+    process.env.R2_BUCKET || process.env.CLOUDFLARE_R2_BUCKET || 'choychat'
+  ).toLowerCase();
   if (/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(raw)) {
     return raw;
   }
-  return 'choychat-videos';
+  return 'choychat';
 }
 
 function isBlockedPrivateHost(hostname: string): boolean {
@@ -101,10 +127,13 @@ function isBlockedPrivateHost(hostname: string): boolean {
 }
 
 function getValidatedR2PublicBaseUrl(): { baseUrl: string; origin: string } {
-  const raw = stripOuterQuotes(process.env.R2_PUBLIC_URL || '');
+  const raw = stripOuterQuotes(
+    process.env.R2_PUBLIC_URL || process.env.CLOUDFLARE_R2_PUBLIC_URL || ''
+  );
   if (!raw) return { baseUrl: '', origin: '' };
   try {
-    const parsed = new URL(raw);
+    const normalized = raw.includes('://') ? raw : `https://${raw}`;
+    const parsed = new URL(normalized);
     if (parsed.protocol !== 'https:') return { baseUrl: '', origin: '' };
     if (isBlockedPrivateHost(parsed.hostname)) return { baseUrl: '', origin: '' };
     const cleanPath = parsed.pathname.replace(/\/+$/, '');
