@@ -50,6 +50,7 @@ import {
   Ban,
   Phone,
   Clock,
+  Menu,
   MoreVertical,
   MicOff,
   VideoOff,
@@ -5677,10 +5678,10 @@ export default function App() {
           );
         })()}
 
-      {/* SIDEBAR / MOBILE SWIPEABLE NAV BAR */}
-      <aside className={`w-full md:w-60 ${theme.sidebarBg} border-b md:border-b-0 md:border-r p-2.5 md:p-3 flex flex-row md:flex-col justify-between shrink-0 overflow-x-auto md:overflow-x-hidden md:overflow-y-auto touch-pan-x md:touch-pan-y overscroll-x-contain [-webkit-overflow-scrolling:touch] transition-colors`}>
-        <div className="flex md:flex-col items-center md:items-stretch gap-1.5 w-max md:w-full">
-          <div className="hidden md:flex items-center gap-2.5 px-2 py-2 mb-2">
+      {/* DESKTOP SIDEBAR NAVIGATION (Hidden on mobile; mobile uses header buttons + 3-dots drawer) */}
+      <aside className={`hidden md:flex md:w-60 ${theme.sidebarBg} md:border-r p-3 flex-col justify-between shrink-0 overflow-y-auto transition-colors`}>
+        <div className="flex flex-col items-stretch gap-1.5 w-full">
+          <div className="flex items-center gap-2.5 px-2 py-2 mb-2">
             <button
               type="button"
               onClick={() => setIsAppIconShareModalOpen(true)}
@@ -5704,7 +5705,7 @@ export default function App() {
             </div>
           </div>
 
-          <nav className="flex md:flex-col gap-1.5 md:gap-1 w-max md:w-full text-xs font-medium pr-3 md:pr-0">
+          <nav className="flex flex-col gap-1 w-full text-xs font-medium">
             <button
               type="button"
               onClick={() => setActiveTab('feed')}
@@ -5940,28 +5941,44 @@ export default function App() {
 
       {/* MAIN VIEW */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* TOP BAR — COMPACTED CHOY CHAT BANNER & 3-DOTS MENU BUTTON */}
-        <header className={`relative z-30 flex items-center justify-between px-3 sm:px-5 py-1.5 border-b ${theme.topHeaderBg} shrink-0 gap-2 transition-colors`}>
-          <div className="flex items-center gap-2 min-w-0 flex-1">
+        {/* TOP BAR — CENTERED CHOY CHAT BANNER WITH NAVIGATION CONTROLS */}
+        <header className={`relative z-30 flex items-center justify-between px-3 sm:px-5 py-2 border-b ${theme.topHeaderBg} shrink-0 gap-2 transition-colors`}>
+          {/* Left: Mobile Navigation Menu button */}
+          <div className="flex items-center gap-2 shrink-0 min-w-[72px]">
+            <button
+              type="button"
+              onClick={() => setIsMenuDrawerOpen(true)}
+              className={`p-1.5 sm:px-2.5 sm:py-1.5 border rounded-xl transition shadow-xs flex items-center gap-1.5 text-xs font-bold md:hidden ${theme.searchButton}`}
+              title="Open Navigation Menu"
+              aria-label="Open Navigation Menu"
+            >
+              <Menu className="w-4 h-4" />
+              <span className="text-[11px]">Menu</span>
+            </button>
+          </div>
+
+          {/* Center: Centered CHOY CHAT App Name */}
+          <div className="flex-1 flex flex-col items-center justify-center text-center min-w-0">
             <h1 className={`font-black uppercase tracking-[0.2em] text-base sm:text-lg bg-gradient-to-r ${theme.heroWordmark} bg-clip-text text-transparent truncate`}>
               CHOY CHAT
             </h1>
-            <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300 hidden sm:inline">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
               • VIP Social
             </span>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          {/* Right: 3-dots Menu Button */}
+          <div className="flex items-center justify-end gap-2 shrink-0 min-w-[72px]">
             <button
               type="button"
               onClick={() => setIsMenuDrawerOpen(true)}
-              className={`p-2 border rounded-xl transition shadow-xs flex items-center gap-1.5 text-xs font-bold ${theme.searchButton}`}
+              className={`p-1.5 sm:px-2.5 sm:py-1.5 border rounded-xl transition shadow-xs flex items-center gap-1.5 text-xs font-bold ${theme.searchButton}`}
               title="Open Menu & Settings"
               aria-label="Open Menu and Settings"
               aria-expanded={isMenuDrawerOpen}
             >
               <MoreVertical className="w-4 h-4" />
-              <span className="hidden xs:inline">Menu</span>
+              <span className="hidden xs:inline text-[11px]">More</span>
             </button>
           </div>
         </header>
@@ -9535,6 +9552,169 @@ export default function App() {
 
             {/* Scrollable Drawer Body */}
             <div className="flex-1 overflow-y-auto overscroll-y-contain p-4 space-y-5">
+              {/* App Navigation Section */}
+              <div className="p-3.5 rounded-2xl border border-emerald-200 dark:border-emerald-800 bg-white/80 dark:bg-slate-900/80 shadow-xs space-y-3">
+                <div className="flex items-center justify-between px-1">
+                  <div className="flex items-center gap-1.5">
+                    <Home className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                    <span className="text-[11px] font-black uppercase tracking-wider text-emerald-900 dark:text-emerald-200">
+                      Navigation &amp; Pages
+                    </span>
+                  </div>
+                  <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 capitalize">
+                    {activeTab === 'feed' ? 'Newsfeed' : activeTab}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('feed');
+                      setIsMenuDrawerOpen(false);
+                    }}
+                    className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
+                      activeTab === 'feed'
+                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm'
+                        : `${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-emerald-400`
+                    }`}
+                  >
+                    <Home className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                    <span>Newsfeed</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('messages');
+                      setIsMenuDrawerOpen(false);
+                    }}
+                    className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
+                      activeTab === 'messages'
+                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm'
+                        : `${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-emerald-400`
+                    }`}
+                  >
+                    <MessageSquare className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                    <span>Messages</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('profile');
+                      setIsMenuDrawerOpen(false);
+                    }}
+                    className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
+                      activeTab === 'profile'
+                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm'
+                        : `${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-emerald-400`
+                    }`}
+                  >
+                    <User className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                    <span>My Profile</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('people');
+                      setIsMenuDrawerOpen(false);
+                    }}
+                    className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
+                      activeTab === 'people'
+                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm'
+                        : `${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-emerald-400`
+                    }`}
+                  >
+                    <Users className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                    <span>People</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('videos');
+                      setIsMenuDrawerOpen(false);
+                    }}
+                    className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
+                      activeTab === 'videos'
+                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm'
+                        : `${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-emerald-400`
+                    }`}
+                  >
+                    <Video className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                    <span>Videos</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('analytics');
+                      setIsMenuDrawerOpen(false);
+                    }}
+                    className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
+                      activeTab === 'analytics'
+                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm'
+                        : `${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-emerald-400`
+                    }`}
+                  >
+                    <Award className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                    <span>Analytics</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('choyai');
+                      setIsMenuDrawerOpen(false);
+                    }}
+                    className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
+                      activeTab === 'choyai'
+                        ? 'bg-cyan-400 text-slate-950 border-cyan-300 shadow-sm'
+                        : `${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-cyan-400`
+                    }`}
+                  >
+                    <Bot className="w-4 h-4 shrink-0 text-cyan-500" />
+                    <span>Choy AI</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('github');
+                      setIsMenuDrawerOpen(false);
+                    }}
+                    className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
+                      activeTab === 'github'
+                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm'
+                        : `${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-emerald-400`
+                    }`}
+                  >
+                    <GitBranch className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                    <span>GitHub Intel</span>
+                  </button>
+
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTab('ledger');
+                        setIsMenuDrawerOpen(false);
+                      }}
+                      className={`col-span-2 px-3 py-2.5 rounded-xl border flex items-center justify-center gap-2 text-xs font-bold transition ${
+                        activeTab === 'ledger'
+                          ? 'bg-indigo-600 text-white border-indigo-400 shadow-sm'
+                          : `${theme.sidebarCard} text-indigo-700 dark:text-indigo-300 hover:border-indigo-400`
+                      }`}
+                    >
+                      <FileSpreadsheet className="w-4 h-4 shrink-0" />
+                      <span>Milestone Ledger (Admin)</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
               {/* Account Summary & Quick Actions */}
               <div className="space-y-2.5">
                 <button
