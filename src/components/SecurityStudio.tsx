@@ -55,6 +55,7 @@ import {
   renderAppIconWithEmojiFile,
   shareEmojiLinkWithAppImage,
 } from '../utils/emojiLinkShare';
+import { FIREBASE_PROJECT_ID } from '../firebase';
 
 export type StudioNewsfeedChannel = 'feed_a' | 'feed_b' | 'feed_c' | 'feed_bc';
 export type StudioAnnouncementTarget = 'all' | 'feed_a' | 'feed_b' | 'feed_c' | 'feed_bc';
@@ -1573,7 +1574,19 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
     }
   };
 
-  const renderFirebaseCloudSyncCard = () => (
+  const [copiedFirebaseDomain, setCopiedFirebaseDomain] = useState(false);
+
+  const renderFirebaseCloudSyncCard = () => {
+    const currentHost = typeof window !== 'undefined' ? window.location.hostname : '';
+    const isExternalDeployHost =
+      Boolean(currentHost) &&
+      currentHost !== 'localhost' &&
+      !currentHost.endsWith('.run.app') &&
+      !currentHost.endsWith('.firebaseapp.com') &&
+      !currentHost.endsWith('.web.app');
+    const firebaseAuthSettingsUrl = `https://console.firebase.google.com/project/${FIREBASE_PROJECT_ID}/authentication/settings`;
+
+    return (
     <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700/80 space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
@@ -1587,7 +1600,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
                 ? firebaseIsAdminVerified
                   ? `Connected: ${firebaseConnectedEmail} · Auto-syncs accounts to Firestore`
                   : `Connected (${firebaseConnectedEmail}) — requires choycounterflow@gmail.com`
-                : 'Connect Google (choycounterflow@gmail.com) so accounts never get lost across server resets.'}
+                : 'Connect Google Admin (choycounterflow@gmail.com) so accounts sync across Render & Firebase.'}
             </div>
           </div>
         </div>
@@ -1613,8 +1626,46 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
       </div>
 
       {firebaseSyncError && (
-        <div className="p-2 rounded-lg bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-700/70 text-[11px] text-rose-800 dark:text-rose-200 break-words">
+        <div className="p-2.5 rounded-lg bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-700/70 text-[11px] text-rose-800 dark:text-rose-200 break-words">
           {firebaseSyncError}
+        </div>
+      )}
+
+      {(isExternalDeployHost || firebaseSyncError.toLowerCase().includes('authorized')) && currentHost && (
+        <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700/70 text-[11px] text-amber-950 dark:text-amber-100 space-y-2">
+          <div className="font-bold flex items-center gap-1.5">
+            <Globe className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+            <span>Render / Custom Domain Firebase Setup</span>
+          </div>
+          <p className="text-[10px] leading-relaxed text-amber-800 dark:text-amber-200">
+            Add this exact domain to <strong>Firebase Console → Authentication → Settings → Authorized domains</strong> so Google Cloud Sync works on this Render URL:
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <code className="px-2 py-1 rounded-lg bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 font-mono text-[10px] text-amber-950 dark:text-amber-100 select-all">
+              {currentHost}
+            </code>
+            <button
+              type="button"
+              onClick={() => {
+                navigator.clipboard?.writeText(currentHost).catch(() => {});
+                setCopiedFirebaseDomain(true);
+                window.setTimeout(() => setCopiedFirebaseDomain(false), 2000);
+              }}
+              className="px-2.5 py-1 rounded-lg bg-amber-200/80 hover:bg-amber-300 dark:bg-amber-800 dark:hover:bg-amber-700 text-amber-950 dark:text-amber-50 text-[10px] font-bold inline-flex items-center gap-1 transition"
+            >
+              {copiedFirebaseDomain ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+              <span>{copiedFirebaseDomain ? 'Copied!' : 'Copy Domain'}</span>
+            </button>
+            <a
+              href={firebaseAuthSettingsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold inline-flex items-center gap-1 transition"
+            >
+              <ExternalLink className="w-3 h-3" />
+              <span>Open Firebase Authorized Domains</span>
+            </a>
+          </div>
         </div>
       )}
 
@@ -1697,7 +1748,8 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
         </div>
       )}
     </div>
-  );
+    );
+  };
 
   const formatBytes = (bytes: number) => {
     if (!bytes) return '0 KB';

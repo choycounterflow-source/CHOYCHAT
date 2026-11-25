@@ -94,7 +94,7 @@ import {
   renderAppIconWithEmojiFile,
   shareEmojiLinkWithAppImage,
 } from './utils/emojiLinkShare';
-import type { User as FirebaseUser } from './firebase';
+import { auth as firebaseAuth, type User as FirebaseUser } from './firebase';
 import {
   connectFirebaseGoogleAdmin,
   disconnectFirebaseGoogle,
@@ -1011,6 +1011,7 @@ export default function App() {
   const [newLedgerOneSack, setNewLedgerOneSack] = useState(0);
   const [newLedgerBal, setNewLedgerBal] = useState(0);
   const [ledgerSearchQuery, setLedgerSearchQuery] = useState('');
+  const [ledgerColorFilter, setLedgerColorFilter] = useState<'all' | 'blue' | 'red'>('all');
   const [isAddInventoryExpanded, setIsAddInventoryExpanded] = useState(false);
 
   const [isChoyAIPopupOpen, setIsChoyAIPopupOpen] = useState(false);
@@ -1816,8 +1817,9 @@ export default function App() {
   }, []);
 
   const pushBackupToFirebase = useCallback(
-    async (silent = true) => {
-      if (!isAdmin || !authToken || !isVerifiedAdminFirebaseUser(firebaseUser)) return;
+    async (silent = true, overrideUser?: FirebaseUser | null) => {
+      const activeFbUser = overrideUser ?? firebaseUser ?? firebaseAuth.currentUser;
+      if (!isAdmin || !authToken || !isVerifiedAdminFirebaseUser(activeFbUser)) return;
       setFirebaseSyncState('syncing');
       setFirebaseSyncError('');
       try {
@@ -1839,8 +1841,9 @@ export default function App() {
   );
 
   const restoreBackupFromFirebase = useCallback(
-    async (silent = true) => {
-      if (!authToken || !isVerifiedAdminFirebaseUser(firebaseUser)) return;
+    async (silent = true, overrideUser?: FirebaseUser | null) => {
+      const activeFbUser = overrideUser ?? firebaseUser ?? firebaseAuth.currentUser;
+      if (!authToken || !isVerifiedAdminFirebaseUser(activeFbUser)) return;
       setFirebaseSyncState('syncing');
       setFirebaseSyncError('');
       try {
@@ -1892,15 +1895,17 @@ export default function App() {
         showNotice(msg);
         return;
       }
-      showNotice(`Connected Firebase Cloud (${user.email})! Auto-restoring cloud backup...`);
-      await restoreBackupFromFirebase(false);
+      firebaseInitialSyncUidRef.current = `${currentUser?.id || 'anon'}:${user.uid}`;
+      showNotice(`Connected Firebase Cloud (${user.email})! Syncing user accounts...`);
+      await restoreBackupFromFirebase(false, user);
+      await pushBackupToFirebase(true, user);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Google sign-in failed';
       setFirebaseSyncState('error');
       setFirebaseSyncError(msg);
       showNotice(msg);
     }
-  }, [restoreBackupFromFirebase]);
+  }, [currentUser?.id, restoreBackupFromFirebase, pushBackupToFirebase]);
 
   const handleDisconnectFirebaseAdmin = useCallback(async () => {
     await disconnectFirebaseGoogle();
@@ -4877,6 +4882,10 @@ export default function App() {
     let sum5H = 0;
     let sum5HBlue = 0;
     let sum5HRed = 0;
+    let blueRowCount = 0;
+    let redRowCount = 0;
+    let blueUnits = 0;
+    let redUnits = 0;
     let sumBulig = 0;
     let sumPoint5 = 0;
     let sumHalfSack = 0;
@@ -4886,22 +4895,34 @@ export default function App() {
 
     for (const r of ledgerRows) {
       const q5H = Number(r.fiveH) || 0;
+      const qBulig = Number(r.bulig) || 0;
+      const qPoint5 = Number(r.point5) || 0;
+      const qHalfSack = Number(r.halfSack) || 0;
+      const qOneSack = Number(r.oneSack) || 0;
+      const rowUnits = q5H + qBulig + qPoint5 + qHalfSack + qOneSack;
+
       sum5H += q5H;
       if (r.fiveHType === 'blue') {
         sum5HBlue += q5H;
+        blueRowCount += 1;
+        blueUnits += rowUnits;
       } else {
         sum5HRed += q5H;
+        redRowCount += 1;
+        redUnits += rowUnits;
       }
-      sumBulig += Number(r.bulig) || 0;
-      sumPoint5 += Number(r.point5) || 0;
-      sumHalfSack += Number(r.halfSack) || 0;
-      sumOneSack += Number(r.oneSack) || 0;
+      sumBulig += qBulig;
+      sumPoint5 += qPoint5;
+      sumHalfSack += qHalfSack;
+      sumOneSack += qOneSack;
       sumBal += Number(r.bal) || 0;
       grandTotal += calculateRowTotal(r);
     }
 
     const totalUnits = sum5H + sumBulig + sumPoint5 + sumHalfSack + sumOneSack;
     const value5H = sum5H * unitPrices.fiveH;
+    const value5HBlue = sum5HBlue * unitPrices.fiveH;
+    const value5HRed = sum5HRed * unitPrices.fiveH;
     const valueBulig = sumBulig * unitPrices.bulig;
     const valuePoint5 = sumPoint5 * unitPrices.point5;
     const valueHalfSack = sumHalfSack * unitPrices.halfSack;
@@ -4912,6 +4933,10 @@ export default function App() {
       sum5H,
       sum5HBlue,
       sum5HRed,
+      blueRowCount,
+      redRowCount,
+      blueUnits,
+      redUnits,
       sumBulig,
       sumPoint5,
       sumHalfSack,
@@ -4919,6 +4944,8 @@ export default function App() {
       sumBal,
       totalUnits,
       value5H,
+      value5HBlue,
+      value5HRed,
       valueBulig,
       valuePoint5,
       valueHalfSack,
@@ -4930,9 +4957,12 @@ export default function App() {
 
   const filteredLedgerRows = React.useMemo(() => {
     const q = ledgerSearchQuery.trim().toLowerCase();
-    if (!q) return ledgerRows;
-    return ledgerRows.filter((r) => r.name.toLowerCase().includes(q));
-  }, [ledgerRows, ledgerSearchQuery]);
+    return ledgerRows.filter((r) => {
+      if (ledgerColorFilter !== 'all' && r.fiveHType !== ledgerColorFilter) return false;
+      if (q && !r.name.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [ledgerRows, ledgerSearchQuery, ledgerColorFilter]);
 
   const topLeaderboard: LeaderboardItem[] =
     leaderboard.length > 0
@@ -8188,14 +8218,18 @@ export default function App() {
               {/* Header Bar */}
               <div className="flex flex-wrap justify-between items-center gap-3 bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 shadow-sm">
                 <div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <Package className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
                     <h3 className="text-sm font-black text-emerald-950 dark:text-white uppercase tracking-wider">
                       Milestone Ledger &amp; Live Inventory Monitor
                     </h3>
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-indigo-100 dark:bg-indigo-900/80 text-indigo-800 dark:text-indigo-200 border border-indigo-300 dark:border-indigo-700">
+                      <ShieldCheck className="w-3 h-3" />
+                      Admin Only
+                    </span>
                   </div>
                   <p className="text-[11px] text-emerald-700 dark:text-emerald-300 mt-0.5">
-                    Live stock quantities, automatic price calculations &amp; real-time database sync
+                    Live stock quantities, Blue &amp; Red group tracking, automatic totals &amp; real-time sync (visible to Admin only)
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -8217,6 +8251,91 @@ export default function App() {
                 </div>
               </div>
 
+              {/* BLUE & RED VISIBLE SUMMARY CARDS (ADMIN ONLY) */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setLedgerColorFilter((prev) => (prev === 'blue' ? 'all' : 'blue'))}
+                  className={`text-left p-4 rounded-2xl bg-blue-50 dark:bg-blue-600/25 border-2 shadow-sm flex items-center justify-between transition ${
+                    ledgerColorFilter === 'blue'
+                      ? 'border-blue-600 ring-2 ring-blue-400/50'
+                      : 'border-blue-500 hover:bg-blue-100/70 dark:hover:bg-blue-600/35'
+                  }`}
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded-md bg-blue-600 text-white text-[10px] font-black uppercase tracking-wider shadow-xs">
+                        BLUE
+                      </span>
+                      <span className="text-[10px] font-extrabold text-blue-800 dark:text-blue-200 uppercase">
+                        {inventoryMetrics.blueRowCount} Accounts
+                      </span>
+                    </div>
+                    <div className="text-xl font-black text-blue-950 dark:text-white font-mono">
+                      ₱{totalBlue.toLocaleString()}
+                    </div>
+                    <div className="text-[10px] font-bold text-blue-700 dark:text-blue-200">
+                      5H Blue: <span className="font-black font-mono">{inventoryMetrics.sum5HBlue.toLocaleString()} pcs</span> · Total Qty: <span className="font-black font-mono">{inventoryMetrics.blueUnits.toLocaleString()}</span>
+                    </div>
+                  </div>
+                  <div className="w-2.5 h-12 rounded-full bg-blue-500 shrink-0"></div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setLedgerColorFilter((prev) => (prev === 'red' ? 'all' : 'red'))}
+                  className={`text-left p-4 rounded-2xl bg-red-50 dark:bg-red-600/25 border-2 shadow-sm flex items-center justify-between transition ${
+                    ledgerColorFilter === 'red'
+                      ? 'border-red-600 ring-2 ring-red-400/50'
+                      : 'border-red-500 hover:bg-red-100/70 dark:hover:bg-red-600/35'
+                  }`}
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded-md bg-red-600 text-white text-[10px] font-black uppercase tracking-wider shadow-xs">
+                        RED
+                      </span>
+                      <span className="text-[10px] font-extrabold text-red-800 dark:text-red-200 uppercase">
+                        {inventoryMetrics.redRowCount} Accounts
+                      </span>
+                    </div>
+                    <div className="text-xl font-black text-red-950 dark:text-white font-mono">
+                      ₱{totalRed.toLocaleString()}
+                    </div>
+                    <div className="text-[10px] font-bold text-red-700 dark:text-red-200">
+                      5H Red: <span className="font-black font-mono">{inventoryMetrics.sum5HRed.toLocaleString()} pcs</span> · Total Qty: <span className="font-black font-mono">{inventoryMetrics.redUnits.toLocaleString()}</span>
+                    </div>
+                  </div>
+                  <div className="w-2.5 h-12 rounded-full bg-red-500 shrink-0"></div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setLedgerColorFilter('all')}
+                  className={`text-left p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-900/40 border-2 shadow-sm flex items-center justify-between transition ${
+                    ledgerColorFilter === 'all'
+                      ? 'border-emerald-600 ring-2 ring-emerald-400/50'
+                      : 'border-emerald-500 hover:bg-emerald-100/70 dark:hover:bg-emerald-900/60'
+                  }`}
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <Package className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                      <span className="text-[10px] font-black text-emerald-800 dark:text-emerald-200 uppercase">
+                        Grand Net Total ({ledgerRows.length})
+                      </span>
+                    </div>
+                    <div className="text-xl font-black text-emerald-950 dark:text-white font-mono">
+                      ₱{inventoryMetrics.grandTotal.toLocaleString()}
+                    </div>
+                    <div className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300">
+                      All Units: <span className="font-black font-mono">{inventoryMetrics.totalUnits.toLocaleString()}</span> · Stock: <span className="font-black font-mono">₱{inventoryMetrics.totalInventoryValue.toLocaleString()}</span>
+                    </div>
+                  </div>
+                  <div className="w-2.5 h-12 rounded-full bg-emerald-500 shrink-0"></div>
+                </button>
+              </div>
+
               {/* 6-CARD LIVE INVENTORY QUANTITY MONITOR */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between px-1">
@@ -8232,7 +8351,7 @@ export default function App() {
                 </div>
 
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
-                  {/* 5H Stock Card */}
+                  {/* 5H Stock Card (Blue & Red Visible Breakdown) */}
                   <div className="p-3 rounded-2xl bg-white dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-700/60 shadow-xs flex flex-col justify-between">
                     <div>
                       <div className="flex items-center justify-between">
@@ -8247,12 +8366,16 @@ export default function App() {
                         {inventoryMetrics.sum5H.toLocaleString()} <span className="text-xs font-normal text-emerald-600 dark:text-emerald-400">pcs</span>
                       </div>
                     </div>
-                    <div className="mt-2 pt-2 border-t border-emerald-100 dark:border-emerald-800/60 text-[9px] text-emerald-700 dark:text-emerald-300 space-y-0.5">
-                      <div className="flex justify-between">
-                        <span className="text-blue-600 dark:text-blue-400 font-bold">Blue: {inventoryMetrics.sum5HBlue}</span>
-                        <span className="text-red-600 dark:text-red-400 font-bold">Red: {inventoryMetrics.sum5HRed}</span>
+                    <div className="mt-2 pt-2 border-t border-emerald-100 dark:border-emerald-800/60 text-[10px] space-y-1">
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="px-1.5 py-0.5 rounded bg-blue-600 text-white font-black text-[9px]">
+                          BLUE: {inventoryMetrics.sum5HBlue}
+                        </span>
+                        <span className="px-1.5 py-0.5 rounded bg-red-600 text-white font-black text-[9px]">
+                          RED: {inventoryMetrics.sum5HRed}
+                        </span>
                       </div>
-                      <div className="text-emerald-800 dark:text-emerald-200 font-semibold truncate">
+                      <div className="text-[9px] text-emerald-800 dark:text-emerald-200 font-semibold truncate">
                         Val: ₱{inventoryMetrics.value5H.toLocaleString()}
                       </div>
                     </div>
@@ -8365,7 +8488,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Stock Level Distribution Bar */}
+                {/* Stock Level Distribution Bar (5H Blue & 5H Red Split) */}
                 {inventoryMetrics.totalUnits > 0 && (
                   <div className="p-2.5 rounded-xl bg-white dark:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-800 text-[10px] space-y-1.5">
                     <div className="flex justify-between text-emerald-800 dark:text-emerald-200 font-bold">
@@ -8373,11 +8496,18 @@ export default function App() {
                       <span>100% of Inventory Recorded</span>
                     </div>
                     <div className="h-3 w-full rounded-full bg-emerald-100 dark:bg-emerald-950 overflow-hidden flex shadow-inner">
-                      {inventoryMetrics.sum5H > 0 && (
+                      {inventoryMetrics.sum5HBlue > 0 && (
                         <div
-                          style={{ width: `${(inventoryMetrics.sum5H / inventoryMetrics.totalUnits) * 100}%` }}
+                          style={{ width: `${(inventoryMetrics.sum5HBlue / inventoryMetrics.totalUnits) * 100}%` }}
                           className="bg-blue-500 h-full"
-                          title={`5H: ${inventoryMetrics.sum5H} pcs (${Math.round((inventoryMetrics.sum5H / inventoryMetrics.totalUnits) * 100)}%)`}
+                          title={`5H Blue: ${inventoryMetrics.sum5HBlue} pcs (${Math.round((inventoryMetrics.sum5HBlue / inventoryMetrics.totalUnits) * 100)}%)`}
+                        />
+                      )}
+                      {inventoryMetrics.sum5HRed > 0 && (
+                        <div
+                          style={{ width: `${(inventoryMetrics.sum5HRed / inventoryMetrics.totalUnits) * 100}%` }}
+                          className="bg-red-500 h-full"
+                          title={`5H Red: ${inventoryMetrics.sum5HRed} pcs (${Math.round((inventoryMetrics.sum5HRed / inventoryMetrics.totalUnits) * 100)}%)`}
                         />
                       )}
                       {inventoryMetrics.sumBulig > 0 && (
@@ -8410,8 +8540,11 @@ export default function App() {
                       )}
                     </div>
                     <div className="flex flex-wrap gap-3 text-[9px] font-semibold text-emerald-700 dark:text-emerald-300 pt-0.5">
-                      <span className="inline-flex items-center gap-1">
-                        <span className="w-2 h-2 rounded-full bg-blue-500"></span> 5H ({inventoryMetrics.sum5H})
+                      <span className="inline-flex items-center gap-1 text-blue-700 dark:text-blue-300 font-bold">
+                        <span className="w-2.5 h-2.5 rounded-full bg-blue-500"></span> 5H Blue ({inventoryMetrics.sum5HBlue})
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-red-700 dark:text-red-300 font-bold">
+                        <span className="w-2.5 h-2.5 rounded-full bg-red-500"></span> 5H Red ({inventoryMetrics.sum5HRed})
                       </span>
                       <span className="inline-flex items-center gap-1">
                         <span className="w-2 h-2 rounded-full bg-emerald-500"></span> Bulig ({inventoryMetrics.sumBulig})
@@ -8450,33 +8583,69 @@ export default function App() {
                   </div>
 
                   <form onSubmit={handleAddLedgerRow} className="space-y-3">
-                    <div>
-                      <label className="block text-[11px] font-bold text-emerald-900 dark:text-emerald-200 mb-1">
-                        Customer / Member / Account Name *
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="e.g. Maria Santos, Batch 1, Store A..."
-                        value={newLedgerName}
-                        onChange={(e) => setNewLedgerName(e.target.value)}
-                        className="w-full p-2.5 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white font-medium"
-                      />
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div className="sm:col-span-2">
+                        <label className="block text-[11px] font-bold text-emerald-900 dark:text-emerald-200 mb-1">
+                          Customer / Member / Account Name *
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="e.g. Maria Santos, Batch 1, Store A..."
+                          value={newLedgerName}
+                          onChange={(e) => setNewLedgerName(e.target.value)}
+                          className="w-full p-2.5 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white font-medium"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-emerald-900 dark:text-emerald-200 mb-1">
+                          Group Color (Blue / Red) *
+                        </label>
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setNewLedger5HType('blue')}
+                            className={`py-2.5 rounded-xl text-xs font-black uppercase border-2 transition ${
+                              newLedger5HType === 'blue'
+                                ? 'bg-blue-600 text-white border-blue-400 shadow-sm'
+                                : 'bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800 hover:border-blue-400'
+                            }`}
+                          >
+                            BLUE
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setNewLedger5HType('red')}
+                            className={`py-2.5 rounded-xl text-xs font-black uppercase border-2 transition ${
+                              newLedger5HType === 'red'
+                                ? 'bg-red-600 text-white border-red-400 shadow-sm'
+                                : 'bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800 hover:border-red-400'
+                            }`}
+                          >
+                            RED
+                          </button>
+                        </div>
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-xs">
                       {/* 5H Input */}
-                      <div className="p-2 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800">
+                      <div
+                        className={`p-2 rounded-xl border-2 ${
+                          newLedger5HType === 'blue'
+                            ? 'bg-blue-50/70 dark:bg-blue-950/60 border-blue-400 dark:border-blue-600'
+                            : 'bg-red-50/70 dark:bg-red-950/60 border-red-400 dark:border-red-600'
+                        }`}
+                      >
                         <div className="flex items-center justify-between mb-1">
                           <label className="text-[10px] font-bold text-emerald-900 dark:text-emerald-200">5H Qty</label>
-                          <button
-                            type="button"
-                            onClick={() => setNewLedger5HType((prev) => (prev === 'blue' ? 'red' : 'blue'))}
-                            className={`w-4 h-4 rounded border text-[9px] font-bold ${
-                              newLedger5HType === 'blue' ? 'bg-blue-500 border-blue-300' : 'bg-red-500 border-red-300'
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase text-white ${
+                              newLedger5HType === 'blue' ? 'bg-blue-600' : 'bg-red-600'
                             }`}
-                            title={`Click to toggle Blue/Red (Currently: ${newLedger5HType})`}
-                          />
+                          >
+                            {newLedger5HType}
+                          </span>
                         </div>
                         <input
                           type="number"
@@ -8573,30 +8742,70 @@ export default function App() {
                 </div>
               )}
 
-              {/* SEARCH & RECORDS STATUS BAR */}
+              {/* SEARCH, BLUE/RED FILTER & RECORDS STATUS BAR */}
               <div className="flex flex-wrap items-center justify-between gap-2 px-1">
-                <div className="relative flex-1 min-w-[200px] max-w-sm">
-                  <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-emerald-600 dark:text-emerald-400" />
-                  <input
-                    type="text"
-                    placeholder="Search accounts / names in ledger..."
-                    value={ledgerSearchQuery}
-                    onChange={(e) => setLedgerSearchQuery(e.target.value)}
-                    className="w-full pl-8 pr-3 py-1.5 text-xs bg-white dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-700 rounded-xl text-emerald-950 dark:text-white"
-                  />
+                <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[240px]">
+                  <div className="relative flex-1 min-w-[180px] max-w-xs">
+                    <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-emerald-600 dark:text-emerald-400" />
+                    <input
+                      type="text"
+                      placeholder="Search accounts / names..."
+                      value={ledgerSearchQuery}
+                      onChange={(e) => setLedgerSearchQuery(e.target.value)}
+                      className="w-full pl-8 pr-3 py-1.5 text-xs bg-white dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-700 rounded-xl text-emerald-950 dark:text-white"
+                    />
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setLedgerColorFilter('all')}
+                      className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black border transition ${
+                        ledgerColorFilter === 'all'
+                          ? 'bg-emerald-600 text-white border-emerald-500 shadow-xs'
+                          : 'bg-white dark:bg-emerald-900/50 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-700 hover:bg-emerald-50'
+                      }`}
+                    >
+                      All ({ledgerRows.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLedgerColorFilter('blue')}
+                      className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black border flex items-center gap-1.5 transition ${
+                        ledgerColorFilter === 'blue'
+                          ? 'bg-blue-600 text-white border-blue-500 shadow-xs'
+                          : 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-200 border-blue-300 dark:border-blue-700 hover:bg-blue-100'
+                      }`}
+                    >
+                      <span className="w-2 h-2 rounded-full bg-current" />
+                      Blue ({inventoryMetrics.blueRowCount})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLedgerColorFilter('red')}
+                      className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black border flex items-center gap-1.5 transition ${
+                        ledgerColorFilter === 'red'
+                          ? 'bg-red-600 text-white border-red-500 shadow-xs'
+                          : 'bg-red-50 dark:bg-red-950/60 text-red-700 dark:text-red-200 border-red-300 dark:border-red-700 hover:bg-red-100'
+                      }`}
+                    >
+                      <span className="w-2 h-2 rounded-full bg-current" />
+                      Red ({inventoryMetrics.redRowCount})
+                    </button>
+                  </div>
                 </div>
                 <div className="text-[11px] font-bold text-emerald-800 dark:text-emerald-300">
                   Showing <span className="text-emerald-950 dark:text-white font-black">{filteredLedgerRows.length}</span> of {ledgerRows.length} Records
                 </div>
               </div>
 
-              {/* SPREADSHEET TABLE WITH STICKY TOTALS FOOTER */}
+              {/* SPREADSHEET TABLE WITH VISIBLE BLUE / RED INDICATORS & STICKY TOTALS FOOTER */}
               <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl overflow-hidden shadow-sm">
                 <div className="max-h-[65vh] overflow-auto">
                   <table className="w-full text-left border-collapse text-xs whitespace-nowrap">
                     <thead className="bg-emerald-50 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 sticky top-0 z-20 text-[10px] uppercase font-bold shadow-xs">
                       <tr>
                         <th className="p-3 sticky left-0 bg-emerald-50 dark:bg-emerald-950 z-30">Account / Name</th>
+                        <th className="p-3 text-center">Blue / Red</th>
                         <th className="p-3">5H (₱{unitPrices.fiveH})</th>
                         <th className="p-3">Bulig (₱{unitPrices.bulig})</th>
                         <th className="p-3">Point 5 (₱{unitPrices.point5})</th>
@@ -8610,10 +8819,52 @@ export default function App() {
                     <tbody className="divide-y divide-emerald-200 dark:divide-emerald-800 font-mono">
                       {filteredLedgerRows.map((row) => {
                         const total = calculateRowTotal(row);
+                        const isBlue = row.fiveHType === 'blue';
                         return (
-                          <tr key={row.id} className="hover:bg-emerald-50/80 dark:hover:bg-emerald-800/40 transition">
-                            <td className="p-3 sticky left-0 bg-white dark:bg-emerald-900/90 font-bold text-emerald-950 dark:text-white font-sans max-w-[140px] truncate shadow-xs">
-                              {row.name}
+                          <tr
+                            key={row.id}
+                            className={`transition ${
+                              isBlue
+                                ? 'bg-blue-50/55 dark:bg-blue-950/30 hover:bg-blue-100/60 dark:hover:bg-blue-900/40'
+                                : 'bg-red-50/55 dark:bg-red-950/30 hover:bg-red-100/60 dark:hover:bg-red-900/40'
+                            }`}
+                          >
+                            <td
+                              className={`p-3 sticky left-0 font-bold text-emerald-950 dark:text-white font-sans max-w-[165px] shadow-xs border-l-4 ${
+                                isBlue
+                                  ? 'bg-blue-50 dark:bg-slate-900 border-l-blue-600'
+                                  : 'bg-red-50 dark:bg-slate-900 border-l-red-600'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2">
+                                <span
+                                  className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                                    isBlue ? 'bg-blue-600' : 'bg-red-600'
+                                  }`}
+                                  title={isBlue ? 'Blue Group' : 'Red Group'}
+                                />
+                                <span className="truncate">{row.name}</span>
+                              </div>
+                            </td>
+                            {/* Dedicated Visible Blue / Red Toggle Column */}
+                            <td className="p-3 text-center font-sans">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateLedgerField(row, {
+                                    fiveHType: isBlue ? 'red' : 'blue'
+                                  })
+                                }
+                                aria-label="Toggle Blue or Red"
+                                className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider text-white shadow-xs transition-transform active:scale-95 ${
+                                  isBlue
+                                    ? 'bg-blue-600 hover:bg-blue-500 border border-blue-400'
+                                    : 'bg-red-600 hover:bg-red-500 border border-red-400'
+                                }`}
+                                title={`Click to switch to ${isBlue ? 'RED' : 'BLUE'}`}
+                              >
+                                {isBlue ? 'BLUE' : 'RED'}
+                              </button>
                             </td>
                             {/* 5H Column */}
                             <td className="p-3">
@@ -8630,8 +8881,10 @@ export default function App() {
                                   type="number"
                                   value={row.fiveH}
                                   onChange={(e) => handleUpdateLedgerField(row, { fiveH: Number(e.target.value) || 0 })}
-                                  className={`w-12 p-1 bg-white dark:bg-emerald-950 border-2 rounded text-center text-emerald-950 dark:text-white font-bold ${
-                                    row.fiveHType === 'blue' ? 'border-blue-500' : 'border-red-500'
+                                  className={`w-12 p-1 bg-white dark:bg-emerald-950 border-2 rounded text-center font-bold ${
+                                    isBlue
+                                      ? 'border-blue-500 text-blue-900 dark:text-blue-200'
+                                      : 'border-red-500 text-red-900 dark:text-red-200'
                                   }`}
                                 />
                                 <button
@@ -8642,21 +8895,6 @@ export default function App() {
                                 >
                                   +
                                 </button>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    handleUpdateLedgerField(row, {
-                                      fiveHType: row.fiveHType === 'blue' ? 'red' : 'blue'
-                                    })
-                                  }
-                                  aria-label="Toggle color"
-                                  className={`w-5 h-5 rounded-md border shadow-xs transition-transform active:scale-95 ${
-                                    row.fiveHType === 'blue'
-                                      ? 'bg-blue-500 border-blue-200 shadow-blue-500/40'
-                                      : 'bg-red-500 border-red-200 shadow-red-500/40'
-                                  }`}
-                                  title={`Toggle Color (Currently: ${row.fiveHType})`}
-                                />
                               </div>
                             </td>
                             {/* Bulig Column */}
@@ -8673,7 +8911,7 @@ export default function App() {
                                   type="number"
                                   value={row.bulig}
                                   onChange={(e) => handleUpdateLedgerField(row, { bulig: Number(e.target.value) || 0 })}
-                                  className="w-12 p-1 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
+                                  className="w-12 p-1 bg-white/90 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
                                 />
                                 <button
                                   type="button"
@@ -8698,7 +8936,7 @@ export default function App() {
                                   type="number"
                                   value={row.point5}
                                   onChange={(e) => handleUpdateLedgerField(row, { point5: Number(e.target.value) || 0 })}
-                                  className="w-12 p-1 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
+                                  className="w-12 p-1 bg-white/90 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
                                 />
                                 <button
                                   type="button"
@@ -8723,7 +8961,7 @@ export default function App() {
                                   type="number"
                                   value={row.halfSack}
                                   onChange={(e) => handleUpdateLedgerField(row, { halfSack: Number(e.target.value) || 0 })}
-                                  className="w-12 p-1 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
+                                  className="w-12 p-1 bg-white/90 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
                                 />
                                 <button
                                   type="button"
@@ -8748,7 +8986,7 @@ export default function App() {
                                   type="number"
                                   value={row.oneSack}
                                   onChange={(e) => handleUpdateLedgerField(row, { oneSack: Number(e.target.value) || 0 })}
-                                  className="w-12 p-1 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
+                                  className="w-12 p-1 bg-white/90 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
                                 />
                                 <button
                                   type="button"
@@ -8765,11 +9003,17 @@ export default function App() {
                                 type="number"
                                 value={row.bal}
                                 onChange={(e) => handleUpdateLedgerField(row, { bal: Number(e.target.value) || 0 })}
-                                className="w-16 p-1 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white font-bold"
+                                className="w-16 p-1 bg-white/90 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white font-bold"
                               />
                             </td>
                             {/* Total Column */}
-                            <td className="p-3 text-right font-black text-emerald-800 dark:text-emerald-200 font-mono">
+                            <td
+                              className={`p-3 text-right font-black font-mono ${
+                                isBlue
+                                  ? 'text-blue-800 dark:text-blue-200'
+                                  : 'text-red-800 dark:text-red-200'
+                              }`}
+                            >
                               ₱{total.toLocaleString()}
                             </td>
                             {/* Action */}
@@ -8786,17 +9030,31 @@ export default function App() {
                           </tr>
                         );
                       })}
+                      {filteredLedgerRows.length === 0 && (
+                        <tr>
+                          <td colSpan={10} className="p-6 text-center text-xs font-sans text-emerald-700 dark:text-emerald-300">
+                            No matching {ledgerColorFilter !== 'all' ? ledgerColorFilter.toUpperCase() : ''} ledger records found.
+                          </td>
+                        </tr>
+                      )}
                     </tbody>
-                    {/* STICKY TOTALS FOOTER WITH INVENTORY QUANTITY SUMMARIES */}
-                    <tfoot className="bg-emerald-100/90 dark:bg-emerald-950 text-emerald-950 dark:text-white font-bold border-t-2 border-emerald-400 dark:border-emerald-600 sticky bottom-0 z-20 shadow-md">
+                    {/* STICKY TOTALS FOOTER WITH BLUE / RED & INVENTORY QUANTITY SUMMARIES */}
+                    <tfoot className="bg-emerald-100/95 dark:bg-emerald-950 text-emerald-950 dark:text-white font-bold border-t-2 border-emerald-400 dark:border-emerald-600 sticky bottom-0 z-20 shadow-md">
                       <tr>
                         <td className="p-3 sticky left-0 bg-emerald-100 dark:bg-emerald-950 font-black text-emerald-900 dark:text-emerald-100 z-30">
                           TOTAL INVENTORY
                         </td>
+                        <td className="p-3 text-center font-sans">
+                          <div className="flex items-center justify-center gap-1 text-[9px] font-black">
+                            <span className="px-1.5 py-0.5 rounded bg-blue-600 text-white">B:{inventoryMetrics.blueRowCount}</span>
+                            <span className="px-1.5 py-0.5 rounded bg-red-600 text-white">R:{inventoryMetrics.redRowCount}</span>
+                          </div>
+                        </td>
                         <td className="p-3 font-mono">
                           <span className="font-black text-emerald-950 dark:text-white">{inventoryMetrics.sum5H.toLocaleString()}</span> pcs
-                          <div className="text-[9px] text-emerald-700 dark:text-emerald-300 font-sans">
-                            ₱{inventoryMetrics.value5H.toLocaleString()}
+                          <div className="flex items-center gap-1.5 text-[9px] font-sans font-black mt-0.5">
+                            <span className="text-blue-700 dark:text-blue-300">B:{inventoryMetrics.sum5HBlue}</span>
+                            <span className="text-red-700 dark:text-red-300">R:{inventoryMetrics.sum5HRed}</span>
                           </div>
                         </td>
                         <td className="p-3 font-mono">
@@ -8835,48 +9093,6 @@ export default function App() {
                       </tr>
                     </tfoot>
                   </table>
-                </div>
-              </div>
-
-              {/* FINANCIAL BREAKDOWN SUMMARY CARDS */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="p-4 rounded-2xl bg-blue-50 dark:bg-blue-600/25 border-2 border-blue-500 shadow-sm flex items-center justify-between">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="w-3.5 h-3.5 rounded bg-blue-500 border border-blue-200 inline-block shadow-xs"></span>
-                      <span className="text-[10px] font-black text-blue-700 dark:text-blue-200 uppercase">Blue Group Total</span>
-                    </div>
-                    <div className="text-xl font-black text-emerald-950 dark:text-white font-mono">
-                      ₱{totalBlue.toLocaleString()}
-                    </div>
-                  </div>
-                  <div className="w-2 h-10 rounded-full bg-blue-500"></div>
-                </div>
-
-                <div className="p-4 rounded-2xl bg-red-50 dark:bg-red-600/25 border-2 border-red-500 shadow-sm flex items-center justify-between">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="w-3.5 h-3.5 rounded bg-red-500 border border-red-200 inline-block shadow-xs"></span>
-                      <span className="text-[10px] font-black text-red-700 dark:text-red-200 uppercase">Red Group Total</span>
-                    </div>
-                    <div className="text-xl font-black text-emerald-950 dark:text-white font-mono">
-                      ₱{totalRed.toLocaleString()}
-                    </div>
-                  </div>
-                  <div className="w-2 h-10 rounded-full bg-red-500"></div>
-                </div>
-
-                <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-900/40 border-2 border-emerald-500 shadow-sm flex items-center justify-between">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <Package className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                      <span className="text-[10px] font-black text-emerald-800 dark:text-emerald-200 uppercase">Grand Net Total</span>
-                    </div>
-                    <div className="text-xl font-black text-emerald-950 dark:text-white font-mono">
-                      ₱{inventoryMetrics.grandTotal.toLocaleString()}
-                    </div>
-                  </div>
-                  <div className="w-2 h-10 rounded-full bg-emerald-500"></div>
                 </div>
               </div>
             </div>
