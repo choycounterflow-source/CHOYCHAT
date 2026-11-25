@@ -1503,19 +1503,22 @@ export class ChoyStore {
       .sort((a, b) => b.total - a.total);
   }
 
-  public async createLedgerRow(name: string): Promise<StoredLedgerRow> {
+  public async createLedgerRow(
+    name: string,
+    initial?: Partial<Pick<StoredLedgerRow, 'fiveH' | 'fiveHType' | 'bulig' | 'point5' | 'halfSack' | 'oneSack' | 'bal'>>
+  ): Promise<StoredLedgerRow> {
     await this.ready();
     const settings = await this.getSettings();
     const row: StoredLedgerRow = {
       id: 'l_' + crypto.randomUUID().slice(0, 12),
       name: name.slice(0, 100),
-      fiveH: settings.defFiveH,
-      fiveHType: 'blue',
-      bulig: settings.defBulig,
-      point5: settings.defPoint5,
-      halfSack: settings.defHalfSack,
-      oneSack: settings.defOneSack,
-      bal: 0,
+      fiveH: initial?.fiveH !== undefined ? clampNum(initial.fiveH, -1000000, 1000000) : settings.defFiveH,
+      fiveHType: initial?.fiveHType === 'red' ? 'red' : 'blue',
+      bulig: initial?.bulig !== undefined ? clampNum(initial.bulig, -1000000, 1000000) : settings.defBulig,
+      point5: initial?.point5 !== undefined ? clampNum(initial.point5, -1000000, 1000000) : settings.defPoint5,
+      halfSack: initial?.halfSack !== undefined ? clampNum(initial.halfSack, -1000000, 1000000) : settings.defHalfSack,
+      oneSack: initial?.oneSack !== undefined ? clampNum(initial.oneSack, -1000000, 1000000) : settings.defOneSack,
+      bal: initial?.bal !== undefined ? clampNum(initial.bal, -100000000, 100000000) : 0,
       updatedAt: new Date().toISOString(),
     };
     if (this.usePostgres && this.pool) {

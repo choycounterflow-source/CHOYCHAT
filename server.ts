@@ -1660,7 +1660,15 @@ app.post('/api/choy/ledger', requireAuth, requireAdmin, async (req: AuthedReques
     if (!name || name.length > 100) {
       return res.status(400).json({ error: 'Valid ledger row name is required' });
     }
-    const row = await store.createLedgerRow(name);
+    const row = await store.createLedgerRow(name, {
+      fiveH: req.body?.fiveH !== undefined ? clampNum(req.body.fiveH, -1000000, 1000000) : undefined,
+      fiveHType: req.body?.fiveHType === 'red' ? 'red' : 'blue',
+      bulig: req.body?.bulig !== undefined ? clampNum(req.body.bulig, -1000000, 1000000) : undefined,
+      point5: req.body?.point5 !== undefined ? clampNum(req.body.point5, -1000000, 1000000) : undefined,
+      halfSack: req.body?.halfSack !== undefined ? clampNum(req.body.halfSack, -1000000, 1000000) : undefined,
+      oneSack: req.body?.oneSack !== undefined ? clampNum(req.body.oneSack, -1000000, 1000000) : undefined,
+      bal: req.body?.bal !== undefined ? clampNum(req.body.bal, -100000000, 100000000) : undefined,
+    });
     broadcastSync('ledger');
     return res.status(201).json(row);
   } catch (err: unknown) {

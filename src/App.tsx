@@ -52,6 +52,9 @@ import {
   Clock,
   Menu,
   MoreVertical,
+  Package,
+  Layers,
+  Minus,
   MicOff,
   VideoOff,
   RefreshCw,
@@ -999,6 +1002,15 @@ export default function App() {
   const [ledgerRows, setLedgerRows] = useState<LedgerRow[]>([]);
   const [leaderboard, setLeaderboard] = useState<LeaderboardItem[]>([]);
   const [newLedgerName, setNewLedgerName] = useState('');
+  const [newLedger5H, setNewLedger5H] = useState(0);
+  const [newLedger5HType, setNewLedger5HType] = useState<'blue' | 'red'>('blue');
+  const [newLedgerBulig, setNewLedgerBulig] = useState(0);
+  const [newLedgerPoint5, setNewLedgerPoint5] = useState(0);
+  const [newLedgerHalfSack, setNewLedgerHalfSack] = useState(0);
+  const [newLedgerOneSack, setNewLedgerOneSack] = useState(0);
+  const [newLedgerBal, setNewLedgerBal] = useState(0);
+  const [ledgerSearchQuery, setLedgerSearchQuery] = useState('');
+  const [isAddInventoryExpanded, setIsAddInventoryExpanded] = useState(false);
 
   const [isChoyAIPopupOpen, setIsChoyAIPopupOpen] = useState(false);
   const [askChoyPos, setAskChoyPos] = useState<{ x: number; y: number } | null>(() => {
@@ -4449,10 +4461,27 @@ export default function App() {
     try {
       await apiFetch('/api/choy/ledger', {
         method: 'POST',
-        body: JSON.stringify({ name: newLedgerName.trim() })
+        body: JSON.stringify({
+          name: newLedgerName.trim(),
+          fiveH: newLedger5H,
+          fiveHType: newLedger5HType,
+          bulig: newLedgerBulig,
+          point5: newLedgerPoint5,
+          halfSack: newLedgerHalfSack,
+          oneSack: newLedgerOneSack,
+          bal: newLedgerBal,
+        })
       });
       setNewLedgerName('');
+      setNewLedger5H(0);
+      setNewLedger5HType('blue');
+      setNewLedgerBulig(0);
+      setNewLedgerPoint5(0);
+      setNewLedgerHalfSack(0);
+      setNewLedgerOneSack(0);
+      setNewLedgerBal(0);
       await fetchSyncedState();
+      showNotice('Added new inventory record!');
     } catch (err) {
       showNotice(err instanceof Error ? err.message : 'Failed to add row');
     }
@@ -4834,6 +4863,67 @@ export default function App() {
   const totalRed = ledgerRows
     .filter((r) => r.fiveHType === 'red')
     .reduce((sum, r) => sum + Math.abs(calculateRowTotal(r)), 0);
+
+  const inventoryMetrics = React.useMemo(() => {
+    let sum5H = 0;
+    let sum5HBlue = 0;
+    let sum5HRed = 0;
+    let sumBulig = 0;
+    let sumPoint5 = 0;
+    let sumHalfSack = 0;
+    let sumOneSack = 0;
+    let sumBal = 0;
+    let grandTotal = 0;
+
+    for (const r of ledgerRows) {
+      const q5H = Number(r.fiveH) || 0;
+      sum5H += q5H;
+      if (r.fiveHType === 'blue') {
+        sum5HBlue += q5H;
+      } else {
+        sum5HRed += q5H;
+      }
+      sumBulig += Number(r.bulig) || 0;
+      sumPoint5 += Number(r.point5) || 0;
+      sumHalfSack += Number(r.halfSack) || 0;
+      sumOneSack += Number(r.oneSack) || 0;
+      sumBal += Number(r.bal) || 0;
+      grandTotal += calculateRowTotal(r);
+    }
+
+    const totalUnits = sum5H + sumBulig + sumPoint5 + sumHalfSack + sumOneSack;
+    const value5H = sum5H * unitPrices.fiveH;
+    const valueBulig = sumBulig * unitPrices.bulig;
+    const valuePoint5 = sumPoint5 * unitPrices.point5;
+    const valueHalfSack = sumHalfSack * unitPrices.halfSack;
+    const valueOneSack = sumOneSack * unitPrices.oneSack;
+    const totalInventoryValue = value5H + valueBulig + valuePoint5 + valueHalfSack + valueOneSack;
+
+    return {
+      sum5H,
+      sum5HBlue,
+      sum5HRed,
+      sumBulig,
+      sumPoint5,
+      sumHalfSack,
+      sumOneSack,
+      sumBal,
+      totalUnits,
+      value5H,
+      valueBulig,
+      valuePoint5,
+      valueHalfSack,
+      valueOneSack,
+      totalInventoryValue,
+      grandTotal,
+    };
+  }, [ledgerRows, unitPrices]);
+
+  const filteredLedgerRows = React.useMemo(() => {
+    const q = ledgerSearchQuery.trim().toLowerCase();
+    if (!q) return ledgerRows;
+    return ledgerRows.filter((r) => r.name.toLowerCase().includes(q));
+  }, [ledgerRows, ledgerSearchQuery]);
 
   const topLeaderboard: LeaderboardItem[] =
     leaderboard.length > 0
@@ -8072,78 +8162,466 @@ export default function App() {
             </div>
           )}
 
-          {/* MILESTONE SPREADSHEET LEDGER (ADMIN ONLY) */}
+          {/* MILESTONE SPREADSHEET LEDGER & LIVE INVENTORY MONITOR (ADMIN ONLY) */}
           {activeTab === 'ledger' && isAdmin && (
             <div className="max-w-6xl mx-auto space-y-4">
-              <div className="flex flex-wrap justify-between items-center gap-2 bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 shadow">
+              {/* Header Bar */}
+              <div className="flex flex-wrap justify-between items-center gap-3 bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 shadow-sm">
                 <div>
-                  <h3 className="text-sm font-bold text-emerald-950 dark:text-white uppercase">Milestone Spreadsheet Ledger</h3>
-                  <p className="text-[10px] text-emerald-700 dark:text-emerald-300">
-                    Live quantities, automatic calculations & real-time cloud sync
+                  <div className="flex items-center gap-2">
+                    <Package className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                    <h3 className="text-sm font-black text-emerald-950 dark:text-white uppercase tracking-wider">
+                      Milestone Ledger &amp; Live Inventory Monitor
+                    </h3>
+                  </div>
+                  <p className="text-[11px] text-emerald-700 dark:text-emerald-300 mt-0.5">
+                    Live stock quantities, automatic price calculations &amp; real-time database sync
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleDownloadLedgerCSV}
-                  className="px-4 py-2 bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl flex items-center gap-1.5 shadow hover:bg-emerald-300"
-                >
-                  <Download className="w-4 h-4" /> Download CSV
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsAddInventoryExpanded((prev) => !prev)}
+                    className="px-3 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl flex items-center gap-1.5 shadow-xs transition"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>{isAddInventoryExpanded ? 'Hide Add Form' : 'Add Inventory Entry'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDownloadLedgerCSV}
+                    className="px-3.5 py-2 bg-emerald-100 hover:bg-emerald-200 dark:bg-emerald-800 dark:hover:bg-emerald-700 text-emerald-950 dark:text-emerald-100 font-bold text-xs rounded-xl flex items-center gap-1.5 border border-emerald-300 dark:border-emerald-600 transition"
+                  >
+                    <Download className="w-3.5 h-3.5" /> CSV
+                  </button>
+                </div>
               </div>
 
-              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 shadow space-y-3">
-                <h3 className="text-xs font-bold text-emerald-950 dark:text-white uppercase">Add Quantity Record</h3>
-                <form onSubmit={handleAddLedgerRow} className="flex gap-2">
+              {/* 6-CARD LIVE INVENTORY QUANTITY MONITOR */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between px-1">
+                  <div className="flex items-center gap-1.5">
+                    <Layers className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                    <span className="text-xs font-black uppercase tracking-wider text-emerald-900 dark:text-emerald-200">
+                      Live Stock Inventory Monitor
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300">
+                    Total: <span className="font-extrabold text-emerald-950 dark:text-white">{inventoryMetrics.totalUnits.toLocaleString()}</span> units / sacks
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+                  {/* 5H Stock Card */}
+                  <div className="p-3 rounded-2xl bg-white dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-700/60 shadow-xs flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-extrabold uppercase text-emerald-800 dark:text-emerald-300">
+                          5H Stock
+                        </span>
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300">
+                          ₱{unitPrices.fiveH}/pc
+                        </span>
+                      </div>
+                      <div className="text-xl font-black text-emerald-950 dark:text-white font-mono mt-1">
+                        {inventoryMetrics.sum5H.toLocaleString()} <span className="text-xs font-normal text-emerald-600 dark:text-emerald-400">pcs</span>
+                      </div>
+                    </div>
+                    <div className="mt-2 pt-2 border-t border-emerald-100 dark:border-emerald-800/60 text-[9px] text-emerald-700 dark:text-emerald-300 space-y-0.5">
+                      <div className="flex justify-between">
+                        <span className="text-blue-600 dark:text-blue-400 font-bold">Blue: {inventoryMetrics.sum5HBlue}</span>
+                        <span className="text-red-600 dark:text-red-400 font-bold">Red: {inventoryMetrics.sum5HRed}</span>
+                      </div>
+                      <div className="text-emerald-800 dark:text-emerald-200 font-semibold truncate">
+                        Val: ₱{inventoryMetrics.value5H.toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Bulig Stock Card */}
+                  <div className="p-3 rounded-2xl bg-white dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-700/60 shadow-xs flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-extrabold uppercase text-emerald-800 dark:text-emerald-300">
+                          Bulig
+                        </span>
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300">
+                          ₱{unitPrices.bulig}/pc
+                        </span>
+                      </div>
+                      <div className="text-xl font-black text-emerald-950 dark:text-white font-mono mt-1">
+                        {inventoryMetrics.sumBulig.toLocaleString()} <span className="text-xs font-normal text-emerald-600 dark:text-emerald-400">pcs</span>
+                      </div>
+                    </div>
+                    <div className="mt-2 pt-2 border-t border-emerald-100 dark:border-emerald-800/60 text-[9px] text-emerald-700 dark:text-emerald-300">
+                      <div className="text-emerald-800 dark:text-emerald-200 font-semibold truncate">
+                        Val: ₱{inventoryMetrics.valueBulig.toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Point 5 Stock Card */}
+                  <div className="p-3 rounded-2xl bg-white dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-700/60 shadow-xs flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-extrabold uppercase text-emerald-800 dark:text-emerald-300">
+                          Point 5
+                        </span>
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300">
+                          ₱{unitPrices.point5}/pc
+                        </span>
+                      </div>
+                      <div className="text-xl font-black text-emerald-950 dark:text-white font-mono mt-1">
+                        {inventoryMetrics.sumPoint5.toLocaleString()} <span className="text-xs font-normal text-emerald-600 dark:text-emerald-400">pcs</span>
+                      </div>
+                    </div>
+                    <div className="mt-2 pt-2 border-t border-emerald-100 dark:border-emerald-800/60 text-[9px] text-emerald-700 dark:text-emerald-300">
+                      <div className="text-emerald-800 dark:text-emerald-200 font-semibold truncate">
+                        Val: ₱{inventoryMetrics.valuePoint5.toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Half Sack Stock Card */}
+                  <div className="p-3 rounded-2xl bg-white dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-700/60 shadow-xs flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-extrabold uppercase text-emerald-800 dark:text-emerald-300">
+                          Half Sack
+                        </span>
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300">
+                          ₱{unitPrices.halfSack}/sk
+                        </span>
+                      </div>
+                      <div className="text-xl font-black text-emerald-950 dark:text-white font-mono mt-1">
+                        {inventoryMetrics.sumHalfSack.toLocaleString()} <span className="text-xs font-normal text-emerald-600 dark:text-emerald-400">sacks</span>
+                      </div>
+                    </div>
+                    <div className="mt-2 pt-2 border-t border-emerald-100 dark:border-emerald-800/60 text-[9px] text-emerald-700 dark:text-emerald-300">
+                      <div className="text-emerald-800 dark:text-emerald-200 font-semibold truncate">
+                        Val: ₱{inventoryMetrics.valueHalfSack.toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* One Sack Stock Card */}
+                  <div className="p-3 rounded-2xl bg-white dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-700/60 shadow-xs flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-extrabold uppercase text-emerald-800 dark:text-emerald-300">
+                          One Sack
+                        </span>
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300">
+                          ₱{unitPrices.oneSack}/sk
+                        </span>
+                      </div>
+                      <div className="text-xl font-black text-emerald-950 dark:text-white font-mono mt-1">
+                        {inventoryMetrics.sumOneSack.toLocaleString()} <span className="text-xs font-normal text-emerald-600 dark:text-emerald-400">sacks</span>
+                      </div>
+                    </div>
+                    <div className="mt-2 pt-2 border-t border-emerald-100 dark:border-emerald-800/60 text-[9px] text-emerald-700 dark:text-emerald-300">
+                      <div className="text-emerald-800 dark:text-emerald-200 font-semibold truncate">
+                        Val: ₱{inventoryMetrics.valueOneSack.toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Total Inventory Units Card */}
+                  <div className="p-3 rounded-2xl bg-gradient-to-br from-emerald-500/20 to-teal-500/20 dark:from-emerald-900/80 dark:to-teal-900/80 border-2 border-emerald-400 dark:border-emerald-500 shadow-xs flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-black uppercase text-emerald-900 dark:text-emerald-200">
+                          Total Units
+                        </span>
+                        <Package className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                      </div>
+                      <div className="text-xl font-black text-emerald-950 dark:text-white font-mono mt-1">
+                        {inventoryMetrics.totalUnits.toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="mt-2 pt-2 border-t border-emerald-300/60 dark:border-emerald-700/60 text-[9px] text-emerald-800 dark:text-emerald-200 font-bold truncate">
+                      Stock: ₱{inventoryMetrics.totalInventoryValue.toLocaleString()}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Stock Level Distribution Bar */}
+                {inventoryMetrics.totalUnits > 0 && (
+                  <div className="p-2.5 rounded-xl bg-white dark:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-800 text-[10px] space-y-1.5">
+                    <div className="flex justify-between text-emerald-800 dark:text-emerald-200 font-bold">
+                      <span>Stock Proportion Breakdown</span>
+                      <span>100% of Inventory Recorded</span>
+                    </div>
+                    <div className="h-3 w-full rounded-full bg-emerald-100 dark:bg-emerald-950 overflow-hidden flex shadow-inner">
+                      {inventoryMetrics.sum5H > 0 && (
+                        <div
+                          style={{ width: `${(inventoryMetrics.sum5H / inventoryMetrics.totalUnits) * 100}%` }}
+                          className="bg-blue-500 h-full"
+                          title={`5H: ${inventoryMetrics.sum5H} pcs (${Math.round((inventoryMetrics.sum5H / inventoryMetrics.totalUnits) * 100)}%)`}
+                        />
+                      )}
+                      {inventoryMetrics.sumBulig > 0 && (
+                        <div
+                          style={{ width: `${(inventoryMetrics.sumBulig / inventoryMetrics.totalUnits) * 100}%` }}
+                          className="bg-emerald-500 h-full"
+                          title={`Bulig: ${inventoryMetrics.sumBulig} pcs (${Math.round((inventoryMetrics.sumBulig / inventoryMetrics.totalUnits) * 100)}%)`}
+                        />
+                      )}
+                      {inventoryMetrics.sumPoint5 > 0 && (
+                        <div
+                          style={{ width: `${(inventoryMetrics.sumPoint5 / inventoryMetrics.totalUnits) * 100}%` }}
+                          className="bg-purple-500 h-full"
+                          title={`Point 5: ${inventoryMetrics.sumPoint5} pcs (${Math.round((inventoryMetrics.sumPoint5 / inventoryMetrics.totalUnits) * 100)}%)`}
+                        />
+                      )}
+                      {inventoryMetrics.sumHalfSack > 0 && (
+                        <div
+                          style={{ width: `${(inventoryMetrics.sumHalfSack / inventoryMetrics.totalUnits) * 100}%` }}
+                          className="bg-amber-500 h-full"
+                          title={`Half Sack: ${inventoryMetrics.sumHalfSack} sacks (${Math.round((inventoryMetrics.sumHalfSack / inventoryMetrics.totalUnits) * 100)}%)`}
+                        />
+                      )}
+                      {inventoryMetrics.sumOneSack > 0 && (
+                        <div
+                          style={{ width: `${(inventoryMetrics.sumOneSack / inventoryMetrics.totalUnits) * 100}%` }}
+                          className="bg-cyan-500 h-full"
+                          title={`One Sack: ${inventoryMetrics.sumOneSack} sacks (${Math.round((inventoryMetrics.sumOneSack / inventoryMetrics.totalUnits) * 100)}%)`}
+                        />
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-3 text-[9px] font-semibold text-emerald-700 dark:text-emerald-300 pt-0.5">
+                      <span className="inline-flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-blue-500"></span> 5H ({inventoryMetrics.sum5H})
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500"></span> Bulig ({inventoryMetrics.sumBulig})
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-purple-500"></span> Point 5 ({inventoryMetrics.sumPoint5})
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-amber-500"></span> Half Sack ({inventoryMetrics.sumHalfSack})
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-cyan-500"></span> One Sack ({inventoryMetrics.sumOneSack})
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* DEDICATED ADD INVENTORY ENTRY & QUANTITY FORM */}
+              {isAddInventoryExpanded && (
+                <div className="bg-white dark:bg-emerald-900/60 border-2 border-emerald-400 dark:border-emerald-600 rounded-2xl p-4 shadow-md space-y-3">
+                  <div className="flex items-center justify-between border-b border-emerald-200 dark:border-emerald-800 pb-2">
+                    <div className="flex items-center gap-2">
+                      <Plus className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                      <h3 className="text-xs font-black text-emerald-950 dark:text-white uppercase tracking-wider">
+                        Add New Inventory &amp; Quantity Record
+                      </h3>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsAddInventoryExpanded(false)}
+                      className="text-xs font-bold text-emerald-700 dark:text-emerald-300 hover:text-emerald-950"
+                    >
+                      ✕ Close
+                    </button>
+                  </div>
+
+                  <form onSubmit={handleAddLedgerRow} className="space-y-3">
+                    <div>
+                      <label className="block text-[11px] font-bold text-emerald-900 dark:text-emerald-200 mb-1">
+                        Customer / Member / Account Name *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="e.g. Maria Santos, Batch 1, Store A..."
+                        value={newLedgerName}
+                        onChange={(e) => setNewLedgerName(e.target.value)}
+                        className="w-full p-2.5 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white font-medium"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-xs">
+                      {/* 5H Input */}
+                      <div className="p-2 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800">
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="text-[10px] font-bold text-emerald-900 dark:text-emerald-200">5H Qty</label>
+                          <button
+                            type="button"
+                            onClick={() => setNewLedger5HType((prev) => (prev === 'blue' ? 'red' : 'blue'))}
+                            className={`w-4 h-4 rounded border text-[9px] font-bold ${
+                              newLedger5HType === 'blue' ? 'bg-blue-500 border-blue-300' : 'bg-red-500 border-red-300'
+                            }`}
+                            title={`Click to toggle Blue/Red (Currently: ${newLedger5HType})`}
+                          />
+                        </div>
+                        <input
+                          type="number"
+                          min={0}
+                          value={newLedger5H}
+                          onChange={(e) => setNewLedger5H(Number(e.target.value) || 0)}
+                          className="w-full p-1.5 bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-700 rounded-lg text-center font-bold text-emerald-950 dark:text-white"
+                        />
+                      </div>
+
+                      {/* Bulig Input */}
+                      <div className="p-2 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800">
+                        <label className="block text-[10px] font-bold text-emerald-900 dark:text-emerald-200 mb-1">Bulig Qty</label>
+                        <input
+                          type="number"
+                          min={0}
+                          value={newLedgerBulig}
+                          onChange={(e) => setNewLedgerBulig(Number(e.target.value) || 0)}
+                          className="w-full p-1.5 bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-700 rounded-lg text-center font-bold text-emerald-950 dark:text-white"
+                        />
+                      </div>
+
+                      {/* Point 5 Input */}
+                      <div className="p-2 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800">
+                        <label className="block text-[10px] font-bold text-emerald-900 dark:text-emerald-200 mb-1">Point 5 Qty</label>
+                        <input
+                          type="number"
+                          min={0}
+                          value={newLedgerPoint5}
+                          onChange={(e) => setNewLedgerPoint5(Number(e.target.value) || 0)}
+                          className="w-full p-1.5 bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-700 rounded-lg text-center font-bold text-emerald-950 dark:text-white"
+                        />
+                      </div>
+
+                      {/* Half Sack Input */}
+                      <div className="p-2 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800">
+                        <label className="block text-[10px] font-bold text-emerald-900 dark:text-emerald-200 mb-1">Half Sack</label>
+                        <input
+                          type="number"
+                          min={0}
+                          value={newLedgerHalfSack}
+                          onChange={(e) => setNewLedgerHalfSack(Number(e.target.value) || 0)}
+                          className="w-full p-1.5 bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-700 rounded-lg text-center font-bold text-emerald-950 dark:text-white"
+                        />
+                      </div>
+
+                      {/* One Sack Input */}
+                      <div className="p-2 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800">
+                        <label className="block text-[10px] font-bold text-emerald-900 dark:text-emerald-200 mb-1">One Sack</label>
+                        <input
+                          type="number"
+                          min={0}
+                          value={newLedgerOneSack}
+                          onChange={(e) => setNewLedgerOneSack(Number(e.target.value) || 0)}
+                          className="w-full p-1.5 bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-700 rounded-lg text-center font-bold text-emerald-950 dark:text-white"
+                        />
+                      </div>
+
+                      {/* Balance Input */}
+                      <div className="p-2 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800">
+                        <label className="block text-[10px] font-bold text-emerald-900 dark:text-emerald-200 mb-1">Bal. (₱)</label>
+                        <input
+                          type="number"
+                          value={newLedgerBal}
+                          onChange={(e) => setNewLedgerBal(Number(e.target.value) || 0)}
+                          className="w-full p-1.5 bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-700 rounded-lg text-center font-bold text-emerald-950 dark:text-white"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Live Preview & Submit */}
+                    <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl bg-emerald-100/70 dark:bg-emerald-950/90 border border-emerald-300 dark:border-emerald-700">
+                      <div className="text-xs">
+                        <span className="text-emerald-800 dark:text-emerald-300 font-semibold">Estimated Record Total: </span>
+                        <span className="font-black text-emerald-950 dark:text-white font-mono text-sm">
+                          ₱{(
+                            newLedger5H * unitPrices.fiveH +
+                            newLedgerBulig * unitPrices.bulig +
+                            newLedgerPoint5 * unitPrices.point5 +
+                            newLedgerHalfSack * unitPrices.halfSack +
+                            newLedgerOneSack * unitPrices.oneSack +
+                            newLedgerBal
+                          ).toLocaleString()}
+                        </span>
+                      </div>
+                      <button
+                        type="submit"
+                        className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs rounded-xl shadow-xs transition"
+                      >
+                        Save Inventory Record
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              )}
+
+              {/* SEARCH & RECORDS STATUS BAR */}
+              <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+                <div className="relative flex-1 min-w-[200px] max-w-sm">
+                  <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-emerald-600 dark:text-emerald-400" />
                   <input
                     type="text"
-                    placeholder="Name..."
-                    value={newLedgerName}
-                    onChange={(e) => setNewLedgerName(e.target.value)}
-                    className="p-2 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white flex-1"
+                    placeholder="Search accounts / names in ledger..."
+                    value={ledgerSearchQuery}
+                    onChange={(e) => setLedgerSearchQuery(e.target.value)}
+                    className="w-full pl-8 pr-3 py-1.5 text-xs bg-white dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-700 rounded-xl text-emerald-950 dark:text-white"
                   />
-                  <button
-                    type="submit"
-                    className="px-4 py-2 bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl"
-                  >
-                    Add Name Row
-                  </button>
-                </form>
+                </div>
+                <div className="text-[11px] font-bold text-emerald-800 dark:text-emerald-300">
+                  Showing <span className="text-emerald-950 dark:text-white font-black">{filteredLedgerRows.length}</span> of {ledgerRows.length} Records
+                </div>
               </div>
 
-              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl overflow-hidden shadow">
-                <div className="max-h-[60vh] overflow-auto">
+              {/* SPREADSHEET TABLE WITH STICKY TOTALS FOOTER */}
+              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl overflow-hidden shadow-sm">
+                <div className="max-h-[65vh] overflow-auto">
                   <table className="w-full text-left border-collapse text-xs whitespace-nowrap">
-                    <thead className="bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 sticky top-0 z-10 text-[10px] uppercase">
+                    <thead className="bg-emerald-50 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 sticky top-0 z-20 text-[10px] uppercase font-bold shadow-xs">
                       <tr>
-                        <th className="p-3 sticky left-0 bg-emerald-50 dark:bg-emerald-950 z-20">Name</th>
-                        <th className="p-3">5H</th>
-                        <th className="p-3">Bulig</th>
-                        <th className="p-3">Point 5</th>
-                        <th className="p-3">Half Sack</th>
-                        <th className="p-3">One Sack</th>
-                        <th className="p-3">Bal.</th>
-                        <th className="p-3 text-right">Total</th>
+                        <th className="p-3 sticky left-0 bg-emerald-50 dark:bg-emerald-950 z-30">Account / Name</th>
+                        <th className="p-3">5H (₱{unitPrices.fiveH})</th>
+                        <th className="p-3">Bulig (₱{unitPrices.bulig})</th>
+                        <th className="p-3">Point 5 (₱{unitPrices.point5})</th>
+                        <th className="p-3">Half Sack (₱{unitPrices.halfSack})</th>
+                        <th className="p-3">One Sack (₱{unitPrices.oneSack})</th>
+                        <th className="p-3">Bal. (₱)</th>
+                        <th className="p-3 text-right">Row Total</th>
                         <th className="p-3 text-center">Action</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-emerald-800 font-mono">
-                      {ledgerRows.map((row) => {
+                    <tbody className="divide-y divide-emerald-200 dark:divide-emerald-800 font-mono">
+                      {filteredLedgerRows.map((row) => {
                         const total = calculateRowTotal(row);
                         return (
-                          <tr key={row.id} className="hover:bg-emerald-50 dark:hover:bg-emerald-800/40">
-                            <td className="p-3 sticky left-0 bg-emerald-100/90 dark:bg-emerald-900 font-bold text-emerald-950 dark:text-white font-sans max-w-[120px] truncate">
+                          <tr key={row.id} className="hover:bg-emerald-50/80 dark:hover:bg-emerald-800/40 transition">
+                            <td className="p-3 sticky left-0 bg-white dark:bg-emerald-900/90 font-bold text-emerald-950 dark:text-white font-sans max-w-[140px] truncate shadow-xs">
                               {row.name}
                             </td>
+                            {/* 5H Column */}
                             <td className="p-3">
-                              <div className="flex items-center gap-1.5">
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateLedgerField(row, { fiveH: Math.max(0, row.fiveH - 1) })}
+                                  className="w-5 h-5 rounded bg-emerald-100 dark:bg-emerald-950 hover:bg-emerald-200 flex items-center justify-center text-[10px] font-bold text-emerald-800 dark:text-emerald-200 transition"
+                                  title="Minus 1"
+                                >
+                                  -
+                                </button>
                                 <input
                                   type="number"
                                   value={row.fiveH}
-                                  onChange={(e) => handleUpdateLedgerField(row, { fiveH: Number(e.target.value) })}
+                                  onChange={(e) => handleUpdateLedgerField(row, { fiveH: Number(e.target.value) || 0 })}
                                   className={`w-12 p-1 bg-white dark:bg-emerald-950 border-2 rounded text-center text-emerald-950 dark:text-white font-bold ${
                                     row.fiveHType === 'blue' ? 'border-blue-500' : 'border-red-500'
                                   }`}
                                 />
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateLedgerField(row, { fiveH: row.fiveH + 1 })}
+                                  className="w-5 h-5 rounded bg-emerald-100 dark:bg-emerald-950 hover:bg-emerald-200 flex items-center justify-center text-[10px] font-bold text-emerald-800 dark:text-emerald-200 transition"
+                                  title="Add 1"
+                                >
+                                  +
+                                </button>
                                 <button
                                   type="button"
                                   onClick={() =>
@@ -8152,60 +8630,135 @@ export default function App() {
                                     })
                                   }
                                   aria-label="Toggle color"
-                                  className={`w-6 h-6 rounded-lg border-2 shadow-md transition-transform active:scale-95 ${
+                                  className={`w-5 h-5 rounded-md border shadow-xs transition-transform active:scale-95 ${
                                     row.fiveHType === 'blue'
                                       ? 'bg-blue-500 border-blue-200 shadow-blue-500/40'
                                       : 'bg-red-500 border-red-200 shadow-red-500/40'
                                   }`}
+                                  title={`Toggle Color (Currently: ${row.fiveHType})`}
                                 />
                               </div>
                             </td>
+                            {/* Bulig Column */}
                             <td className="p-3">
-                              <input
-                                type="number"
-                                value={row.bulig}
-                                onChange={(e) => handleUpdateLedgerField(row, { bulig: Number(e.target.value) })}
-                                className="w-12 p-1 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
-                              />
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateLedgerField(row, { bulig: Math.max(0, row.bulig - 1) })}
+                                  className="w-5 h-5 rounded bg-emerald-100 dark:bg-emerald-950 hover:bg-emerald-200 flex items-center justify-center text-[10px] font-bold text-emerald-800 dark:text-emerald-200 transition"
+                                >
+                                  -
+                                </button>
+                                <input
+                                  type="number"
+                                  value={row.bulig}
+                                  onChange={(e) => handleUpdateLedgerField(row, { bulig: Number(e.target.value) || 0 })}
+                                  className="w-12 p-1 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateLedgerField(row, { bulig: row.bulig + 1 })}
+                                  className="w-5 h-5 rounded bg-emerald-100 dark:bg-emerald-950 hover:bg-emerald-200 flex items-center justify-center text-[10px] font-bold text-emerald-800 dark:text-emerald-200 transition"
+                                >
+                                  +
+                                </button>
+                              </div>
                             </td>
+                            {/* Point 5 Column */}
                             <td className="p-3">
-                              <input
-                                type="number"
-                                value={row.point5}
-                                onChange={(e) => handleUpdateLedgerField(row, { point5: Number(e.target.value) })}
-                                className="w-12 p-1 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
-                              />
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateLedgerField(row, { point5: Math.max(0, row.point5 - 1) })}
+                                  className="w-5 h-5 rounded bg-emerald-100 dark:bg-emerald-950 hover:bg-emerald-200 flex items-center justify-center text-[10px] font-bold text-emerald-800 dark:text-emerald-200 transition"
+                                >
+                                  -
+                                </button>
+                                <input
+                                  type="number"
+                                  value={row.point5}
+                                  onChange={(e) => handleUpdateLedgerField(row, { point5: Number(e.target.value) || 0 })}
+                                  className="w-12 p-1 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateLedgerField(row, { point5: row.point5 + 1 })}
+                                  className="w-5 h-5 rounded bg-emerald-100 dark:bg-emerald-950 hover:bg-emerald-200 flex items-center justify-center text-[10px] font-bold text-emerald-800 dark:text-emerald-200 transition"
+                                >
+                                  +
+                                </button>
+                              </div>
                             </td>
+                            {/* Half Sack Column */}
                             <td className="p-3">
-                              <input
-                                type="number"
-                                value={row.halfSack}
-                                onChange={(e) => handleUpdateLedgerField(row, { halfSack: Number(e.target.value) })}
-                                className="w-12 p-1 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
-                              />
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateLedgerField(row, { halfSack: Math.max(0, row.halfSack - 1) })}
+                                  className="w-5 h-5 rounded bg-emerald-100 dark:bg-emerald-950 hover:bg-emerald-200 flex items-center justify-center text-[10px] font-bold text-emerald-800 dark:text-emerald-200 transition"
+                                >
+                                  -
+                                </button>
+                                <input
+                                  type="number"
+                                  value={row.halfSack}
+                                  onChange={(e) => handleUpdateLedgerField(row, { halfSack: Number(e.target.value) || 0 })}
+                                  className="w-12 p-1 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateLedgerField(row, { halfSack: row.halfSack + 1 })}
+                                  className="w-5 h-5 rounded bg-emerald-100 dark:bg-emerald-950 hover:bg-emerald-200 flex items-center justify-center text-[10px] font-bold text-emerald-800 dark:text-emerald-200 transition"
+                                >
+                                  +
+                                </button>
+                              </div>
                             </td>
+                            {/* One Sack Column */}
                             <td className="p-3">
-                              <input
-                                type="number"
-                                value={row.oneSack}
-                                onChange={(e) => handleUpdateLedgerField(row, { oneSack: Number(e.target.value) })}
-                                className="w-12 p-1 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
-                              />
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateLedgerField(row, { oneSack: Math.max(0, row.oneSack - 1) })}
+                                  className="w-5 h-5 rounded bg-emerald-100 dark:bg-emerald-950 hover:bg-emerald-200 flex items-center justify-center text-[10px] font-bold text-emerald-800 dark:text-emerald-200 transition"
+                                >
+                                  -
+                                </button>
+                                <input
+                                  type="number"
+                                  value={row.oneSack}
+                                  onChange={(e) => handleUpdateLedgerField(row, { oneSack: Number(e.target.value) || 0 })}
+                                  className="w-12 p-1 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateLedgerField(row, { oneSack: row.oneSack + 1 })}
+                                  className="w-5 h-5 rounded bg-emerald-100 dark:bg-emerald-950 hover:bg-emerald-200 flex items-center justify-center text-[10px] font-bold text-emerald-800 dark:text-emerald-200 transition"
+                                >
+                                  +
+                                </button>
+                              </div>
                             </td>
+                            {/* Bal Column */}
                             <td className="p-3">
                               <input
                                 type="number"
                                 value={row.bal}
-                                onChange={(e) => handleUpdateLedgerField(row, { bal: Number(e.target.value) })}
-                                className="w-16 p-1 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
+                                onChange={(e) => handleUpdateLedgerField(row, { bal: Number(e.target.value) || 0 })}
+                                className="w-16 p-1 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white font-bold"
                               />
                             </td>
-                            <td className="p-3 text-right font-bold text-emerald-700 dark:text-emerald-300">₱{total}</td>
+                            {/* Total Column */}
+                            <td className="p-3 text-right font-black text-emerald-800 dark:text-emerald-200 font-mono">
+                              ₱{total.toLocaleString()}
+                            </td>
+                            {/* Action */}
                             <td className="p-3 text-center">
                               <button
                                 type="button"
                                 onClick={() => handleDeleteLedgerRow(row.id)}
-                                className="text-red-700 dark:text-red-300 hover:text-red-100"
+                                className="p-1 rounded-lg text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/60 transition"
+                                title="Delete row"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
@@ -8214,30 +8767,96 @@ export default function App() {
                         );
                       })}
                     </tbody>
+                    {/* STICKY TOTALS FOOTER WITH INVENTORY QUANTITY SUMMARIES */}
+                    <tfoot className="bg-emerald-100/90 dark:bg-emerald-950 text-emerald-950 dark:text-white font-bold border-t-2 border-emerald-400 dark:border-emerald-600 sticky bottom-0 z-20 shadow-md">
+                      <tr>
+                        <td className="p-3 sticky left-0 bg-emerald-100 dark:bg-emerald-950 font-black text-emerald-900 dark:text-emerald-100 z-30">
+                          TOTAL INVENTORY
+                        </td>
+                        <td className="p-3 font-mono">
+                          <span className="font-black text-emerald-950 dark:text-white">{inventoryMetrics.sum5H.toLocaleString()}</span> pcs
+                          <div className="text-[9px] text-emerald-700 dark:text-emerald-300 font-sans">
+                            ₱{inventoryMetrics.value5H.toLocaleString()}
+                          </div>
+                        </td>
+                        <td className="p-3 font-mono">
+                          <span className="font-black text-emerald-950 dark:text-white">{inventoryMetrics.sumBulig.toLocaleString()}</span> pcs
+                          <div className="text-[9px] text-emerald-700 dark:text-emerald-300 font-sans">
+                            ₱{inventoryMetrics.valueBulig.toLocaleString()}
+                          </div>
+                        </td>
+                        <td className="p-3 font-mono">
+                          <span className="font-black text-emerald-950 dark:text-white">{inventoryMetrics.sumPoint5.toLocaleString()}</span> pcs
+                          <div className="text-[9px] text-emerald-700 dark:text-emerald-300 font-sans">
+                            ₱{inventoryMetrics.valuePoint5.toLocaleString()}
+                          </div>
+                        </td>
+                        <td className="p-3 font-mono">
+                          <span className="font-black text-emerald-950 dark:text-white">{inventoryMetrics.sumHalfSack.toLocaleString()}</span> sk
+                          <div className="text-[9px] text-emerald-700 dark:text-emerald-300 font-sans">
+                            ₱{inventoryMetrics.valueHalfSack.toLocaleString()}
+                          </div>
+                        </td>
+                        <td className="p-3 font-mono">
+                          <span className="font-black text-emerald-950 dark:text-white">{inventoryMetrics.sumOneSack.toLocaleString()}</span> sk
+                          <div className="text-[9px] text-emerald-700 dark:text-emerald-300 font-sans">
+                            ₱{inventoryMetrics.valueOneSack.toLocaleString()}
+                          </div>
+                        </td>
+                        <td className="p-3 font-mono font-black">
+                          ₱{inventoryMetrics.sumBal.toLocaleString()}
+                        </td>
+                        <td className="p-3 text-right font-black font-mono text-sm text-emerald-900 dark:text-emerald-100">
+                          ₱{inventoryMetrics.grandTotal.toLocaleString()}
+                        </td>
+                        <td className="p-3 text-center text-[10px] text-emerald-700 dark:text-emerald-300">
+                          <Package className="w-3.5 h-3.5 mx-auto" />
+                        </td>
+                      </tr>
+                    </tfoot>
                   </table>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="p-4 rounded-2xl bg-blue-50 dark:bg-blue-600/25 border-2 border-blue-500 shadow-lg shadow-blue-900/10 dark:shadow-blue-950/50 flex items-center justify-between">
+              {/* FINANCIAL BREAKDOWN SUMMARY CARDS */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="p-4 rounded-2xl bg-blue-50 dark:bg-blue-600/25 border-2 border-blue-500 shadow-sm flex items-center justify-between">
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
-                      <span className="w-4 h-4 rounded-md bg-blue-500 border border-blue-200 inline-block shadow"></span>
-                      <span className="text-[10px] font-bold text-blue-700 dark:text-blue-200 uppercase">Total</span>
+                      <span className="w-3.5 h-3.5 rounded bg-blue-500 border border-blue-200 inline-block shadow-xs"></span>
+                      <span className="text-[10px] font-black text-blue-700 dark:text-blue-200 uppercase">Blue Group Total</span>
                     </div>
-                    <div className="text-2xl font-black text-emerald-950 dark:text-white font-mono">₱{totalBlue.toLocaleString()}</div>
+                    <div className="text-xl font-black text-emerald-950 dark:text-white font-mono">
+                      ₱{totalBlue.toLocaleString()}
+                    </div>
                   </div>
-                  <div className="w-2.5 h-12 rounded-full bg-blue-500"></div>
+                  <div className="w-2 h-10 rounded-full bg-blue-500"></div>
                 </div>
-                <div className="p-4 rounded-2xl bg-red-50 dark:bg-red-600/25 border-2 border-red-500 shadow-lg shadow-red-900/10 dark:shadow-red-950/50 flex items-center justify-between">
+
+                <div className="p-4 rounded-2xl bg-red-50 dark:bg-red-600/25 border-2 border-red-500 shadow-sm flex items-center justify-between">
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
-                      <span className="w-4 h-4 rounded-md bg-red-500 border border-red-200 inline-block shadow"></span>
-                      <span className="text-[10px] font-bold text-red-700 dark:text-red-200 uppercase">Total</span>
+                      <span className="w-3.5 h-3.5 rounded bg-red-500 border border-red-200 inline-block shadow-xs"></span>
+                      <span className="text-[10px] font-black text-red-700 dark:text-red-200 uppercase">Red Group Total</span>
                     </div>
-                    <div className="text-2xl font-black text-emerald-950 dark:text-white font-mono">₱{totalRed.toLocaleString()}</div>
+                    <div className="text-xl font-black text-emerald-950 dark:text-white font-mono">
+                      ₱{totalRed.toLocaleString()}
+                    </div>
                   </div>
-                  <div className="w-2.5 h-12 rounded-full bg-red-500"></div>
+                  <div className="w-2 h-10 rounded-full bg-red-500"></div>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-900/40 border-2 border-emerald-500 shadow-sm flex items-center justify-between">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <Package className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                      <span className="text-[10px] font-black text-emerald-800 dark:text-emerald-200 uppercase">Grand Net Total</span>
+                    </div>
+                    <div className="text-xl font-black text-emerald-950 dark:text-white font-mono">
+                      ₱{inventoryMetrics.grandTotal.toLocaleString()}
+                    </div>
+                  </div>
+                  <div className="w-2 h-10 rounded-full bg-emerald-500"></div>
                 </div>
               </div>
             </div>
