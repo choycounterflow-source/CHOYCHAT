@@ -10605,6 +10605,84 @@ export default function App() {
                   )}
                 </div>
 
+                {/* Live GPS Location Activation */}
+                <div className="p-3 rounded-xl bg-emerald-50/80 dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-700 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <MapPin
+                        className={`w-4 h-4 shrink-0 ${
+                          appPermissions.location === 'granted'
+                            ? 'text-emerald-600 dark:text-emerald-400'
+                            : 'text-amber-600 dark:text-amber-400'
+                        }`}
+                      />
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-emerald-950 dark:text-white truncate">
+                          GPS Location
+                        </div>
+                        <div className="text-[10px] text-emerald-700 dark:text-emerald-300">
+                          {appPermissions.location === 'granted'
+                            ? 'Active — Live GPS location is ON'
+                            : appPermissions.location === 'denied'
+                            ? 'Blocked — Allow Location in browser site settings'
+                            : 'Turn ON to allow live GPS location in app'}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isRequestingPermissions}
+                    onClick={() => {
+                      if (typeof navigator === 'undefined' || !('geolocation' in navigator)) {
+                        showNotice('GPS is not supported on this browser/device.');
+                        return;
+                      }
+                      navigator.geolocation.getCurrentPosition(
+                        (pos) => {
+                          const coords = {
+                            lat: pos.coords.latitude,
+                            lng: pos.coords.longitude,
+                            accuracy: Math.round(pos.coords.accuracy || 0),
+                            speed: pos.coords.speed,
+                            heading: pos.coords.heading,
+                          };
+                          initialGpsRef.current = coords;
+                          setAppPermissions((prev) => ({ ...prev, location: 'granted' }));
+                          if (authToken) {
+                            fetch('/api/choy/gps/ping', {
+                              method: 'POST',
+                              credentials: 'same-origin',
+                              headers: {
+                                'Content-Type': 'application/json',
+                                Authorization: `Bearer ${authToken}`,
+                              },
+                              body: JSON.stringify(coords),
+                            }).catch(() => {});
+                          }
+                          showNotice('GPS Location ON na ug na-sync na!');
+                        },
+                        (err) => {
+                          if (err.code === err.PERMISSION_DENIED) {
+                            setAppPermissions((prev) => ({ ...prev, location: 'denied' }));
+                            showNotice('Naka-block ang Location sa browser. I-allow sa padlock icon sa address bar ug i-on ang GPS sa cellphone.');
+                          } else {
+                            showNotice('I-on ang Location/GPS sa imong cellphone settings unya sulayi pag-usab.');
+                          }
+                        },
+                        { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+                      );
+                    }}
+                    className={`w-full py-2 rounded-lg text-xs font-bold transition disabled:opacity-50 ${
+                      appPermissions.location === 'granted'
+                        ? 'bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800'
+                        : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-xs'
+                    }`}
+                  >
+                    {appPermissions.location === 'granted' ? 'Refresh Live GPS Location' : 'Turn On GPS Location'}
+                  </button>
+                </div>
+
                 {/* Test Video Call Ringtone */}
                 <button
                   type="button"
