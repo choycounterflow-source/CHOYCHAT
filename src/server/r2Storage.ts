@@ -41,6 +41,10 @@ const R2_ALLOWED_MIME_MAP: Record<string, MimeSpec> = {
   'video/mp4': { ext: '.mp4', category: 'video', maxBytes: 60 * 1024 * 1024 },
   'video/webm': { ext: '.webm', category: 'video', maxBytes: 60 * 1024 * 1024 },
   'video/quicktime': { ext: '.mov', category: 'video', maxBytes: 60 * 1024 * 1024 },
+  'video/x-m4v': { ext: '.mp4', category: 'video', maxBytes: 60 * 1024 * 1024 },
+  'video/3gpp': { ext: '.3gp', category: 'video', maxBytes: 60 * 1024 * 1024 },
+  'video/x-matroska': { ext: '.mkv', category: 'video', maxBytes: 60 * 1024 * 1024 },
+  'video/ogg': { ext: '.ogv', category: 'video', maxBytes: 60 * 1024 * 1024 },
   'audio/webm': { ext: '.webm', category: 'audio', maxBytes: 20 * 1024 * 1024 },
   'audio/ogg': { ext: '.ogg', category: 'audio', maxBytes: 20 * 1024 * 1024 },
   'audio/mp4': { ext: '.m4a', category: 'audio', maxBytes: 20 * 1024 * 1024 },
@@ -284,7 +288,12 @@ export async function uploadToR2Storage(
   const objectPath = `${folder}/${ym}/${crypto.randomUUID()}${spec.ext}`;
 
   const canonicalUri = `/${bucket}/${objectPath}`;
-  const contentType = mimeType === 'image/jpg' ? 'image/jpeg' : mimeType;
+  const contentType =
+    mimeType === 'image/jpg'
+      ? 'image/jpeg'
+      : mimeType === 'video/x-m4v'
+      ? 'video/mp4'
+      : mimeType;
   const cacheControl = 'public, max-age=31536000, immutable';
 
   const signed = signR2Request({
@@ -320,6 +329,110 @@ export async function uploadToR2Storage(
     mimeType: contentType,
     sizeBytes: buffer.length,
   };
+}
+
+const SAFE_MEDIA_STREAM_PATH_REGEX =
+  /^(posts|messages|voice|avatars)\/\d{4}-\d{2}\/[a-zA-Z0-9_-]+\.(mp4|webm|mov|m4v|3gp|mkv|ogv|jpg|jpeg|png|webp|gif|mp3|ogg|m4a|wav|aac)$/i;
+
+export function extractR2MediaStreamPath(rawUrl: string | undefined): string | null {
+  if (!rawUrl || typeof rawUrl !== 'string') return null;
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    const host = parsed.hostname.toLowerCase();
+    const isR2Host = host.endsWith('.r2.dev') || host.endsWith('.r2.cloudflarestorage.com');
+    const { origin: publicOrigin } = getValidatedR2PublicBaseUrl();
+    const matchesPublicOrigin = Boolean(publicOrigin && parsed.origin.toLowerCase() === publicOrigin.toLowerCase());
+    if (!isR2Host && !matchesPublicOrigin) return null;
+
+    let cleanPath = parsed.pathname.replace(/^\/+/, '');
+    const bucket = getSanitizedR2Bucket();
+    if (cleanPath.toLowerCase().startsWith(`${bucket}/`)) {
+      cleanPath = cleanPath.slice(bucket.length + 1);
+    }
+    if (SAFE_MEDIA_STREAM_PATH_REGEX.test(cleanPath)) {
+      return cleanPath;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export function rewriteBrokenR2MediaUrl(rawUrl: string | undefined): string | undefined {
+  if (!rawUrl || typeof rawUrl !== 'string') return rawUrl;
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return undefined;
+  try {
+    const parsed = new URL(trimmed);
+    // Private S3 API URLs (*.r2.cloudflarestorage.com) cannot be played directly by browsers
+    if (parsed.hostname.toLowerCase().endsWith('.r2.cloudflarestorage.com')) {
+      const objectPath = extractR2MediaStreamPath(trimmed);
+      if (objectPath) {
+        return `/api/media/r2/${objectPath}`;
+      }
+    }
+  } catch {
+    // non-URL (e.g. data: or /assets/...)
+  }
+  return trimmed;
+}
+
+export function inferMediaContentTypeFromPath(objectPath: string): string {
+  const lower = objectPath.toLowerCase();
+  if (lower.endsWith('.mp4') || lower.endsWith('.m4v')) return 'video/mp4';
+  if (lower.endsWith('.webm')) return 'video/webm';
+  if (lower.endsWith('.mov')) return 'video/mp4';
+  if (lower.endsWith('.3gp')) return 'video/3gpp';
+  if (lower.endsWith('.mkv')) return 'video/x-matroska';
+  if (lower.endsWith('.ogv')) return 'video/ogg';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  if (lower.endsWith('.mp3')) return 'audio/mpeg';
+  if (lower.endsWith('.ogg')) return 'audio/ogg';
+  if (lower.endsWith('.m4a')) return 'audio/mp4';
+  if (lower.endsWith('.wav')) return 'audio/wav';
+  if (lower.endsWith('.aac')) return 'audio/aac';
+  return 'application/octet-stream';
+}
+
+export async function fetchR2MediaStream(
+  objectPath: string,
+  rangeHeader?: string
+): Promise<globalThis.Response | null> {
+  if (!SAFE_MEDIA_STREAM_PATH_REGEX.test(objectPath)) {
+    return null;
+  }
+  const accountId = getValidatedR2AccountId();
+  const accessKeyId = getR2AccessKeyId();
+  const secretAccessKey = getR2SecretAccessKey();
+  const bucket = getSanitizedR2Bucket();
+  if (!accountId || !accessKeyId || !secretAccessKey) {
+    return null;
+  }
+
+  const canonicalUri = `/${bucket}/${objectPath}`;
+  const extraHeaders: Record<string, string> = {};
+  if (rangeHeader && /^bytes=\d*-\d*(,\s*\d*-\d*)*$/i.test(rangeHeader.trim())) {
+    extraHeaders.Range = rangeHeader.trim();
+  }
+
+  const signed = signR2Request({
+    method: 'GET',
+    accountId,
+    accessKeyId,
+    secretAccessKey,
+    canonicalUri,
+    extraHeaders,
+  });
+
+  return fetch(signed.url, {
+    method: 'GET',
+    headers: signed.headers,
+  });
 }
 
 export interface R2EnvKeyDiagnostic {
@@ -588,14 +701,15 @@ export async function runR2Diagnostic(): Promise<R2DiagnosticResult> {
       const bodyText = await listRes.text().catch(() => '');
 
       if (listRes.ok) {
-        const files = parseListObjectsXml(bodyText);
+        const allFiles = parseListObjectsXml(bodyText);
+        const files = allFiles.filter((f) => !f.key.startsWith('_private_vault/'));
         listObjectsCheck.ok = true;
         listObjectsCheck.objectCount = files.length;
         listObjectsCheck.sampleFiles = files;
         listObjectsCheck.detail =
           files.length > 0
             ? `Listed ${files.length} sample file(s) from "${bucket}".`
-            : `Successfully connected & listed "${bucket}" (bucket is currently empty — 0 files).`;
+            : `Successfully connected & listed "${bucket}" (no public media files yet).`;
       } else {
         const errCode = extractXmlTag(bodyText, 'Code');
         const errMessage = extractXmlTag(bodyText, 'Message');
@@ -728,4 +842,271 @@ export async function runR2Diagnostic(): Promise<R2DiagnosticResult> {
     publicAccessCheck,
   };
 }
+
+// ---- ENCRYPTED CLOUDFLARE R2 ACCOUNT VAULT (NO GOOGLE / NO 2FA NEEDED) ----
+
+export interface R2VaultStatus {
+  configured: boolean;
+  bucket: string;
+  hasBackup: boolean;
+  lastModified: string | null;
+  sizeBytes: number | null;
+  encrypted: boolean;
+  detail: string;
+}
+
+export interface R2VaultSaveResult {
+  savedAt: string;
+  sizeBytes: number;
+  bucket: string;
+  encrypted: true;
+}
+
+export interface R2VaultLoadResult<T> {
+  snapshot: T;
+  savedAt: string;
+  sizeBytes: number;
+}
+
+interface EncryptedVaultEnvelope {
+  v: 1;
+  alg: 'aes-256-gcm';
+  savedAt: string;
+  iv: string;
+  tag: string;
+  ciphertext: string;
+}
+
+function getR2VaultCoordinates(): {
+  accountId: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  bucket: string;
+  objectKey: string;
+  encKey: Buffer;
+} | null {
+  const accountId = getValidatedR2AccountId();
+  const accessKeyId = getR2AccessKeyId();
+  const secretAccessKey = getR2SecretAccessKey();
+  const bucket = getSanitizedR2Bucket();
+  if (!accountId || !accessKeyId || !secretAccessKey) {
+    return null;
+  }
+
+  // Server-only HMAC-derived unguessable path (128-bit entropy) + AES-256 encryption key
+  const secretMaterial = stripOuterQuotes(process.env.R2_VAULT_ENCRYPTION_KEY || '') || secretAccessKey;
+  const pathHash = crypto
+    .createHmac('sha256', Buffer.from(secretMaterial, 'utf8'))
+    .update(`choy-vault-path-v1:${accountId}:${bucket}`, 'utf8')
+    .digest('hex')
+    .slice(0, 32);
+  const encKey = crypto
+    .createHmac('sha256', Buffer.from(secretMaterial, 'utf8'))
+    .update(`choy-vault-aes256-v1:${accountId}:${bucket}`, 'utf8')
+    .digest();
+
+  return {
+    accountId,
+    accessKeyId,
+    secretAccessKey,
+    bucket,
+    objectKey: `_private_vault/accounts_${pathHash}.enc`,
+    encKey,
+  };
+}
+
+export function isR2VaultConfigured(): boolean {
+  return getR2VaultCoordinates() !== null;
+}
+
+export async function getR2VaultBackupStatus(): Promise<R2VaultStatus> {
+  const coords = getR2VaultCoordinates();
+  if (!coords) {
+    return {
+      configured: false,
+      bucket: getSanitizedR2Bucket(),
+      hasBackup: false,
+      lastModified: null,
+      sizeBytes: null,
+      encrypted: true,
+      detail: 'Cloudflare R2 credentials are not configured on this server.',
+    };
+  }
+
+  const canonicalUri = `/${coords.bucket}/${coords.objectKey}`;
+  const signed = signR2Request({
+    method: 'HEAD',
+    accountId: coords.accountId,
+    accessKeyId: coords.accessKeyId,
+    secretAccessKey: coords.secretAccessKey,
+    canonicalUri,
+  });
+
+  try {
+    const res = await fetch(signed.url, {
+      method: 'HEAD',
+      headers: signed.headers,
+      signal: AbortSignal.timeout(10000),
+    });
+    if (res.status === 404) {
+      return {
+        configured: true,
+        bucket: coords.bucket,
+        hasBackup: false,
+        lastModified: null,
+        sizeBytes: null,
+        encrypted: true,
+        detail: 'Cloudflare R2 Vault is ready — tap "Backup Accounts to Cloud (R2)" to create your first encrypted snapshot.',
+      };
+    }
+    if (!res.ok) {
+      return {
+        configured: true,
+        bucket: coords.bucket,
+        hasBackup: false,
+        lastModified: null,
+        sizeBytes: null,
+        encrypted: true,
+        detail: `Cloudflare R2 returned HTTP ${res.status} while checking vault status.`,
+      };
+    }
+    const lastModHeader = res.headers.get('last-modified');
+    const lenHeader = res.headers.get('content-length');
+    const lastModified = lastModHeader ? new Date(lastModHeader).toISOString() : null;
+    const sizeBytes = lenHeader && Number.isFinite(Number(lenHeader)) ? Number(lenHeader) : null;
+    return {
+      configured: true,
+      bucket: coords.bucket,
+      hasBackup: true,
+      lastModified,
+      sizeBytes,
+      encrypted: true,
+      detail: `Encrypted account vault synced in Cloudflare R2 bucket "${coords.bucket}".`,
+    };
+  } catch (err: unknown) {
+    return {
+      configured: true,
+      bucket: coords.bucket,
+      hasBackup: false,
+      lastModified: null,
+      sizeBytes: null,
+      encrypted: true,
+      detail: err instanceof Error ? err.message.slice(0, 140) : 'Failed to check R2 Vault status.',
+    };
+  }
+}
+
+export async function saveEncryptedVaultToR2<T>(snapshot: T): Promise<R2VaultSaveResult> {
+  const coords = getR2VaultCoordinates();
+  if (!coords) {
+    throw new Error('Cloudflare R2 is not configured on this server.');
+  }
+
+  const savedAt = new Date().toISOString();
+  const plaintext = Buffer.from(JSON.stringify(snapshot), 'utf8');
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', coords.encKey, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+
+  const envelope: EncryptedVaultEnvelope = {
+    v: 1,
+    alg: 'aes-256-gcm',
+    savedAt,
+    iv: iv.toString('base64'),
+    tag: authTag.toString('base64'),
+    ciphertext: encrypted.toString('base64'),
+  };
+  const payloadBuf = Buffer.from(JSON.stringify(envelope), 'utf8');
+
+  const canonicalUri = `/${coords.bucket}/${coords.objectKey}`;
+  const signed = signR2Request({
+    method: 'PUT',
+    accountId: coords.accountId,
+    accessKeyId: coords.accessKeyId,
+    secretAccessKey: coords.secretAccessKey,
+    canonicalUri,
+    payload: payloadBuf,
+    extraHeaders: {
+      'Content-Type': 'application/octet-stream',
+      'Cache-Control': 'no-store',
+    },
+  });
+
+  const res = await fetch(signed.url, {
+    method: 'PUT',
+    headers: signed.headers,
+    body: new Uint8Array(payloadBuf),
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`Cloudflare R2 vault save failed (HTTP ${res.status})${detail ? `: ${detail.slice(0, 120)}` : ''}`);
+  }
+
+  return {
+    savedAt,
+    sizeBytes: payloadBuf.length,
+    bucket: coords.bucket,
+    encrypted: true,
+  };
+}
+
+export async function loadEncryptedVaultFromR2<T>(): Promise<R2VaultLoadResult<T> | null> {
+  const coords = getR2VaultCoordinates();
+  if (!coords) {
+    return null;
+  }
+
+  const canonicalUri = `/${coords.bucket}/${coords.objectKey}`;
+  const signed = signR2Request({
+    method: 'GET',
+    accountId: coords.accountId,
+    accessKeyId: coords.accessKeyId,
+    secretAccessKey: coords.secretAccessKey,
+    canonicalUri,
+  });
+
+  const res = await fetch(signed.url, {
+    method: 'GET',
+    headers: signed.headers,
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (res.status === 404) {
+    return null;
+  }
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`Cloudflare R2 vault load failed (HTTP ${res.status})${detail ? `: ${detail.slice(0, 120)}` : ''}`);
+  }
+
+  const rawText = await res.text();
+  const envelope = JSON.parse(rawText) as Partial<EncryptedVaultEnvelope>;
+  if (
+    envelope.v !== 1 ||
+    envelope.alg !== 'aes-256-gcm' ||
+    typeof envelope.iv !== 'string' ||
+    typeof envelope.tag !== 'string' ||
+    typeof envelope.ciphertext !== 'string'
+  ) {
+    throw new Error('Encrypted R2 vault format is invalid.');
+  }
+
+  const iv = Buffer.from(envelope.iv, 'base64');
+  const tag = Buffer.from(envelope.tag, 'base64');
+  const ciphertext = Buffer.from(envelope.ciphertext, 'base64');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', coords.encKey, iv);
+  decipher.setAuthTag(tag);
+  const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+  const snapshot = JSON.parse(decrypted) as T;
+
+  return {
+    snapshot,
+    savedAt: typeof envelope.savedAt === 'string' ? envelope.savedAt : new Date().toISOString(),
+    sizeBytes: Buffer.byteLength(rawText, 'utf8'),
+  };
+}
+
 

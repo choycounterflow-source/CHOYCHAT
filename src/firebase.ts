@@ -3,6 +3,10 @@ import {
   getAuth,
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
+  browserLocalPersistence,
+  setPersistence,
   signOut,
   onAuthStateChanged,
   type User,
@@ -18,6 +22,10 @@ const app = initializeApp(firebaseConfig);
 
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
+
+// Keep Firebase Admin session persisted in browser local storage across reloads & mobile PWA launches
+void setPersistence(auth, browserLocalPersistence).catch(() => {});
+
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({
   prompt: 'select_account',
@@ -25,10 +33,21 @@ googleProvider.setCustomParameters({
 });
 
 export const FIREBASE_PROJECT_ID = firebaseConfig.projectId;
+export const FIREBASE_DATABASE_ID = firebaseConfig.firestoreDatabaseId;
 export const BOOTSTRAPPED_ADMIN_EMAIL = 'choycounterflow@gmail.com';
-export const BOOTSTRAPPED_ADMIN_EMAILS = ['choycounterflow@gmail.com'] as const;
+export const BOOTSTRAPPED_ADMIN_EMAILS = [
+  'choycounterflow@gmail.com',
+  'choyjiez07@gmail.com',
+] as const;
 
-export { signInWithPopup, signOut, onAuthStateChanged, type User };
+export {
+  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
+  signOut,
+  onAuthStateChanged,
+  type User,
+};
 
 export enum OperationType {
   CREATE = 'create',

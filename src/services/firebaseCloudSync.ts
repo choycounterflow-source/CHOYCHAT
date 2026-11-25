@@ -2,6 +2,7 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDocFromServer,
   getDocs,
   serverTimestamp,
   setDoc,
@@ -11,11 +12,15 @@ import {
   auth,
   BOOTSTRAPPED_ADMIN_EMAILS,
   db,
+  FIREBASE_DATABASE_ID,
+  FIREBASE_PROJECT_ID,
+  getRedirectResult,
   googleProvider,
   handleFirestoreError,
   onAuthStateChanged,
   OperationType,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
   type User,
 } from '../firebase';
@@ -141,7 +146,47 @@ export function isVerifiedAdminFirebaseUser(user: User | null): boolean {
   return BOOTSTRAPPED_ADMIN_EMAILS.some((allowed) => allowed.toLowerCase() === normalized);
 }
 
-export async function connectFirebaseGoogleAdmin(): Promise<User> {
+function isStandaloneTopLevelHost(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.self === window.top;
+  } catch {
+    return false;
+  }
+}
+
+function formatFirebaseAuthError(err: unknown): Error {
+  const code =
+    typeof err === 'object' && err !== null && 'code' in err
+      ? String((err as { code?: unknown }).code)
+      : '';
+  const host = typeof window !== 'undefined' ? window.location.hostname : '';
+  if (code === 'auth/unauthorized-domain') {
+    return new Error(
+      `Domain "${host}" is NOT authorized yet in Firebase Authentication. Add "${host}" in Firebase Console → Authentication → Settings → Authorized domains, then tap Connect again.`
+    );
+  }
+  if (code === 'auth/popup-blocked') {
+    return new Error(
+      'Browser blocked the Google sign-in popup. Tap "Mobile Redirect Sign-In" below or allow popups for this site.'
+    );
+  }
+  if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+    return new Error(
+      'Google sign-in popup closed before finishing. On Android phones / PWA, use the "Mobile Redirect Sign-In" button instead.'
+    );
+  }
+  if (code === 'auth/network-request-failed') {
+    return new Error('Network error contacting Google/Firebase Auth. Check internet connection and try again.');
+  }
+  if (code === 'auth/operation-not-allowed') {
+    return new Error('Google Sign-In provider is not enabled in Firebase Console → Authentication → Sign-in method.');
+  }
+  if (err instanceof Error) return err;
+  return new Error(String(err || 'Google sign-in failed'));
+}
+
+export async function connectFirebaseGoogleAdmin(): Promise<User | null> {
   try {
     const result = await signInWithPopup(auth, googleProvider);
     if (!result.user.emailVerified) {
@@ -149,19 +194,46 @@ export async function connectFirebaseGoogleAdmin(): Promise<User> {
     }
     return result.user;
   } catch (err: unknown) {
-    const code = typeof err === 'object' && err !== null && 'code' in err ? String((err as { code?: unknown }).code) : '';
-    if (code === 'auth/popup-blocked') {
-      throw new Error('Popup was blocked by your browser. Please allow popups for this site and try again.');
+    const code =
+      typeof err === 'object' && err !== null && 'code' in err
+        ? String((err as { code?: unknown }).code)
+        : '';
+    // On standalone mobile/Render domains (non-iframe), auto-fallback to full-page redirect if popups are blocked
+    if (
+      isStandaloneTopLevelHost() &&
+      (code === 'auth/popup-blocked' ||
+        code === 'auth/operation-not-supported-in-this-environment')
+    ) {
+      await signInWithRedirect(auth, googleProvider);
+      return null;
     }
-    if (code === 'auth/popup-closed-by-user') {
-      throw new Error('Google sign-in popup was closed before completing login.');
+    throw formatFirebaseAuthError(err);
+  }
+}
+
+export async function connectFirebaseGoogleRedirect(): Promise<void> {
+  try {
+    await signInWithRedirect(auth, googleProvider);
+  } catch (err: unknown) {
+    throw formatFirebaseAuthError(err);
+  }
+}
+
+export async function resolveFirebaseRedirectSignIn(): Promise<{
+  user: User | null;
+  error: string | null;
+}> {
+  try {
+    const result = await getRedirectResult(auth);
+    if (result?.user) {
+      if (!result.user.emailVerified) {
+        return { user: result.user, error: 'Google account email must be verified.' };
+      }
+      return { user: result.user, error: null };
     }
-    if (code === 'auth/unauthorized-domain') {
-      throw new Error(
-        `Domain "${window.location.hostname}" is not yet authorized in Firebase Authentication. Connect from the AI Studio app URL or add this domain in Firebase Console -> Authentication -> Settings -> Authorized domains.`
-      );
-    }
-    throw err;
+    return { user: null, error: null };
+  } catch (err: unknown) {
+    return { user: null, error: formatFirebaseAuthError(err).message };
   }
 }
 
@@ -171,29 +243,125 @@ export async function disconnectFirebaseGoogle(): Promise<void> {
 
 export function subscribeFirebaseAuth(cb: (user: User | null) => void): () => void {
   return onAuthStateChanged(auth, async (user) => {
-    if (user) {
-      try {
-        const userRef = doc(db, 'users', sanitizeSafeId(user.uid));
-        await setDoc(
-          userRef,
-          {
-            uid: user.uid,
-            email: user.email || '',
-            displayName: user.displayName || 'Anonymous',
-            status: 'approved',
-            visibility: 'public',
-            lastLogin: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
-        console.log('User data successfully synced to Firestore!');
-      } catch (err) {
-        console.error('Failed to sync user login to Firestore:', err);
-      }
-    }
     cb(user);
   });
+}
+
+export interface FirebaseDiagnosticResult {
+  checkedAt: string;
+  hostname: string;
+  isExternalDeployHost: boolean;
+  projectId: string;
+  databaseId: string;
+  signedInEmail: string | null;
+  emailVerified: boolean;
+  isAllowedAdminEmail: boolean;
+  firestorePingOk: boolean;
+  firestorePingLatencyMs: number;
+  firestorePingDetail: string;
+  accountsReadOk: boolean;
+  accountsCount: number | null;
+  accountsReadDetail: string;
+  category: 'healthy' | 'not_signed_in' | 'wrong_email' | 'permission_denied' | 'offline_or_network';
+  summary: string;
+  nextStep: string;
+}
+
+export async function runFirebaseDiagnostic(): Promise<FirebaseDiagnosticResult> {
+  const checkedAt = new Date().toISOString();
+  const hostname = typeof window !== 'undefined' ? window.location.hostname : '';
+  const isExternalDeployHost =
+    Boolean(hostname) &&
+    hostname !== 'localhost' &&
+    !hostname.endsWith('.run.app') &&
+    !hostname.endsWith('.firebaseapp.com') &&
+    !hostname.endsWith('.web.app');
+
+  const currentFb = auth.currentUser;
+  const signedInEmail = currentFb?.email || null;
+  const emailVerified = Boolean(currentFb?.emailVerified);
+  const isAllowedAdminEmail = isVerifiedAdminFirebaseUser(currentFb);
+
+  let firestorePingOk = false;
+  let firestorePingDetail = '';
+  const pingStart = Date.now();
+  try {
+    await getDocFromServer(doc(db, 'test', 'connection'));
+    firestorePingOk = true;
+    firestorePingDetail = 'Firestore server reachable.';
+  } catch (err: unknown) {
+    const rawMsg = err instanceof Error ? err.message : String(err);
+    const lower = rawMsg.toLowerCase();
+    if (lower.includes('permission') || lower.includes('insufficient')) {
+      // Server responded (network OK), just denied unauthenticated/non-admin read on /test/connection
+      firestorePingOk = true;
+      firestorePingDetail = 'Firestore server reached (rules require signed-in Admin).';
+    } else {
+      firestorePingOk = false;
+      firestorePingDetail = rawMsg.slice(0, 160);
+    }
+  }
+  const firestorePingLatencyMs = Date.now() - pingStart;
+
+  let accountsReadOk = false;
+  let accountsCount: number | null = null;
+  let accountsReadDetail = 'Sign in with Google Admin first to test /cloud_accounts sync.';
+  if (currentFb && isAllowedAdminEmail) {
+    try {
+      const snap = await getDocs(collection(db, 'cloud_accounts'));
+      accountsReadOk = true;
+      accountsCount = snap.size;
+      accountsReadDetail = `Connected! Found ${snap.size} backed-up user account(s) in Firestore.`;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      accountsReadOk = false;
+      accountsReadDetail = msg.slice(0, 180);
+    }
+  }
+
+  let category: FirebaseDiagnosticResult['category'] = 'healthy';
+  let summary = `Firebase Firestore (${FIREBASE_DATABASE_ID}) is connected and syncing ${accountsCount ?? 0} user account(s).`;
+  let nextStep = 'No action needed — user accounts auto-sync to Firebase Cloud.';
+
+  if (!firestorePingOk) {
+    category = 'offline_or_network';
+    summary = 'Browser cannot reach Firestore server (offline or blocked network).';
+    nextStep = 'Check internet connection or disable strict tracking/ad-blockers for firestore.googleapis.com, then retry.';
+  } else if (!currentFb) {
+    category = 'not_signed_in';
+    summary = 'Firestore server is reachable, but no Google Admin account is signed in yet.';
+    nextStep = isExternalDeployHost
+      ? `Make sure "${hostname}" is added in Firebase Console → Authentication → Settings → Authorized domains, then tap "Mobile Redirect Sign-In" (on phones) or "Connect Google Cloud Sync".`
+      : 'Tap "Connect Google Cloud Sync" and sign in with choycounterflow@gmail.com.';
+  } else if (!isAllowedAdminEmail) {
+    category = 'wrong_email';
+    summary = `Signed in as ${signedInEmail || 'unknown'}, which is not an allowed Admin email.`;
+    nextStep = 'Click Disconnect and sign in using choycounterflow@gmail.com (or choyjiez07@gmail.com).';
+  } else if (!accountsReadOk) {
+    category = 'permission_denied';
+    summary = `Signed in as ${signedInEmail}, but Firestore denied reading /cloud_accounts.`;
+    nextStep = `Error detail: ${accountsReadDetail}`;
+  }
+
+  return {
+    checkedAt,
+    hostname,
+    isExternalDeployHost,
+    projectId: FIREBASE_PROJECT_ID,
+    databaseId: FIREBASE_DATABASE_ID,
+    signedInEmail,
+    emailVerified,
+    isAllowedAdminEmail,
+    firestorePingOk,
+    firestorePingLatencyMs,
+    firestorePingDetail,
+    accountsReadOk,
+    accountsCount,
+    accountsReadDetail,
+    category,
+    summary,
+    nextStep,
+  };
 }
 
 export async function syncSnapshotToFirestore(snapshot: CloudBackupSnapshot): Promise<{

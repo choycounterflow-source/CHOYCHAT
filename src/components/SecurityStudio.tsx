@@ -60,6 +60,10 @@ import {
   shareEmojiLinkWithAppImage,
 } from '../utils/emojiLinkShare';
 import { FIREBASE_PROJECT_ID } from '../firebase';
+import {
+  runFirebaseDiagnostic,
+  type FirebaseDiagnosticResult,
+} from '../services/firebaseCloudSync';
 
 export type StudioNewsfeedChannel = 'feed_a' | 'feed_b' | 'feed_c' | 'feed_bc';
 export type StudioAnnouncementTarget = 'all' | 'feed_a' | 'feed_b' | 'feed_c' | 'feed_bc';
@@ -132,6 +136,7 @@ interface SecurityStudioProps {
   firebaseLastSyncedAt?: string | null;
   firebaseSyncError?: string;
   onConnectFirebase?: () => Promise<void> | void;
+  onConnectFirebaseRedirect?: () => Promise<void> | void;
   onDisconnectFirebase?: () => Promise<void> | void;
   onBackupToFirebase?: () => Promise<void> | void;
   onRestoreFromFirebase?: () => Promise<void> | void;
@@ -270,6 +275,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   firebaseLastSyncedAt = null,
   firebaseSyncError = '',
   onConnectFirebase,
+  onConnectFirebaseRedirect,
   onDisconnectFirebase,
   onBackupToFirebase,
   onRestoreFromFirebase,
@@ -399,6 +405,8 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
       detail: string;
     };
   } | null>(null);
+  const [fbDiagnosticLoading, setFbDiagnosticLoading] = useState(false);
+  const [fbDiagnosticReport, setFbDiagnosticReport] = useState<FirebaseDiagnosticResult | null>(null);
   const [revealedFields, setRevealedFields] = useState<Record<string, boolean>>({});
   const [customPairs, setCustomPairs] = useState<KeyValueItem[]>(() => {
     try {
@@ -1686,6 +1694,91 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   };
 
   const [copiedFirebaseDomain, setCopiedFirebaseDomain] = useState(false);
+  const [r2VaultStatus, setR2VaultStatus] = useState<{
+    configured: boolean;
+    bucket: string;
+    hasBackup: boolean;
+    lastModified: string | null;
+    sizeBytes: number | null;
+    detail: string;
+    lastAutoSavedAt?: string | null;
+  } | null>(null);
+  const [r2VaultBusy, setR2VaultBusy] = useState<'idle' | 'backup' | 'restore'>('idle');
+  const [r2VaultMsg, setR2VaultMsg] = useState('');
+
+  const fetchR2VaultStatus = async () => {
+    if (!authToken) return;
+    try {
+      const res = await fetch('/api/admin/r2-vault/status', {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setR2VaultStatus(data);
+    } catch {
+      // ignore background status check error
+    }
+  };
+
+  useEffect(() => {
+    if (!authToken) return;
+    fetchR2VaultStatus();
+  }, [authToken]);
+
+  const handleBackupToR2Vault = async () => {
+    if (!authToken) return;
+    setR2VaultBusy('backup');
+    setR2VaultMsg('');
+    try {
+      const res = await fetch('/api/admin/r2-vault/backup', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to backup to Cloudflare R2');
+      setR2VaultMsg(
+        `Saved ${data.accountsSynced ?? 0} account(s) encrypted to Cloudflare R2 (${data.bucket}) at ${new Date(
+          data.savedAt || Date.now()
+        ).toLocaleTimeString()}.`
+      );
+      await fetchR2VaultStatus();
+    } catch (err) {
+      setR2VaultMsg(err instanceof Error ? err.message : 'Cloudflare R2 backup failed.');
+    } finally {
+      setR2VaultBusy('idle');
+    }
+  };
+
+  const handleRestoreFromR2Vault = async () => {
+    if (!authToken) return;
+    setR2VaultBusy('restore');
+    setR2VaultMsg('');
+    try {
+      const res = await fetch('/api/admin/r2-vault/restore', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to restore from Cloudflare R2');
+      await onCloudStateRestored?.();
+      setR2VaultMsg(
+        `Restored ${data.restoredUsersCount ?? 0} account(s) from encrypted Cloudflare R2 vault (Total: ${
+          data.totalUsersCount ?? usersList.length
+        }).`
+      );
+      await fetchR2VaultStatus();
+    } catch (err) {
+      setR2VaultMsg(err instanceof Error ? err.message : 'Cloudflare R2 restore failed.');
+    } finally {
+      setR2VaultBusy('idle');
+    }
+  };
 
   const renderFirebaseCloudSyncCard = () => {
     const currentHost = typeof window !== 'undefined' ? window.location.hostname : '';
@@ -1696,22 +1789,85 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
       !currentHost.endsWith('.firebaseapp.com') &&
       !currentHost.endsWith('.web.app');
     const firebaseAuthSettingsUrl = `https://console.firebase.google.com/project/${FIREBASE_PROJECT_ID}/authentication/settings`;
+    const r2VaultActive = Boolean(r2VaultStatus?.configured || r2StorageInfo.configured);
+    const r2VaultLastTime = r2VaultStatus?.lastAutoSavedAt || r2VaultStatus?.lastModified || null;
 
     return (
     <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700/80 space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      {/* Primary Cloud Vault: Cloudflare R2 Encrypted Auto-Backup (No Google Login / No 2VF Needed) */}
+      <div className="p-3 rounded-xl bg-white/90 dark:bg-slate-900/90 border border-orange-300/80 dark:border-orange-700/60 space-y-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Lock className="w-4 h-4 text-orange-600 dark:text-orange-400 shrink-0" />
+            <div>
+              <div className="text-xs font-bold text-slate-900 dark:text-white">
+                Cloudflare R2 Encrypted Account Vault (No Google / No 2VF)
+              </div>
+              <div className="text-[11px] text-slate-600 dark:text-slate-300">
+                Auto-saves user accounts, PIN hashes, settings &amp; ledger encrypted (AES-256) directly to your Cloudflare R2 bucket ({r2VaultStatus?.bucket || r2StorageInfo.bucket || 'choychat'}).
+              </div>
+            </div>
+          </div>
+          <span
+            className={`px-2 py-0.5 rounded-lg text-[10px] font-bold uppercase ${
+              r2VaultActive
+                ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-400/40'
+                : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+            }`}
+          >
+            {r2VaultActive ? (r2VaultStatus?.hasBackup ? 'Synced · AES-256' : 'Ready · Auto-Sync') : 'Not Configured'}
+          </span>
+        </div>
+
+        {r2VaultLastTime && (
+          <div className="text-[10px] font-mono text-emerald-700 dark:text-emerald-300">
+            Last R2 Cloud Vault save: {new Date(r2VaultLastTime).toLocaleString()}
+            {r2VaultStatus?.sizeBytes ? ` · ${(r2VaultStatus.sizeBytes / 1024).toFixed(1)} KB encrypted` : ''}
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <button
+            type="button"
+            disabled={!r2VaultActive || r2VaultBusy !== 'idle'}
+            onClick={handleBackupToR2Vault}
+            className="px-3 py-1.5 rounded-xl bg-orange-500 hover:bg-orange-400 text-slate-950 font-bold inline-flex items-center gap-1.5 shadow-sm transition disabled:opacity-50"
+          >
+            <Save className="w-3.5 h-3.5" />
+            <span>{r2VaultBusy === 'backup' ? 'Saving to Cloud...' : 'Backup Accounts to Cloud (R2)'}</span>
+          </button>
+          <button
+            type="button"
+            disabled={!r2VaultActive || r2VaultBusy !== 'idle'}
+            onClick={handleRestoreFromR2Vault}
+            className="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-800 border border-orange-300 dark:border-orange-700 text-orange-800 dark:text-orange-200 font-bold inline-flex items-center gap-1.5 hover:bg-orange-50 dark:hover:bg-slate-700 transition disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${r2VaultBusy === 'restore' ? 'animate-spin' : ''}`} />
+            <span>{r2VaultBusy === 'restore' ? 'Restoring...' : 'Restore from Cloud (R2)'}</span>
+          </button>
+        </div>
+
+        {r2VaultMsg && (
+          <div className="text-[11px] font-semibold text-orange-800 dark:text-orange-200">
+            {r2VaultMsg}
+          </div>
+        )}
+      </div>
+
+      {/* Optional Secondary Backup: Firebase Google Cloud Sync */}
+      <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
         <div className="flex items-center gap-2">
           <Cloud className="w-4 h-4 text-emerald-700 dark:text-emerald-300" />
           <div>
             <div className="text-xs font-bold text-emerald-950 dark:text-white">
-              Firebase Cloud Account Vault &amp; Auto-Backup
+              Firebase Cloud Account Vault (Optional Google Sync)
             </div>
             <div className="text-[11px] text-emerald-700 dark:text-emerald-300">
               {firebaseConnectedEmail
                 ? firebaseIsAdminVerified
                   ? `Connected: ${firebaseConnectedEmail} · Auto-syncs accounts to Firestore`
-                  : `Connected (${firebaseConnectedEmail}) — requires choycounterflow@gmail.com`
-                : 'Connect Google Admin (choycounterflow@gmail.com) so accounts sync across Render & Firebase.'}
+                  : `Connected (${firebaseConnectedEmail}) — requires choycounterflow@gmail.com or choyjiez07@gmail.com`
+                : 'Optional: Connect Google Admin (choycounterflow@gmail.com / choyjiez07@gmail.com) if you also want Firestore sync.'}
             </div>
           </div>
         </div>
@@ -1788,14 +1944,26 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
 
       <div className="flex flex-wrap items-center gap-2 text-xs">
         {!firebaseConnectedEmail || !firebaseIsAdminVerified ? (
-          <button
-            type="button"
-            onClick={() => onConnectFirebase?.()}
-            className="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold inline-flex items-center gap-1.5 shadow-sm transition"
-          >
-            <Cloud className="w-3.5 h-3.5" />
-            <span>Connect Google Cloud Sync</span>
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={() => onConnectFirebase?.()}
+              className="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold inline-flex items-center gap-1.5 shadow-sm transition"
+            >
+              <Cloud className="w-3.5 h-3.5" />
+              <span>Connect Google Cloud Sync</span>
+            </button>
+            {isExternalDeployHost && onConnectFirebaseRedirect && (
+              <button
+                type="button"
+                onClick={() => onConnectFirebaseRedirect()}
+                className="px-3 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold inline-flex items-center gap-1.5 shadow-sm transition"
+              >
+                <Globe className="w-3.5 h-3.5" />
+                <span>Mobile Redirect Sign-In</span>
+              </button>
+            )}
+          </>
         ) : (
           <>
             <button
@@ -1828,6 +1996,24 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
 
         <button
           type="button"
+          disabled={fbDiagnosticLoading}
+          onClick={async () => {
+            setFbDiagnosticLoading(true);
+            try {
+              const report = await runFirebaseDiagnostic();
+              setFbDiagnosticReport(report);
+            } finally {
+              setFbDiagnosticLoading(false);
+            }
+          }}
+          className="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100 font-bold inline-flex items-center gap-1.5 hover:bg-emerald-100 dark:hover:bg-slate-800 transition disabled:opacity-50"
+        >
+          <Activity className={`w-3.5 h-3.5 ${fbDiagnosticLoading ? 'animate-spin' : ''}`} />
+          <span>{fbDiagnosticLoading ? 'Testing Firebase...' : 'Test Firebase'}</span>
+        </button>
+
+        <button
+          type="button"
           onClick={handleDownloadJsonBackup}
           className="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100 font-semibold inline-flex items-center gap-1.5 hover:bg-emerald-100 dark:hover:bg-slate-800 transition"
         >
@@ -1852,6 +2038,83 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           className="hidden"
         />
       </div>
+
+      {fbDiagnosticReport && (
+        <div className="p-3 rounded-xl bg-white/90 dark:bg-slate-950/90 border border-emerald-300/70 dark:border-emerald-800/80 space-y-2.5 text-[11px]">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-start gap-2 min-w-0">
+              {fbDiagnosticReport.category === 'healthy' ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
+              ) : fbDiagnosticReport.category === 'not_signed_in' ? (
+                <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+              ) : (
+                <XCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
+              )}
+              <div className="min-w-0">
+                <div className="font-bold text-slate-900 dark:text-slate-100 leading-snug">
+                  {fbDiagnosticReport.summary}
+                </div>
+                <div className="text-[10px] text-slate-600 dark:text-slate-400 mt-0.5 leading-relaxed">
+                  {fbDiagnosticReport.nextStep}
+                </div>
+              </div>
+            </div>
+            <span
+              className={`px-2 py-0.5 rounded-md text-[9px] font-bold uppercase shrink-0 ${
+                fbDiagnosticReport.category === 'healthy'
+                  ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
+                  : fbDiagnosticReport.category === 'not_signed_in'
+                  ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300'
+                  : 'bg-rose-500/20 text-rose-700 dark:text-rose-300'
+              }`}
+            >
+              {fbDiagnosticReport.category.replace(/_/g, ' ')}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[10px]">
+            <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <div className="flex items-center justify-between font-bold text-slate-800 dark:text-slate-200">
+                <span>1. Google Auth</span>
+                <span className={fbDiagnosticReport.isAllowedAdminEmail ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>
+                  {fbDiagnosticReport.isAllowedAdminEmail ? 'VERIFIED' : fbDiagnosticReport.signedInEmail ? 'WRONG EMAIL' : 'SIGNED OUT'}
+                </span>
+              </div>
+              <div className="text-slate-600 dark:text-slate-400 mt-1 truncate font-mono">
+                {fbDiagnosticReport.signedInEmail || `Host: ${fbDiagnosticReport.hostname || 'unknown'}`}
+              </div>
+            </div>
+
+            <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <div className="flex items-center justify-between font-bold text-slate-800 dark:text-slate-200">
+                <span>2. Firestore Ping</span>
+                <span className={fbDiagnosticReport.firestorePingOk ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}>
+                  {fbDiagnosticReport.firestorePingOk ? `OK · ${fbDiagnosticReport.firestorePingLatencyMs}ms` : 'FAILED'}
+                </span>
+              </div>
+              <div className="text-slate-600 dark:text-slate-400 mt-1 leading-snug">
+                {fbDiagnosticReport.firestorePingDetail}
+              </div>
+            </div>
+
+            <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <div className="flex items-center justify-between font-bold text-slate-800 dark:text-slate-200">
+                <span>3. User Vault</span>
+                <span className={fbDiagnosticReport.accountsReadOk ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>
+                  {fbDiagnosticReport.accountsReadOk ? `${fbDiagnosticReport.accountsCount ?? 0} ACCOUNTS` : 'NOT SYNCED'}
+                </span>
+              </div>
+              <div className="text-slate-600 dark:text-slate-400 mt-1 leading-snug">
+                {fbDiagnosticReport.accountsReadDetail}
+              </div>
+            </div>
+          </div>
+
+          <div className="text-[9px] font-mono text-slate-500 dark:text-slate-400 break-all">
+            Project: {fbDiagnosticReport.projectId} · DB: {fbDiagnosticReport.databaseId}
+          </div>
+        </div>
+      )}
 
       {jsonBackupMsg && (
         <div className="text-[11px] font-semibold text-emerald-800 dark:text-emerald-200">

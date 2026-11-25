@@ -2,6 +2,7 @@ import express, { type Request, type Response, type NextFunction } from 'express
 import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
+import { Readable } from 'stream';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import dotenv from 'dotenv';
@@ -36,8 +37,15 @@ import {
   uploadToSupabaseStorage,
 } from './src/server/supabaseStorage.ts';
 import {
+  fetchR2MediaStream,
   getR2StorageStatus,
+  getR2VaultBackupStatus,
+  inferMediaContentTypeFromPath,
+  isR2VaultConfigured,
+  loadEncryptedVaultFromR2,
+  rewriteBrokenR2MediaUrl,
   runR2Diagnostic,
+  saveEncryptedVaultToR2,
   uploadToR2Storage,
 } from './src/server/r2Storage.ts';
 
@@ -245,6 +253,36 @@ function getOnlineUserNames(now = Date.now()): string[] {
   return Array.from(online);
 }
 
+let r2VaultBackupTimer: ReturnType<typeof setTimeout> | null = null;
+let r2VaultBackupInFlight = false;
+let r2VaultLastAutoSavedAt: string | null = null;
+
+function scheduleR2VaultAutoBackup(reason: string) {
+  if (!isR2VaultConfigured()) return;
+  if (r2VaultBackupTimer) {
+    clearTimeout(r2VaultBackupTimer);
+  }
+  r2VaultBackupTimer = setTimeout(async () => {
+    r2VaultBackupTimer = null;
+    if (r2VaultBackupInFlight) return;
+    r2VaultBackupInFlight = true;
+    try {
+      const snapshot = await store.exportCloudBackup();
+      const saved = await saveEncryptedVaultToR2(snapshot);
+      r2VaultLastAutoSavedAt = saved.savedAt;
+      console.log(
+        `[R2Vault] Auto-backed up ${snapshot.users.length} account(s) to encrypted R2 vault (${reason}, ${saved.sizeBytes} bytes).`
+      );
+    } catch (err: unknown) {
+      console.warn('[R2Vault] Auto-backup skipped/failed:', err instanceof Error ? err.message : err);
+    } finally {
+      r2VaultBackupInFlight = false;
+    }
+  }, 2500);
+}
+
+const R2_VAULT_AUTO_TOPICS = new Set(['users', 'settings', 'ledger', 'knowledge', 'announcements', 'newsfeed_config']);
+
 function broadcastSync(topic: string) {
   const payload = `event: sync\ndata: ${JSON.stringify({ topic, ts: Date.now() })}\n\n`;
   for (const client of sseClients) {
@@ -253,6 +291,9 @@ function broadcastSync(topic: string) {
     } catch {
       sseClients.delete(client);
     }
+  }
+  if (R2_VAULT_AUTO_TOPICS.has(topic)) {
+    scheduleR2VaultAutoBackup(topic);
   }
 }
 
@@ -521,6 +562,64 @@ app.post('/api/admin/r2-diagnostic', requireAuth, requireAdmin, async (req: Auth
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'R2 diagnostic failed';
     return res.status(500).json({ error: message });
+  }
+});
+
+// ---- SAME-ORIGIN CLOUDFLARE R2 MEDIA STREAMING (206 PARTIAL CONTENT RANGE SUPPORT) ----
+app.get('/api/media/r2/:folder/:ym/:filename', async (req: Request, res: Response) => {
+  try {
+    const folder = String(req.params.folder || '');
+    const ym = String(req.params.ym || '');
+    const filename = String(req.params.filename || '');
+    const objectPath = `${folder}/${ym}/${filename}`;
+
+    const upstream = await fetchR2MediaStream(objectPath, req.headers.range);
+    if (!upstream) {
+      return res.status(404).json({ error: 'Media file not found' });
+    }
+    if (!upstream.ok && upstream.status !== 206) {
+      return res.status(upstream.status === 404 ? 404 : 502).json({
+        error: `Media stream error (HTTP ${upstream.status})`,
+      });
+    }
+
+    const upstreamCt = upstream.headers.get('content-type');
+    const contentType =
+      upstreamCt && upstreamCt !== 'application/octet-stream' && upstreamCt !== 'video/quicktime'
+        ? upstreamCt
+        : inferMediaContentTypeFromPath(objectPath);
+
+    res.status(upstream.status);
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    const contentLength = upstream.headers.get('content-length');
+    if (contentLength) res.setHeader('Content-Length', contentLength);
+    const contentRange = upstream.headers.get('content-range');
+    if (contentRange) res.setHeader('Content-Range', contentRange);
+    const etag = upstream.headers.get('etag');
+    if (etag) res.setHeader('ETag', etag);
+
+    if (!upstream.body) {
+      return res.end();
+    }
+    const nodeStream = Readable.fromWeb(upstream.body as unknown as Parameters<typeof Readable.fromWeb>[0]);
+    nodeStream.on('error', () => {
+      if (!res.headersSent) {
+        res.status(502).end();
+      } else {
+        res.end();
+      }
+    });
+    req.on('close', () => {
+      nodeStream.destroy();
+    });
+    nodeStream.pipe(res);
+  } catch (err: unknown) {
+    if (!res.headersSent) {
+      return res.status(502).json({ error: err instanceof Error ? err.message : 'Failed to stream media' });
+    }
+    res.end();
   }
 });
 
@@ -1640,8 +1739,12 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
         avatar: user.avatar,
         newsfeed: normalizeUserNewsfeed(user.newsfeed),
       },
-      posts: filteredPosts,
-      messages,
+      posts: filteredPosts.map((p) =>
+        p.mediaUrl ? { ...p, mediaUrl: rewriteBrokenR2MediaUrl(p.mediaUrl) } : p
+      ),
+      messages: messages.map((m) =>
+        m.mediaUrl ? { ...m, mediaUrl: rewriteBrokenR2MediaUrl(m.mediaUrl) } : m
+      ),
       users: visibleUsers,
       knowledge,
       leaderboard,
@@ -2211,6 +2314,100 @@ app.post('/api/admin/cloud-restore', requireAuth, requireAdmin, async (req: Auth
     return res.json(result);
   } catch (err: unknown) {
     return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to restore backup' });
+  }
+});
+
+// ---- ENCRYPTED CLOUDFLARE R2 ACCOUNT VAULT (NO GOOGLE / NO 2FA NEEDED) ----
+function isAdminMutationCsrfSafe(req: Request): boolean {
+  const hasBearer = Boolean(req.headers.authorization?.startsWith('Bearer '));
+  if (hasBearer) return true;
+  const origin = req.headers.origin;
+  const expectedHost = (req.headers['x-forwarded-host'] || req.headers.host || '').toString().split(',')[0].trim();
+  const hasRequestedWith = req.headers['x-requested-with'] === 'XMLHttpRequest';
+  if (hasRequestedWith) return true;
+  if (typeof origin === 'string' && expectedHost) {
+    try {
+      return new URL(origin).host === expectedHost;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+app.get('/api/admin/r2-vault/status', requireAuth, requireAdmin, async (_req: AuthedRequest, res: Response) => {
+  try {
+    const status = await getR2VaultBackupStatus();
+    return res.json({
+      ...status,
+      lastAutoSavedAt: r2VaultLastAutoSavedAt,
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to check R2 Vault status' });
+  }
+});
+
+app.post('/api/admin/r2-vault/backup', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    if (!isAdminMutationCsrfSafe(req)) {
+      return res.status(403).json({ error: 'Cross-origin vault backup blocked' });
+    }
+    if (!isR2VaultConfigured()) {
+      return res.status(400).json({ error: 'Cloudflare R2 is not configured on this server.' });
+    }
+    const snapshot = await store.exportCloudBackup();
+    const saved = await saveEncryptedVaultToR2(snapshot);
+    r2VaultLastAutoSavedAt = saved.savedAt;
+    return res.json({
+      ok: true,
+      ...saved,
+      accountsSynced: snapshot.users.length,
+      announcementsSynced: snapshot.announcements.length,
+      ledgerSynced: snapshot.ledger.length,
+      knowledgeSynced: snapshot.knowledge.length,
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save encrypted R2 Vault backup' });
+  }
+});
+
+app.post('/api/admin/r2-vault/restore', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    if (!isAdminMutationCsrfSafe(req)) {
+      return res.status(403).json({ error: 'Cross-origin vault restore blocked' });
+    }
+    if (!isR2VaultConfigured()) {
+      return res.status(400).json({ error: 'Cloudflare R2 is not configured on this server.' });
+    }
+    const loaded = await loadEncryptedVaultFromR2<Awaited<ReturnType<typeof store.exportCloudBackup>>>();
+    if (!loaded || !loaded.snapshot) {
+      return res.status(404).json({ error: 'No encrypted account backup found in Cloudflare R2 yet.' });
+    }
+    const s = loaded.snapshot;
+    const result = await store.restoreCloudBackup({
+      users: Array.isArray(s.users) ? s.users : undefined,
+      settings: s.settings && typeof s.settings === 'object' ? s.settings : undefined,
+      newsfeedConfig: s.newsfeedConfig && typeof s.newsfeedConfig === 'object' ? s.newsfeedConfig : undefined,
+      ledger: Array.isArray(s.ledger) ? s.ledger : undefined,
+      knowledge: Array.isArray(s.knowledge) ? s.knowledge : undefined,
+      announcements: Array.isArray(s.announcements) ? s.announcements : undefined,
+    });
+    if (
+      result.restoredUsersCount > 0 ||
+      result.restoredLedgerCount > 0 ||
+      result.restoredKnowledgeCount > 0 ||
+      result.restoredAnnouncementsCount > 0
+    ) {
+      broadcastSync('all');
+    }
+    return res.json({
+      ok: true,
+      savedAt: loaded.savedAt,
+      sizeBytes: loaded.sizeBytes,
+      ...result,
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to restore from encrypted R2 Vault' });
   }
 });
 
@@ -3955,6 +4152,31 @@ ${String(readmeContent).slice(0, 40000)}`;
 
 
 async function startServer() {
+  try {
+    await store.ready();
+    if (store.storageMode !== 'postgres' && isR2VaultConfigured()) {
+      const current = await store.exportCloudBackup();
+      if (current.users.length <= 1) {
+        const loaded = await loadEncryptedVaultFromR2<Awaited<ReturnType<typeof store.exportCloudBackup>>>();
+        if (loaded?.snapshot && Array.isArray(loaded.snapshot.users) && loaded.snapshot.users.length > 0) {
+          const restored = await store.restoreCloudBackup({
+            users: loaded.snapshot.users,
+            settings: loaded.snapshot.settings,
+            newsfeedConfig: loaded.snapshot.newsfeedConfig,
+            ledger: loaded.snapshot.ledger,
+            knowledge: loaded.snapshot.knowledge,
+            announcements: loaded.snapshot.announcements,
+          });
+          console.log(
+            `[R2Vault] Auto-restored ${restored.restoredUsersCount} user account(s) from encrypted Cloudflare R2 vault (saved ${loaded.savedAt}).`
+          );
+        }
+      }
+    }
+  } catch (err: unknown) {
+    console.warn('[R2Vault] Startup auto-restore check skipped:', err instanceof Error ? err.message : err);
+  }
+
   const candidateDistPaths = [
     path.resolve(process.cwd(), 'dist'),
     path.resolve(__dirname, 'dist'),

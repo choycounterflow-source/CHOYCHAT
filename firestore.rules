@@ -2,8 +2,427 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /{document=**} {
-      allow read, write: if request.auth != null;
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isAuthenticated() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'choycounterflow@gmail.com' ||
+        request.auth.token.email == 'choyjiez07@gmail.com'
+      );
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$');
+    }
+
+    function isSafeString(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isValidOptionalString(data, field, maxLen) {
+      return !(field in data) || (data[field] is string && data[field].size() <= maxLen);
+    }
+
+    function isValidPublicUser(data, userId) {
+      return data.keys().hasOnly(['uid', 'displayName', 'photoURL', 'status', 'visibility', 'createdAt', 'updatedAt'])
+        && data.keys().hasAll(['uid', 'displayName', 'status', 'visibility', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && isSafeString(data.displayName, 1, 80)
+        && isValidOptionalString(data, 'photoURL', 500)
+        && data.status in ['pending', 'approved']
+        && data.visibility == 'public'
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPrivateUserInfo(data, userId) {
+      return data.keys().hasOnly(['uid', 'email', 'phone', 'blockedUsers', 'createdAt', 'updatedAt'])
+        && data.keys().hasAll(['uid', 'email', 'blockedUsers', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && isSafeString(data.email, 3, 160)
+        && isValidOptionalString(data, 'phone', 32)
+        && data.blockedUsers is list
+        && data.blockedUsers.size() <= 100
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPost(data) {
+      return data.keys().hasOnly(['authorId', 'authorName', 'authorHandle', 'authorAvatar', 'content', 'mediaUrl', 'mediaType', 'category', 'visibility', 'createdAt'])
+        && data.keys().hasAll(['authorId', 'authorName', 'authorHandle', 'authorAvatar', 'content', 'mediaType', 'category', 'visibility', 'createdAt'])
+        && isValidId(data.authorId)
+        && isSafeString(data.authorName, 1, 80)
+        && isSafeString(data.authorHandle, 1, 80)
+        && isSafeString(data.authorAvatar, 0, 500)
+        && isSafeString(data.content, 1, 2000)
+        && isValidOptionalString(data, 'mediaUrl', 1000)
+        && data.mediaType in ['text', 'image', 'video']
+        && data.category in ['feed', 'myday', 'video']
+        && data.visibility == 'public'
+        && data.createdAt is timestamp;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasOnly(['senderId', 'senderName', 'roomId', 'text', 'mediaUrl', 'mediaType', 'reactions', 'visibility', 'createdAt', 'updatedAt'])
+        && data.keys().hasAll(['senderId', 'senderName', 'roomId', 'text', 'mediaType', 'reactions', 'visibility', 'createdAt', 'updatedAt'])
+        && isValidId(data.senderId)
+        && isSafeString(data.senderName, 1, 80)
+        && data.roomId in ['VIP Group', 'Choy Admin', 'Maria Santos']
+        && isSafeString(data.text, 0, 2000)
+        && isValidOptionalString(data, 'mediaUrl', 1000)
+        && data.mediaType in ['text', 'image', 'video', 'audio', 'file']
+        && data.reactions is list
+        && data.reactions.size() <= 20
+        && data.visibility == 'members'
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidLedgerRow(data) {
+      return data.keys().hasOnly(['name', 'fiveH', 'fiveHType', 'bulig', 'point5', 'halfSack', 'oneSack', 'bal', 'updatedBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasAll(['name', 'fiveH', 'fiveHType', 'bulig', 'point5', 'halfSack', 'oneSack', 'bal', 'updatedBy', 'createdAt', 'updatedAt'])
+        && isSafeString(data.name, 1, 100)
+        && data.fiveH is number
+        && data.fiveHType in ['blue', 'red']
+        && data.bulig is number
+        && data.point5 is number
+        && data.halfSack is number
+        && data.oneSack is number
+        && data.bal is number
+        && isValidId(data.updatedBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidKnowledgeQA(data) {
+      return data.keys().hasOnly(['question', 'answer', 'visibility', 'createdBy', 'createdAt'])
+        && data.keys().hasAll(['question', 'answer', 'visibility', 'createdBy', 'createdAt'])
+        && isSafeString(data.question, 1, 300)
+        && isSafeString(data.answer, 1, 2000)
+        && data.visibility == 'public'
+        && isValidId(data.createdBy)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidAdminSetting(data) {
+      return data.keys().hasOnly(['fiveH', 'bulig', 'point5', 'halfSack', 'oneSack', 'defFiveH', 'defBulig', 'defPoint5', 'defHalfSack', 'defOneSack', 'updatedBy', 'updatedAt'])
+        && data.keys().hasAll(['fiveH', 'bulig', 'point5', 'halfSack', 'oneSack', 'defFiveH', 'defBulig', 'defPoint5', 'defHalfSack', 'defOneSack', 'updatedBy', 'updatedAt'])
+        && data.fiveH is number
+        && data.bulig is number
+        && data.point5 is number
+        && data.halfSack is number
+        && data.oneSack is number
+        && data.defFiveH is number
+        && data.defBulig is number
+        && data.defPoint5 is number
+        && data.defHalfSack is number
+        && data.defOneSack is number
+        && isValidId(data.updatedBy)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidLeaderboardEntry(data) {
+      return data.keys().hasOnly(['name', 'total', 'visibility', 'updatedAt'])
+        && data.keys().hasAll(['name', 'total', 'visibility', 'updatedAt'])
+        && isSafeString(data.name, 1, 100)
+        && data.total is number
+        && data.visibility == 'public'
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAdminRecord(data, userId) {
+      return data.keys().hasOnly(['uid', 'createdAt'])
+        && data.keys().hasAll(['uid', 'createdAt'])
+        && data.uid == userId
+        && isValidId(data.uid)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidCloudAccount(data, accountId) {
+      return data.keys().hasOnly([
+          'accountId', 'name', 'phone', 'pinHash', 'role', 'status',
+          'blockedUsers', 'avatar', 'newsfeed', 'accountCreatedAt',
+          'accountUpdatedAt', 'updatedBy', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasAll([
+          'accountId', 'name', 'phone', 'pinHash', 'role', 'status',
+          'blockedUsers', 'newsfeed', 'accountCreatedAt',
+          'accountUpdatedAt', 'updatedBy', 'createdAt', 'updatedAt'
+        ])
+        && data.accountId == accountId
+        && isValidId(data.accountId)
+        && isSafeString(data.name, 1, 100)
+        && isSafeString(data.phone, 1, 64)
+        && isSafeString(data.pinHash, 10, 256)
+        && data.role in ['admin', 'member']
+        && data.status in ['pending', 'approved']
+        && data.blockedUsers is list
+        && data.blockedUsers.size() <= 100
+        && isValidOptionalString(data, 'avatar', 200000)
+        && data.newsfeed in ['feed_a', 'feed_b', 'feed_c', 'feed_bc']
+        && isSafeString(data.accountCreatedAt, 1, 64)
+        && isSafeString(data.accountUpdatedAt, 1, 64)
+        && isValidId(data.updatedBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCloudNewsfeedConfig(data) {
+      return data.keys().hasOnly(['feedATitle', 'feedBTitle', 'feedCTitle', 'updatedBy', 'updatedAt'])
+        && data.keys().hasAll(['feedATitle', 'feedBTitle', 'feedCTitle', 'updatedBy', 'updatedAt'])
+        && isSafeString(data.feedATitle, 1, 80)
+        && isSafeString(data.feedBTitle, 1, 80)
+        && isSafeString(data.feedCTitle, 1, 80)
+        && isValidId(data.updatedBy)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCloudAnnouncement(data, annId) {
+      return data.keys().hasOnly([
+          'annId', 'title', 'message', 'badge', 'tone', 'target',
+          'active', 'createdBy', 'annCreatedAt', 'annUpdatedAt',
+          'updatedBy', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasAll([
+          'annId', 'title', 'message', 'badge', 'tone', 'target',
+          'active', 'createdBy', 'annCreatedAt', 'annUpdatedAt',
+          'updatedBy', 'createdAt', 'updatedAt'
+        ])
+        && data.annId == annId
+        && isValidId(data.annId)
+        && isSafeString(data.title, 1, 120)
+        && isSafeString(data.message, 1, 1000)
+        && data.badge in ['announcement', 'reminder', 'urgent']
+        && data.tone in ['emerald', 'amber', 'sky', 'rose']
+        && data.target in ['all', 'feed_a', 'feed_b', 'feed_c', 'feed_bc']
+        && data.active is bool
+        && isSafeString(data.createdBy, 1, 80)
+        && isSafeString(data.annCreatedAt, 1, 64)
+        && isSafeString(data.annUpdatedAt, 1, 64)
+        && isValidId(data.updatedBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow get, list: if isAuthenticated() && resource.data.visibility == 'public';
+      allow create: if isValidId(userId)
+        && isValidPublicUser(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (isAdmin() || (isOwner(userId) && incoming().status == 'pending'));
+      allow update: if isValidId(userId)
+        && isValidPublicUser(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'status', 'updatedAt'])) ||
+          (isOwner(userId) && incoming().status == existing().status && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'updatedAt']))
+        );
+      allow delete: if isAdmin();
+
+      match /private/{docId} {
+        allow get, list: if (isOwner(userId) || isAdmin())
+          && exists(/databases/$(database)/documents/users/$(userId));
+        allow create: if isValidId(docId)
+          && (isOwner(userId) || isAdmin())
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && isValidPrivateUserInfo(incoming(), userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isValidId(docId)
+          && (isOwner(userId) || isAdmin())
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && isValidPrivateUserInfo(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'phone', 'blockedUsers', 'updatedAt']);
+        allow delete: if isAdmin();
+      }
+    }
+
+    match /posts/{postId} {
+      allow get, list: if isAuthenticated() && resource.data.visibility == 'public';
+      allow create: if isValidId(postId)
+        && isAuthenticated()
+        && incoming().authorId == request.auth.uid
+        && isValidPost(incoming())
+        && incoming().createdAt == request.time;
+      allow update: if isValidId(postId)
+        && (isAdmin() || isOwner(existing().authorId))
+        && isValidPost(incoming())
+        && incoming().authorId == existing().authorId
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['authorName', 'authorHandle', 'authorAvatar', 'content', 'mediaUrl', 'mediaType', 'category']);
+      allow delete: if isAdmin() || isOwner(existing().authorId);
+    }
+
+    match /messages/{messageId} {
+      allow get, list: if isAuthenticated() && resource.data.visibility == 'members';
+      allow create: if isValidId(messageId)
+        && isAuthenticated()
+        && incoming().senderId == request.auth.uid
+        && isValidMessage(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(messageId)
+        && isAuthenticated()
+        && isValidMessage(incoming())
+        && incoming().senderId == existing().senderId
+        && incoming().roomId == existing().roomId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['text', 'mediaUrl', 'mediaType', 'reactions', 'updatedAt'])) ||
+          (isOwner(existing().senderId) && incoming().diff(existing()).affectedKeys().hasOnly(['text', 'reactions', 'updatedAt'])) ||
+          (incoming().diff(existing()).affectedKeys().hasOnly(['reactions', 'updatedAt']))
+        );
+      allow delete: if isAdmin() || isOwner(existing().senderId);
+    }
+
+    match /ledger/{rowId} {
+      allow get, list: if isAdmin();
+      allow create: if isValidId(rowId)
+        && isAdmin()
+        && isValidLedgerRow(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(rowId)
+        && isAdmin()
+        && isValidLedgerRow(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'fiveH', 'fiveHType', 'bulig', 'point5', 'halfSack', 'oneSack', 'bal', 'updatedBy', 'updatedAt']);
+      allow delete: if isAdmin();
+    }
+
+    match /knowledge/{qaId} {
+      allow get, list: if isAuthenticated() && resource.data.visibility == 'public';
+      allow create: if isValidId(qaId)
+        && isAdmin()
+        && isValidKnowledgeQA(incoming())
+        && incoming().createdAt == request.time;
+      allow update: if isValidId(qaId)
+        && isAdmin()
+        && isValidKnowledgeQA(incoming())
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['question', 'answer']);
+      allow delete: if isAdmin();
+    }
+
+    match /settings/{settingId} {
+      allow get, list: if isAdmin();
+      allow create: if isValidId(settingId)
+        && isAdmin()
+        && isValidAdminSetting(incoming())
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(settingId)
+        && isAdmin()
+        && isValidAdminSetting(incoming())
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['fiveH', 'bulig', 'point5', 'halfSack', 'oneSack', 'defFiveH', 'defBulig', 'defPoint5', 'defHalfSack', 'defOneSack', 'updatedBy', 'updatedAt']);
+      allow delete: if isAdmin();
+    }
+
+    match /leaderboard/{entryId} {
+      allow get, list: if isAuthenticated() && resource.data.visibility == 'public';
+      allow create: if isValidId(entryId)
+        && isAdmin()
+        && isValidLeaderboardEntry(incoming())
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(entryId)
+        && isAdmin()
+        && isValidLeaderboardEntry(incoming())
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'total', 'updatedAt']);
+      allow delete: if isAdmin();
+    }
+
+    match /admins/{userId} {
+      allow get, list: if isAdmin();
+      allow create: if isValidId(userId)
+        && isAdmin()
+        && isValidAdminRecord(incoming(), userId)
+        && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    match /cloud_accounts/{accountId} {
+      allow get, list: if isAdmin();
+      allow create: if isValidId(accountId)
+        && isAdmin()
+        && isValidCloudAccount(incoming(), accountId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(accountId)
+        && isAdmin()
+        && isValidCloudAccount(incoming(), accountId)
+        && incoming().accountId == existing().accountId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'phone', 'pinHash', 'role', 'status',
+          'blockedUsers', 'avatar', 'newsfeed', 'accountCreatedAt',
+          'accountUpdatedAt', 'updatedBy', 'updatedAt'
+        ]);
+      allow delete: if isAdmin();
+    }
+
+    match /cloud_newsfeed_config/{docId} {
+      allow get, list: if isAdmin();
+      allow create: if isValidId(docId)
+        && isAdmin()
+        && isValidCloudNewsfeedConfig(incoming())
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(docId)
+        && isAdmin()
+        && isValidCloudNewsfeedConfig(incoming())
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['feedATitle', 'feedBTitle', 'feedCTitle', 'updatedBy', 'updatedAt']);
+      allow delete: if isAdmin();
+    }
+
+    match /cloud_announcements/{annId} {
+      allow get, list: if isAdmin();
+      allow create: if isValidId(annId)
+        && isAdmin()
+        && isValidCloudAnnouncement(incoming(), annId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(annId)
+        && isAdmin()
+        && isValidCloudAnnouncement(incoming(), annId)
+        && incoming().annId == existing().annId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'title', 'message', 'badge', 'tone', 'target',
+          'active', 'createdBy', 'annCreatedAt', 'annUpdatedAt',
+          'updatedBy', 'updatedAt'
+        ]);
+      allow delete: if isAdmin();
     }
   }
 }

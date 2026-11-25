@@ -350,6 +350,14 @@ export function sanitizeMediaUrl(url: unknown): string | undefined {
   if (!trimmed) return undefined;
   if (trimmed.startsWith('/assets/') && trimmed.length <= 500) return trimmed;
   if (
+    trimmed.length <= 500 &&
+    /^\/api\/media\/r2\/(posts|messages|voice|avatars)\/\d{4}-\d{2}\/[a-zA-Z0-9_-]+\.(mp4|webm|mov|m4v|3gp|mkv|ogv|jpg|jpeg|png|webp|gif|mp3|ogg|m4a|wav|aac)$/i.test(
+      trimmed
+    )
+  ) {
+    return trimmed;
+  }
+  if (
     trimmed.length <= 4000000 &&
     /^data:image\/(png|jpeg|jpg|webp|gif|avif|heic);base64,[A-Za-z0-9+/=]+$/.test(trimmed)
   ) {
@@ -357,7 +365,7 @@ export function sanitizeMediaUrl(url: unknown): string | undefined {
   }
   if (
     trimmed.length <= 8500000 &&
-    /^data:video\/(mp4|webm|quicktime);base64,[A-Za-z0-9+/=]+$/.test(trimmed)
+    /^data:video\/(mp4|webm|quicktime|3gpp|x-m4v|ogg|x-matroska)(;codecs=[a-zA-Z0-9.,_-]+)?;base64,[A-Za-z0-9+/=]+$/.test(trimmed)
   ) {
     return trimmed;
   }

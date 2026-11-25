@@ -89,6 +89,8 @@ import {
 } from './components/SecurityStudio';
 import { GitHubIntelligence } from './components/GitHubIntelligence';
 import { ChatVideoPlayer } from './components/ChatVideoPlayer';
+import { CallDurationTimer, type CallTimeLimitSeconds } from './components/CallDurationTimer';
+import { CallSignalIndicator, type CallNetworkQuality } from './components/CallSignalIndicator';
 import { ImageZoomModal } from './components/ImageZoomModal';
 import { useThemePreferences } from './hooks/useThemePreferences';
 import { COLOR_THEME_LIST, THEME_PRESETS } from './themePresets';
@@ -101,9 +103,11 @@ import {
 import { auth as firebaseAuth, type User as FirebaseUser } from './firebase';
 import {
   connectFirebaseGoogleAdmin,
+  connectFirebaseGoogleRedirect,
   disconnectFirebaseGoogle,
   fetchSnapshotFromFirestore,
   isVerifiedAdminFirebaseUser,
+  resolveFirebaseRedirectSignIn,
   subscribeFirebaseAuth,
   syncSnapshotToFirestore,
   type CloudBackupSnapshot,
@@ -509,6 +513,14 @@ export default function App() {
   const [callError, setCallError] = useState('');
   const [callPartnerName, setCallPartnerName] = useState('');
   const [callElapsedSec, setCallElapsedSec] = useState(0);
+  const [callTimeLimitSec, setCallTimeLimitSec] = useState<CallTimeLimitSeconds>(30 * 60);
+  const [callNetworkQuality, setCallNetworkQuality] = useState<CallNetworkQuality>({
+    level: 'checking',
+    bars: 0,
+    rttMs: null,
+    packetLossPct: null,
+    source: 'browser',
+  });
   const [isVideoMuted, setIsVideoMuted] = useState(false);
   const [isAudioMuted, setIsAudioMuted] = useState(false);
   const [cameraFacing, setCameraFacing] = useState<'user' | 'environment'>('user');
@@ -1843,15 +1855,28 @@ export default function App() {
 
   // 2b. Firebase Cloud Sync & Auto-Backup / Auto-Restore (Admin Google Session)
   useEffect(() => {
+    let active = true;
+    void resolveFirebaseRedirectSignIn().then(({ user, error }) => {
+      if (!active) return;
+      if (error) {
+        setFirebaseSyncState('error');
+        setFirebaseSyncError(error);
+        showNotice(error);
+      } else if (user) {
+        setFirebaseUser(user);
+      }
+    });
     const unsub = subscribeFirebaseAuth((user) => {
       setFirebaseUser(user);
       if (!user) {
         firebaseInitialSyncUidRef.current = null;
-        setFirebaseSyncState('idle');
-        setFirebaseSyncError('');
+        setFirebaseSyncState((prev) => (prev === 'error' ? prev : 'idle'));
       }
     });
-    return unsub;
+    return () => {
+      active = false;
+      unsub();
+    };
   }, []);
 
   const pushBackupToFirebase = useCallback(
@@ -1923,12 +1948,17 @@ export default function App() {
 
   const handleConnectFirebaseAdmin = useCallback(async () => {
     setFirebaseSyncError('');
+    setFirebaseSyncState('syncing');
     try {
       const user = await connectFirebaseGoogleAdmin();
+      if (!user) {
+        // Redirect flow initiated on standalone mobile host; page will navigate to Google Sign-In
+        return;
+      }
       setFirebaseUser(user);
       if (!isVerifiedAdminFirebaseUser(user)) {
         setFirebaseSyncState('error');
-        const msg = `Connected ${user.email || 'account'}, but Admin email (choycounterflow@gmail.com) is required for Firebase Cloud Sync.`;
+        const msg = `Connected ${user.email || 'account'}, but Admin email (choycounterflow@gmail.com or choyjiez07@gmail.com) is required for Firebase Cloud Sync.`;
         setFirebaseSyncError(msg);
         showNotice(msg);
         return;
@@ -1944,6 +1974,19 @@ export default function App() {
       showNotice(msg);
     }
   }, [currentUser?.id, restoreBackupFromFirebase, pushBackupToFirebase]);
+
+  const handleConnectFirebaseRedirect = useCallback(async () => {
+    setFirebaseSyncError('');
+    setFirebaseSyncState('syncing');
+    try {
+      await connectFirebaseGoogleRedirect();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Mobile redirect Google sign-in failed';
+      setFirebaseSyncState('error');
+      setFirebaseSyncError(msg);
+      showNotice(msg);
+    }
+  }, []);
 
   const handleDisconnectFirebaseAdmin = useCallback(async () => {
     await disconnectFirebaseGoogle();
@@ -3191,6 +3234,165 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [isInVideoCall, callStatus]);
 
+  // Live network signal strength & WebRTC connection quality monitor
+  useEffect(() => {
+    if (!isInVideoCall) {
+      setCallNetworkQuality({
+        level: 'checking',
+        bars: 0,
+        rttMs: null,
+        packetLossPct: null,
+        source: 'browser',
+      });
+      return;
+    }
+
+    let prevPacketsLost = 0;
+    let prevPacketsReceived = 0;
+    let hasPrevSample = false;
+
+    const getBrowserConnectionInfo = (): { effectiveType?: string; rtt?: number } => {
+      const nav = navigator as Navigator & {
+        connection?: { effectiveType?: string; rtt?: number };
+        mozConnection?: { effectiveType?: string; rtt?: number };
+        webkitConnection?: { effectiveType?: string; rtt?: number };
+      };
+      const conn = nav.connection || nav.mozConnection || nav.webkitConnection;
+      return {
+        effectiveType: typeof conn?.effectiveType === 'string' ? conn.effectiveType : undefined,
+        rtt: typeof conn?.rtt === 'number' && Number.isFinite(conn.rtt) && conn.rtt > 0 ? conn.rtt : undefined,
+      };
+    };
+
+    const classifyFromMetrics = (
+      rttMs: number | null,
+      lossPct: number | null,
+      effectiveType?: string
+    ): { level: CallNetworkQuality['level']; bars: CallNetworkQuality['bars'] } => {
+      const loss = lossPct ?? 0;
+      if (rttMs !== null) {
+        if (rttMs <= 120 && loss < 1.5) return { level: 'excellent', bars: 4 };
+        if (rttMs <= 260 && loss < 4) return { level: 'good', bars: 3 };
+        if (rttMs <= 450 && loss < 9) return { level: 'fair', bars: 2 };
+        return { level: 'poor', bars: 1 };
+      }
+      if (effectiveType === '4g') return { level: 'excellent', bars: 4 };
+      if (effectiveType === '3g') return { level: 'fair', bars: 2 };
+      if (effectiveType === '2g' || effectiveType === 'slow-2g') return { level: 'poor', bars: 1 };
+      return { level: 'checking', bars: 0 };
+    };
+
+    const sampleQuality = async () => {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        setCallNetworkQuality({
+          level: 'offline',
+          bars: 0,
+          rttMs: null,
+          packetLossPct: null,
+          source: 'offline',
+        });
+        return;
+      }
+
+      const browserInfo = getBrowserConnectionInfo();
+      const pc = peerConnectionRef.current;
+
+      if (pc && callStatus === 'connected' && typeof pc.getStats === 'function') {
+        try {
+          const stats = await pc.getStats();
+          let rttMs: number | null = null;
+          let totalLost = 0;
+          let totalReceived = 0;
+          let foundInbound = false;
+
+          stats.forEach((report) => {
+            if (
+              report.type === 'candidate-pair' &&
+              report.state === 'succeeded' &&
+              (report.nominated || rttMs === null) &&
+              typeof report.currentRoundTripTime === 'number' &&
+              Number.isFinite(report.currentRoundTripTime)
+            ) {
+              rttMs = Math.round(report.currentRoundTripTime * 1000);
+            }
+            if (report.type === 'inbound-rtp' && (report.kind === 'video' || report.kind === 'audio')) {
+              foundInbound = true;
+              if (typeof report.packetsLost === 'number') totalLost += Math.max(0, report.packetsLost);
+              if (typeof report.packetsReceived === 'number') totalReceived += Math.max(0, report.packetsReceived);
+            }
+          });
+
+          let lossPct: number | null = null;
+          if (foundInbound) {
+            if (hasPrevSample) {
+              const deltaLost = Math.max(0, totalLost - prevPacketsLost);
+              const deltaRecv = Math.max(0, totalReceived - prevPacketsReceived);
+              const deltaTotal = deltaLost + deltaRecv;
+              lossPct = deltaTotal > 0 ? (deltaLost / deltaTotal) * 100 : 0;
+            } else if (totalLost + totalReceived > 0) {
+              lossPct = (totalLost / (totalLost + totalReceived)) * 100;
+            }
+            prevPacketsLost = totalLost;
+            prevPacketsReceived = totalReceived;
+            hasPrevSample = true;
+          }
+
+          if (rttMs !== null || lossPct !== null) {
+            const effectiveRtt = rttMs ?? browserInfo.rtt ?? null;
+            const { level, bars } = classifyFromMetrics(effectiveRtt, lossPct, browserInfo.effectiveType);
+            setCallNetworkQuality({
+              level,
+              bars,
+              rttMs: effectiveRtt,
+              packetLossPct: lossPct,
+              source: 'webrtc',
+              effectiveType: browserInfo.effectiveType,
+            });
+            return;
+          }
+        } catch {
+          // Fall back to browser connection estimate
+        }
+      }
+
+      const fallbackRtt = browserInfo.rtt ?? null;
+      const { level, bars } = classifyFromMetrics(fallbackRtt, null, browserInfo.effectiveType);
+      setCallNetworkQuality({
+        level,
+        bars,
+        rttMs: fallbackRtt,
+        packetLossPct: null,
+        source: 'browser',
+        effectiveType: browserInfo.effectiveType,
+      });
+    };
+
+    void sampleQuality();
+    const interval = window.setInterval(() => {
+      void sampleQuality();
+    }, 2000);
+    const onOffline = () => {
+      setCallNetworkQuality({
+        level: 'offline',
+        bars: 0,
+        rttMs: null,
+        packetLossPct: null,
+        source: 'offline',
+      });
+    };
+    const onOnline = () => {
+      void sampleQuality();
+    };
+    window.addEventListener('offline', onOffline);
+    window.addEventListener('online', onOnline);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('offline', onOffline);
+      window.removeEventListener('online', onOnline);
+    };
+  }, [isInVideoCall, callStatus]);
+
   // Stop media tracks cleanly on unmount
   useEffect(() => {
     return () => {
@@ -3551,12 +3753,34 @@ export default function App() {
       reader.readAsDataURL(file);
     });
 
+  const inferUploadMimeType = (blob: Blob): string => {
+    const raw = (blob.type || '').trim().toLowerCase();
+    if (raw && raw !== 'application/octet-stream') return raw;
+    const fileName = blob instanceof File ? (blob.name || '').toLowerCase() : '';
+    if (fileName.endsWith('.mp4') || fileName.endsWith('.m4v')) return 'video/mp4';
+    if (fileName.endsWith('.webm')) return 'video/webm';
+    if (fileName.endsWith('.mov')) return 'video/quicktime';
+    if (fileName.endsWith('.3gp')) return 'video/3gpp';
+    if (fileName.endsWith('.mkv')) return 'video/x-matroska';
+    if (fileName.endsWith('.ogv')) return 'video/ogg';
+    if (fileName.endsWith('.jpg') || fileName.endsWith('.jpeg')) return 'image/jpeg';
+    if (fileName.endsWith('.png')) return 'image/png';
+    if (fileName.endsWith('.webp')) return 'image/webp';
+    if (fileName.endsWith('.gif')) return 'image/gif';
+    if (fileName.endsWith('.mp3')) return 'audio/mpeg';
+    if (fileName.endsWith('.m4a')) return 'audio/mp4';
+    if (fileName.endsWith('.ogg')) return 'audio/ogg';
+    if (fileName.endsWith('.wav')) return 'audio/wav';
+    if (fileName.endsWith('.aac')) return 'audio/aac';
+    return 'application/octet-stream';
+  };
+
   const uploadMediaToCloud = async (
     blob: Blob,
     folder: 'posts' | 'messages' | 'voice' | 'avatars'
   ): Promise<{ url: string; mediaType: 'image' | 'video' | 'audio'; provider?: 'r2' | 'supabase' } | null> => {
     const headers: Record<string, string> = {
-      'Content-Type': blob.type || 'application/octet-stream',
+      'Content-Type': inferUploadMimeType(blob),
       'X-Media-Folder': folder,
       'X-Requested-With': 'XMLHttpRequest',
     };
@@ -5764,23 +5988,43 @@ export default function App() {
               </div>
             )}
 
-            {/* Top Call Status Pill */}
-            <div className="absolute top-4 left-4 right-4 flex items-center justify-between pointer-events-none">
-              <div className="px-3 py-1.5 rounded-xl bg-slate-950/75 border border-emerald-500/40 backdrop-blur text-white text-xs font-bold flex items-center gap-2">
-                <span
-                  className={`w-2 h-2 rounded-full ${
-                    callStatus === 'connected'
-                      ? 'bg-emerald-400'
+            {/* Top Call Header, Network Signal Strength & Prominent Duration Timer HUD */}
+            <div className="absolute top-3 left-3 right-3 sm:top-4 sm:left-4 sm:right-4 flex flex-wrap items-start justify-between gap-2.5 pointer-events-none z-10">
+              <div className="flex flex-wrap items-center gap-2 max-w-full">
+                <div className="px-3.5 py-2 rounded-2xl bg-slate-950/82 border border-white/15 backdrop-blur-md text-white text-xs sm:text-sm font-semibold flex items-center gap-2.5 shadow-lg max-w-full">
+                  <span
+                    className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                      callStatus === 'connected'
+                        ? 'bg-emerald-400'
+                        : callStatus === 'error'
+                        ? 'bg-red-500'
+                        : 'bg-amber-400 motion-safe:animate-pulse'
+                    }`}
+                  />
+                  <span className="truncate max-w-[140px] sm:max-w-[220px]">{callPartnerName || activeChat}</span>
+                  <span className="text-[11px] font-medium text-slate-300 shrink-0">
+                    {callStatus === 'connected'
+                      ? 'Connected'
                       : callStatus === 'error'
-                      ? 'bg-red-500'
-                      : 'bg-amber-400 animate-pulse'
-                  }`}
-                />
-                <span className="truncate max-w-[160px] sm:max-w-[260px]">{callPartnerName || activeChat}</span>
-                {callStatus === 'connected' && (
-                  <span className="font-mono text-emerald-300">{formatRecordingTime(callElapsedSec)}</span>
-                )}
+                      ? 'Error'
+                      : callStatus === 'ringing'
+                      ? 'Connecting'
+                      : 'Calling'}
+                  </span>
+                </div>
+
+                <CallSignalIndicator quality={callNetworkQuality} />
               </div>
+
+              <CallDurationTimer
+                elapsedSec={callElapsedSec}
+                limitSec={callTimeLimitSec}
+                isConnected={callStatus === 'connected'}
+                onChangeLimit={(next) => setCallTimeLimitSec(next)}
+                onExtendFiveMin={() =>
+                  setCallTimeLimitSec((prev) => Math.max(prev ?? callElapsedSec, callElapsedSec) + 5 * 60)
+                }
+              />
             </div>
 
             {/* Local Self Camera Live Preview (PiP) */}
@@ -6706,12 +6950,7 @@ export default function App() {
                             className="max-h-48 w-full object-contain rounded-lg"
                           />
                         ) : (
-                          <video
-                            src={newPostMedia}
-                            controls
-                            playsInline
-                            className="max-h-48 w-full rounded-lg bg-white dark:bg-slate-950"
-                          />
+                          <ChatVideoPlayer src={newPostMedia} compact />
                         )}
                         {newPostMediaName && (
                           <div className="text-[10px] text-emerald-700 dark:text-emerald-300 mt-1 truncate px-1">{newPostMediaName}</div>
@@ -10470,6 +10709,7 @@ export default function App() {
               firebaseLastSyncedAt={firebaseLastSyncedAt}
               firebaseSyncError={firebaseSyncError}
               onConnectFirebase={handleConnectFirebaseAdmin}
+              onConnectFirebaseRedirect={handleConnectFirebaseRedirect}
               onDisconnectFirebase={handleDisconnectFirebaseAdmin}
               onBackupToFirebase={() => pushBackupToFirebase(false)}
               onRestoreFromFirebase={() => restoreBackupFromFirebase(false)}

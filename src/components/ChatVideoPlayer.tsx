@@ -1,5 +1,5 @@
-import React, { useRef, useState, useEffect } from 'react';
-import { Volume2, VolumeX, Play, Maximize2, Minimize2, X } from 'lucide-react';
+import React, { useRef, useState, useEffect, useMemo } from 'react';
+import { Volume2, VolumeX, Play, Maximize2, Minimize2, X, RefreshCw, AlertTriangle, ExternalLink } from 'lucide-react';
 
 interface ChatVideoPlayerProps {
   src: string;
@@ -14,6 +14,58 @@ type FullscreenVideoElement = HTMLVideoElement & {
   webkitRequestFullscreen?: () => Promise<void> | void;
 };
 
+const R2_MEDIA_PATH_RE =
+  /((?:posts|messages|voice|avatars)\/\d{4}-\d{2}\/[a-zA-Z0-9_-]+\.(?:mp4|webm|mov|m4v|3gp|mkv|ogv))/i;
+
+function extractR2ProxyUrl(rawSrc: string): string | null {
+  if (!rawSrc || rawSrc.startsWith('data:') || rawSrc.startsWith('blob:') || rawSrc.startsWith('/api/media/r2/')) {
+    return null;
+  }
+  try {
+    const parsed = new URL(rawSrc);
+    const host = parsed.hostname.toLowerCase();
+    if (!host.endsWith('.r2.dev') && !host.endsWith('.r2.cloudflarestorage.com')) {
+      return null;
+    }
+    const match = parsed.pathname.match(R2_MEDIA_PATH_RE);
+    if (match?.[1]) {
+      return `/api/media/r2/${match[1]}`;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function isPrivateR2S3Url(rawSrc: string): boolean {
+  try {
+    return new URL(rawSrc).hostname.toLowerCase().endsWith('.r2.cloudflarestorage.com');
+  } catch {
+    return false;
+  }
+}
+
+function dataUrlToBlob(dataUrl: string): Blob | null {
+  try {
+    const commaIdx = dataUrl.indexOf(',');
+    if (commaIdx === -1) return null;
+    const header = dataUrl.slice(0, commaIdx);
+    const base64 = dataUrl.slice(commaIdx + 1);
+    const mimeMatch = header.match(/^data:([^;]+)/i);
+    const rawMime = mimeMatch?.[1]?.toLowerCase() || 'video/mp4';
+    const normalizedMime = rawMime === 'video/quicktime' || rawMime === 'video/x-m4v' ? 'video/mp4' : rawMime;
+    const binary = atob(base64);
+    const len = binary.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return new Blob([bytes], { type: normalizedMime });
+  } catch {
+    return null;
+  }
+}
+
 export const ChatVideoPlayer: React.FC<ChatVideoPlayerProps> = ({
   src,
   title,
@@ -26,7 +78,49 @@ export const ChatVideoPlayer: React.FC<ChatVideoPlayerProps> = ({
   const [isMuted, setIsMuted] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isFullscreenOverlay, setIsFullscreenOverlay] = useState(false);
+  const [useProxyFallback, setUseProxyFallback] = useState(false);
+  const [blobObjectUrl, setBlobObjectUrl] = useState<string | null>(null);
+  const [videoError, setVideoError] = useState<string>('');
+  const [retryNonce, setRetryNonce] = useState(0);
   const resumeTimeRef = useRef(0);
+
+  const r2ProxyUrl = useMemo(() => extractR2ProxyUrl(src), [src]);
+  const forceProxyFirst = useMemo(() => isPrivateR2S3Url(src) && Boolean(r2ProxyUrl), [src, r2ProxyUrl]);
+
+  // Convert large data:video/... strings into Blob URLs so Android Chrome & iOS Safari play reliably
+  useEffect(() => {
+    setUseProxyFallback(false);
+    setVideoError('');
+    setIsPlaying(false);
+
+    if (!src || !src.startsWith('data:')) {
+      setBlobObjectUrl(null);
+      return;
+    }
+
+    const blob = dataUrlToBlob(src);
+    if (!blob) {
+      setBlobObjectUrl(null);
+      return;
+    }
+    const objUrl = URL.createObjectURL(blob);
+    setBlobObjectUrl(objUrl);
+    return () => {
+      URL.revokeObjectURL(objUrl);
+    };
+  }, [src]);
+
+  const effectiveSrc = useMemo(() => {
+    if (blobObjectUrl) return blobObjectUrl;
+    if ((forceProxyFirst || useProxyFallback) && r2ProxyUrl) {
+      return retryNonce > 0 ? `${r2ProxyUrl}?r=${retryNonce}` : r2ProxyUrl;
+    }
+    if (retryNonce > 0 && src && !src.startsWith('data:') && !src.startsWith('blob:')) {
+      const sep = src.includes('?') ? '&' : '?';
+      return `${src}${sep}r=${retryNonce}`;
+    }
+    return src;
+  }, [blobObjectUrl, forceProxyFirst, useProxyFallback, r2ProxyUrl, src, retryNonce]);
 
   useEffect(() => {
     const el = videoRef.current;
@@ -34,11 +128,18 @@ export const ChatVideoPlayer: React.FC<ChatVideoPlayerProps> = ({
     el.muted = false;
     el.volume = 1;
     if (autoPlayWithSound) {
-      el.play().catch(() => {
-        // Browser may require a direct tap if opened programmatically
+      el.play().catch(async () => {
+        // Fallback to muted autoplay if browser autoplay policy requires gesture
+        try {
+          el.muted = true;
+          setIsMuted(true);
+          await el.play();
+        } catch {
+          // Wait for explicit user tap
+        }
       });
     }
-  }, [src, autoPlayWithSound]);
+  }, [effectiveSrc, autoPlayWithSound]);
 
   useEffect(() => {
     if (!isFullscreenOverlay) return;
@@ -56,13 +157,70 @@ export const ChatVideoPlayer: React.FC<ChatVideoPlayerProps> = ({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [isFullscreenOverlay]);
 
-  const handlePlayWithSound = () => {
+  const handleVideoError = () => {
+    // Automatically switch to same-origin signed R2 proxy if direct r2.dev stream failed
+    if (!forceProxyFirst && !useProxyFallback && r2ProxyUrl) {
+      setUseProxyFallback(true);
+      setVideoError('');
+      return;
+    }
+    const el = videoRef.current;
+    const code = el?.error?.code;
+    if (code === 4) {
+      setVideoError('Video format or source could not be decoded by this browser.');
+    } else if (code === 2) {
+      setVideoError('Network interrupted while loading video.');
+    } else {
+      setVideoError('Could not load video. Tap Retry to stream again.');
+    }
+    setIsPlaying(false);
+  };
+
+  const handlePlayWithSound = async () => {
     const el = videoRef.current;
     if (!el) return;
+    setVideoError('');
+    if (el.readyState === 0) {
+      el.load();
+    }
     el.muted = false;
     el.volume = 1;
     setIsMuted(false);
-    el.play().catch(() => {});
+    try {
+      await el.play();
+    } catch (err: unknown) {
+      const name = err instanceof Error ? err.name : '';
+      if (name === 'NotAllowedError') {
+        try {
+          el.muted = true;
+          setIsMuted(true);
+          await el.play();
+          return;
+        } catch {
+          // fall through
+        }
+      }
+      if (!forceProxyFirst && !useProxyFallback && r2ProxyUrl) {
+        setUseProxyFallback(true);
+      } else {
+        setVideoError('Tap Retry or open video directly if your browser blocks playback.');
+      }
+    }
+  };
+
+  const handleRetryPlayback = () => {
+    setVideoError('');
+    if (!useProxyFallback && r2ProxyUrl) {
+      setUseProxyFallback(true);
+    }
+    setRetryNonce((n) => n + 1);
+    window.setTimeout(() => {
+      const el = videoRef.current;
+      if (el) {
+        el.load();
+        el.play().catch(() => {});
+      }
+    }, 80);
   };
 
   const handleToggleMute = () => {
@@ -122,13 +280,17 @@ export const ChatVideoPlayer: React.FC<ChatVideoPlayerProps> = ({
     <div className="w-full space-y-1.5">
       <div className="relative w-full rounded-xl overflow-hidden bg-black border border-emerald-700/60">
         <video
+          key={effectiveSrc}
           ref={videoRef}
-          src={src}
+          src={effectiveSrc}
           controls
           playsInline
           preload="metadata"
           muted={isMuted}
+          onCanPlay={() => setVideoError('')}
+          onError={handleVideoError}
           onPlay={() => {
+            setVideoError('');
             if (videoRef.current) {
               setIsMuted(videoRef.current.muted);
             }
@@ -143,7 +305,7 @@ export const ChatVideoPlayer: React.FC<ChatVideoPlayerProps> = ({
           className={`w-full bg-black object-contain ${compact ? 'max-h-44' : 'max-h-72'}`}
         />
 
-        {!isPlaying && (
+        {!isPlaying && !videoError && (
           <button
             type="button"
             onClick={handlePlayWithSound}
@@ -178,6 +340,36 @@ export const ChatVideoPlayer: React.FC<ChatVideoPlayerProps> = ({
             <span>Fullscreen</span>
           </button>
         </div>
+
+        {videoError && (
+          <div className="px-3 py-2 bg-rose-950/90 border-t border-rose-500/40 flex flex-wrap items-center justify-between gap-2 text-[11px] text-rose-100">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span className="truncate">{videoError}</span>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={handleRetryPlayback}
+                className="px-2.5 py-1 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-[10px] inline-flex items-center gap-1 transition"
+              >
+                <RefreshCw className="w-3 h-3" />
+                <span>Retry</span>
+              </button>
+              {effectiveSrc && !effectiveSrc.startsWith('data:') && !effectiveSrc.startsWith('blob:') && (
+                <a
+                  href={effectiveSrc}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-bold text-[10px] inline-flex items-center gap-1 transition"
+                >
+                  <ExternalLink className="w-3 h-3" />
+                  <span>Open</span>
+                </a>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {(title || subtitle) && (
@@ -224,7 +416,7 @@ export const ChatVideoPlayer: React.FC<ChatVideoPlayerProps> = ({
           <div className="flex-1 flex items-center justify-center bg-black overflow-hidden">
             <video
               ref={fsVideoRef}
-              src={src}
+              src={effectiveSrc}
               controls
               playsInline
               autoPlay
