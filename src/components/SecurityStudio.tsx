@@ -330,7 +330,24 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
     return { ...KNOWN_KEY_DEFAULTS };
   });
   const [serverConfigured, setServerConfigured] = useState<Record<string, boolean>>({});
-  const [mediaStorageMode, setMediaStorageMode] = useState<'supabase' | 'inline'>('inline');
+  const [mediaStorageMode, setMediaStorageMode] = useState<'r2+supabase' | 'r2' | 'supabase' | 'inline'>('inline');
+  const [r2StorageInfo, setR2StorageInfo] = useState<{
+    configured: boolean;
+    bucket: string;
+    hasAccountId: boolean;
+    hasAccessKeyId: boolean;
+    hasSecretAccessKey: boolean;
+    hasPublicUrl: boolean;
+    publicUrlOrigin: string;
+  }>({
+    configured: false,
+    bucket: 'choychat-videos',
+    hasAccountId: false,
+    hasAccessKeyId: false,
+    hasSecretAccessKey: false,
+    hasPublicUrl: false,
+    publicUrlOrigin: '',
+  });
   const [revealedFields, setRevealedFields] = useState<Record<string, boolean>>({});
   const [customPairs, setCustomPairs] = useState<KeyValueItem[]>(() => {
     try {
@@ -1389,8 +1406,24 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
         if (data.configured && typeof data.configured === 'object') {
           setServerConfigured(data.configured);
         }
-        if (data.mediaStorageMode === 'supabase' || data.mediaStorageMode === 'inline') {
+        if (
+          data.mediaStorageMode === 'r2+supabase' ||
+          data.mediaStorageMode === 'r2' ||
+          data.mediaStorageMode === 'supabase' ||
+          data.mediaStorageMode === 'inline'
+        ) {
           setMediaStorageMode(data.mediaStorageMode);
+        }
+        if (data.r2Storage && typeof data.r2Storage === 'object') {
+          setR2StorageInfo({
+            configured: Boolean(data.r2Storage.configured),
+            bucket: String(data.r2Storage.bucket || 'choychat-videos'),
+            hasAccountId: Boolean(data.r2Storage.hasAccountId),
+            hasAccessKeyId: Boolean(data.r2Storage.hasAccessKeyId),
+            hasSecretAccessKey: Boolean(data.r2Storage.hasSecretAccessKey),
+            hasPublicUrl: Boolean(data.r2Storage.hasPublicUrl),
+            publicUrlOrigin: String(data.r2Storage.publicUrlOrigin || ''),
+          });
         }
         if (data.defaults && typeof data.defaults === 'object') {
           setMainKeys((prev) => ({
@@ -1904,6 +1937,11 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-base font-black text-emerald-950 dark:text-white uppercase tracking-wide">Security Studio</h2>
+              {(mediaStorageMode === 'r2' || mediaStorageMode === 'r2+supabase') && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-orange-500/20 border border-orange-400/40 text-orange-800 dark:text-orange-200">
+                  {mediaStorageMode === 'r2+supabase' ? 'Cloudflare R2 + Supabase Active' : 'Cloudflare R2 Video Vault Active'}
+                </span>
+              )}
               {mediaStorageMode === 'supabase' && (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500/20 border border-cyan-400/40 text-cyan-800 dark:text-cyan-200">
                   Supabase Storage Active
@@ -2101,8 +2139,15 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           {
             id: 'storage' as const,
             title: 'Cloud Storage & Cache Monitor',
-            subtitle: 'Supabase storage bucket usage, Render DB & browser cache controls',
-            badge: mediaStorageMode === 'supabase' ? 'Supabase' : 'Server DB',
+            subtitle: 'Cloudflare R2 video vault, Supabase bucket, Render DB & cache controls',
+            badge:
+              mediaStorageMode === 'r2+supabase'
+                ? 'R2 + Supabase'
+                : mediaStorageMode === 'r2'
+                ? 'Cloudflare R2'
+                : mediaStorageMode === 'supabase'
+                ? 'Supabase'
+                : 'Server DB',
             icon: <HardDrive className="w-5 h-5 text-cyan-600 dark:text-cyan-300" />,
             accent: 'border-cyan-300 dark:border-cyan-500/60 hover:border-cyan-400',
           },
@@ -3432,14 +3477,23 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
               </span>
             </div>
             <div className="text-[11px] font-mono text-emerald-700 dark:text-emerald-300/90 tabular-nums">
-              <span>Status: {mediaStorageMode === 'supabase' ? 'Supabase Storage Connected' : 'Inline Fallback'}</span>
+              <span>
+                Status:{' '}
+                {mediaStorageMode === 'r2+supabase'
+                  ? 'R2 Videos + Supabase Connected'
+                  : mediaStorageMode === 'r2'
+                  ? 'Cloudflare R2 Active'
+                  : mediaStorageMode === 'supabase'
+                  ? 'Supabase Storage Connected'
+                  : 'Inline Fallback'}
+              </span>
               <span aria-hidden="true"> · </span>
               <span>DB: {storageMode === 'postgres' ? 'PostgreSQL Live' : 'Local Disk + Firebase Ready'}</span>
             </div>
             <div className="w-full h-2.5 bg-white dark:bg-slate-900 rounded-full overflow-hidden border border-emerald-200 dark:border-emerald-800">
               <div
                 className={`h-full transition-all ${
-                  mediaStorageMode === 'supabase'
+                  mediaStorageMode !== 'inline'
                     ? 'bg-gradient-to-r from-emerald-400 to-cyan-400 w-[12%]'
                     : 'bg-amber-400 w-[5%]'
                 }`}
@@ -3526,6 +3580,65 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
               <Trash2 className="w-3.5 h-3.5" /> Clear App Cache
             </button>
           </div>
+        </div>
+        {/* CLOUDFLARE R2 VIDEO & MEDIA BACKUP VAULT STATUS */}
+        <div className="p-4 rounded-xl bg-orange-50/70 dark:bg-orange-950/30 border border-orange-300/70 dark:border-orange-700/60 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-emerald-950 dark:text-white">Cloudflare R2 Video &amp; Media Vault</span>
+                <span
+                  className={`px-2 py-0.5 rounded-md text-[10px] font-bold border ${
+                    r2StorageInfo.configured
+                      ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-800 dark:text-emerald-200'
+                      : 'bg-amber-500/20 border-amber-500/40 text-amber-800 dark:text-amber-200'
+                  }`}
+                >
+                  {r2StorageInfo.configured ? 'Connected · Videos Auto-Offloaded' : 'Add R2 Keys in Render'}
+                </span>
+              </div>
+              <p className="text-[11px] text-emerald-800/80 dark:text-emerald-200/80 mt-0.5">
+                10 GB Free Storage · Zero Egress Fees · Up to 60 MB Videos — URL lang ang ma-save sa Supabase para dili modako ang DB.
+              </p>
+            </div>
+            <a
+              href="https://dash.cloudflare.com/?to=/:account/r2/overview"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-1.5 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-bold flex items-center gap-1.5 text-[11px]"
+            >
+              <ExternalLink className="w-3.5 h-3.5" /> Open Cloudflare R2
+            </a>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-[10px] font-mono">
+            {[
+              { key: 'R2_ACCOUNT_ID', ok: r2StorageInfo.hasAccountId },
+              { key: 'R2_ACCESS_KEY_ID', ok: r2StorageInfo.hasAccessKeyId },
+              { key: 'R2_SECRET_ACCESS_KEY', ok: r2StorageInfo.hasSecretAccessKey },
+              { key: 'R2_BUCKET', ok: Boolean(r2StorageInfo.bucket), extra: r2StorageInfo.bucket },
+              { key: 'R2_PUBLIC_URL', ok: r2StorageInfo.hasPublicUrl },
+            ].map((item) => (
+              <div
+                key={item.key}
+                className={`p-2 rounded-lg border ${
+                  item.ok
+                    ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-900 dark:text-emerald-200'
+                    : 'bg-white/80 dark:bg-slate-950/60 border-orange-200 dark:border-orange-800/70 text-emerald-900 dark:text-orange-200'
+                }`}
+              >
+                <div className="font-bold truncate">{item.key}</div>
+                <div className="text-[10px] opacity-80 truncate">
+                  {item.ok ? (item.extra ? `Set (${item.extra})` : 'Configured') : 'Missing in Render'}
+                </div>
+              </div>
+            ))}
+          </div>
+          {r2StorageInfo.publicUrlOrigin && (
+            <div className="text-[10px] font-mono text-emerald-700 dark:text-emerald-300">
+              Active Public Origin: {r2StorageInfo.publicUrlOrigin}
+            </div>
+          )}
         </div>
         {renderFirebaseCloudSyncCard()}
       </div>
@@ -4354,14 +4467,22 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
                     <div className="min-w-0">
                       <div className="text-xs font-extrabold text-emerald-950 dark:text-white flex items-center gap-1.5 truncate">
                         <span className="truncate">{loc.userName}</span>
-                        {ageSec <= 90 && (
-                          <span className="px-1.5 py-0.5 rounded-full bg-emerald-500 text-slate-950 text-[9px] font-black uppercase shrink-0">
-                            {speedKmh > 0 ? `${speedKmh} km/h` : 'LIVE'}
+                        {loc.source === 'ip' ? (
+                          <span className="px-1.5 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[9px] font-black uppercase shrink-0">
+                            IP APPROX
                           </span>
+                        ) : (
+                          ageSec <= 90 && (
+                            <span className="px-1.5 py-0.5 rounded-full bg-emerald-500 text-slate-950 text-[9px] font-black uppercase shrink-0">
+                              {speedKmh > 0 ? `GPS · ${speedKmh} km/h` : 'LIVE GPS'}
+                            </span>
+                          )
                         )}
                       </div>
                       <div className="font-mono text-[10px] text-emerald-800 dark:text-emerald-200 truncate">
-                        {loc.lat.toFixed(5)}, {loc.lng.toFixed(5)} {loc.accuracy != null ? `· ±${Math.round(loc.accuracy)}m` : ''}
+                        {loc.source === 'ip'
+                          ? `${loc.ipLocationLabel || 'City/ISP Approx'} · ${loc.lat.toFixed(4)}, ${loc.lng.toFixed(4)}`
+                          : `${loc.lat.toFixed(5)}, ${loc.lng.toFixed(5)}${loc.accuracy != null ? ` · ±${Math.round(loc.accuracy)}m` : ''}`}
                       </div>
                       <div className="text-[10px] text-emerald-700 dark:text-emerald-300">
                         Updated {ageSec < 8 ? 'just now' : ageSec < 60 ? `${ageSec}s ago` : new Date(loc.updatedAt).toLocaleTimeString()}

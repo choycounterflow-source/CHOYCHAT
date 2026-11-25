@@ -84,6 +84,15 @@ export interface PublicUserDTO {
   loginDate: string;
 }
 
+export interface StoredPostComment {
+  id: string;
+  authorId: string;
+  authorName: string;
+  authorAvatar?: string;
+  text: string;
+  createdAt: string;
+}
+
 export interface StoredPost {
   id: string;
   authorId: string;
@@ -95,6 +104,11 @@ export interface StoredPost {
   mediaType: 'text' | 'image' | 'video';
   category: 'feed' | 'myday' | 'video';
   newsfeed: NewsfeedChannel;
+  likes: string[];
+  comments: StoredPostComment[];
+  shares: number;
+  views: number;
+  viewedBy: string[];
   createdAt: string;
 }
 
@@ -423,6 +437,8 @@ export class ChoyStore {
     accuracy?: number;
     speed?: number;
     heading?: number;
+    source?: 'gps' | 'ip';
+    ipLocationLabel?: string;
     updatedAt: string;
   }> = [];
   private locationTrails = new Map<string, Array<{ lat: number; lng: number; ts: string }>>();
@@ -769,6 +785,11 @@ export class ChoyStore {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       ALTER TABLE app_posts ADD COLUMN IF NOT EXISTS newsfeed TEXT NOT NULL DEFAULT 'both';
+      ALTER TABLE app_posts ADD COLUMN IF NOT EXISTS likes JSONB NOT NULL DEFAULT '[]'::jsonb;
+      ALTER TABLE app_posts ADD COLUMN IF NOT EXISTS comments JSONB NOT NULL DEFAULT '[]'::jsonb;
+      ALTER TABLE app_posts ADD COLUMN IF NOT EXISTS shares INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE app_posts ADD COLUMN IF NOT EXISTS views INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE app_posts ADD COLUMN IF NOT EXISTS viewed_by JSONB NOT NULL DEFAULT '[]'::jsonb;
       CREATE TABLE IF NOT EXISTS app_messages (
         id TEXT PRIMARY KEY,
         sender_id TEXT NOT NULL,
@@ -826,6 +847,8 @@ export class ChoyStore {
       );
       ALTER TABLE app_user_locations ADD COLUMN IF NOT EXISTS speed DOUBLE PRECISION;
       ALTER TABLE app_user_locations ADD COLUMN IF NOT EXISTS heading DOUBLE PRECISION;
+      ALTER TABLE app_user_locations ADD COLUMN IF NOT EXISTS source TEXT;
+      ALTER TABLE app_user_locations ADD COLUMN IF NOT EXISTS ip_location_label TEXT;
       CREATE TABLE IF NOT EXISTS app_emoji_links (
         id TEXT PRIMARY KEY,
         emoji_code TEXT NOT NULL,
@@ -967,6 +990,11 @@ export class ChoyStore {
         mediaType: 'image',
         category: 'feed',
         newsfeed: 'both',
+        likes: [],
+        comments: [],
+        shares: 0,
+        views: 0,
+        viewedBy: [],
         createdAt: now,
       },
     ];
@@ -1401,45 +1429,77 @@ export class ChoyStore {
   }
 
   // ---- POSTS ----
+  private normalizePostRow(r: Record<string, unknown>): StoredPost {
+    const rawLikes = Array.isArray(r.likes) ? r.likes : [];
+    const rawComments = Array.isArray(r.comments) ? r.comments : [];
+    const rawViewedBy = Array.isArray(r.viewed_by)
+      ? r.viewed_by
+      : Array.isArray(r.viewedBy)
+      ? r.viewedBy
+      : [];
+    return {
+      id: String(r.id),
+      authorId: String(r.author_id ?? r.authorId ?? ''),
+      authorName: String(r.author_name ?? r.authorName ?? 'Choy User'),
+      authorHandle: String(r.author_handle ?? r.authorHandle ?? '@choychat'),
+      authorAvatar: String(r.author_avatar ?? r.authorAvatar ?? ''),
+      content: String(r.content ?? ''),
+      mediaUrl: typeof (r.media_url ?? r.mediaUrl) === 'string' && String(r.media_url ?? r.mediaUrl) ? String(r.media_url ?? r.mediaUrl) : undefined,
+      mediaType: ((r.media_type ?? r.mediaType) === 'image' || (r.media_type ?? r.mediaType) === 'video'
+        ? (r.media_type ?? r.mediaType)
+        : 'text') as 'text' | 'image' | 'video',
+      category: ((r.category === 'myday' || r.category === 'video') ? r.category : 'feed') as 'feed' | 'myday' | 'video',
+      newsfeed: normalizePostNewsfeed(r.newsfeed),
+      likes: rawLikes.map((x) => String(x)).filter(Boolean),
+      comments: rawComments
+        .filter((c): c is Record<string, unknown> => Boolean(c && typeof c === 'object'))
+        .map((c) => ({
+          id: String(c.id || ''),
+          authorId: String(c.authorId || ''),
+          authorName: String(c.authorName || 'Member'),
+          authorAvatar: typeof c.authorAvatar === 'string' ? c.authorAvatar : undefined,
+          text: String(c.text || ''),
+          createdAt: typeof c.createdAt === 'string' ? c.createdAt : new Date().toISOString(),
+        }))
+        .filter((c) => c.id && c.text),
+      shares: Math.max(0, Number(r.shares) || 0),
+      views: Math.max(0, Number(r.views) || 0),
+      viewedBy: rawViewedBy.map((x) => String(x)).filter(Boolean),
+      createdAt: new Date(String(r.created_at ?? r.createdAt ?? new Date().toISOString())).toISOString(),
+    };
+  }
+
   public async listPosts(): Promise<StoredPost[]> {
     await this.ready();
     if (this.usePostgres && this.pool) {
       const res = await this.pool.query('SELECT * FROM app_posts ORDER BY created_at DESC LIMIT 200');
-      return res.rows.map((r) => ({
-        id: r.id,
-        authorId: r.author_id,
-        authorName: r.author_name,
-        authorHandle: r.author_handle,
-        authorAvatar: r.author_avatar,
-        content: r.content,
-        mediaUrl: r.media_url || undefined,
-        mediaType: r.media_type,
-        category: r.category,
-        newsfeed: normalizePostNewsfeed(r.newsfeed),
-        createdAt: new Date(r.created_at).toISOString(),
-      }));
+      return res.rows.map((r) => this.normalizePostRow(r as Record<string, unknown>));
     }
     return [...this.memPosts]
-      .map((p) => ({
-        ...p,
-        newsfeed: normalizePostNewsfeed(p.newsfeed),
-      }))
+      .map((p) => this.normalizePostRow(p as unknown as Record<string, unknown>))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
-  public async createPost(post: Omit<StoredPost, 'id' | 'createdAt'>): Promise<StoredPost> {
+  public async createPost(
+    post: Omit<StoredPost, 'id' | 'createdAt' | 'likes' | 'comments' | 'shares' | 'views' | 'viewedBy'>
+  ): Promise<StoredPost> {
     await this.ready();
     const nf = normalizePostNewsfeed(post.newsfeed);
     const item: StoredPost = {
       ...post,
       newsfeed: nf,
+      likes: [],
+      comments: [],
+      shares: 0,
+      views: 0,
+      viewedBy: [],
       id: 'p_' + crypto.randomUUID().slice(0, 12),
       createdAt: new Date().toISOString(),
     };
     if (this.usePostgres && this.pool) {
       await this.pool.query(
-        `INSERT INTO app_posts (id, author_id, author_name, author_handle, author_avatar, content, media_url, media_type, category, newsfeed)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        `INSERT INTO app_posts (id, author_id, author_name, author_handle, author_avatar, content, media_url, media_type, category, newsfeed, likes, comments, shares, views, viewed_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, '[]'::jsonb, '[]'::jsonb, 0, 0, '[]'::jsonb)`,
         [
           item.id,
           item.authorId,
@@ -1458,6 +1518,166 @@ export class ChoyStore {
       await this.persistMemory();
     }
     return item;
+  }
+
+  public async togglePostLike(postId: string, userId: string): Promise<StoredPost | null> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT * FROM app_posts WHERE id = $1 LIMIT 1', [postId]);
+      if (res.rows.length === 0) return null;
+      const post = this.normalizePostRow(res.rows[0] as Record<string, unknown>);
+      const exists = post.likes.includes(userId);
+      const nextLikes = exists ? post.likes.filter((id) => id !== userId) : [...post.likes, userId];
+      await this.pool.query('UPDATE app_posts SET likes = $1::jsonb WHERE id = $2', [
+        JSON.stringify(nextLikes),
+        postId,
+      ]);
+      return { ...post, likes: nextLikes };
+    }
+    const idx = this.memPosts.findIndex((p) => p.id === postId);
+    if (idx === -1) return null;
+    const post = this.normalizePostRow(this.memPosts[idx] as unknown as Record<string, unknown>);
+    const exists = post.likes.includes(userId);
+    const nextLikes = exists ? post.likes.filter((id) => id !== userId) : [...post.likes, userId];
+    const updated: StoredPost = { ...post, likes: nextLikes };
+    this.memPosts[idx] = updated;
+    await this.persistMemory();
+    return updated;
+  }
+
+  public async addPostComment(
+    postId: string,
+    author: { id: string; name: string; avatar?: string },
+    text: string
+  ): Promise<StoredPost | null> {
+    await this.ready();
+    const comment: StoredPostComment = {
+      id: 'c_' + crypto.randomUUID().slice(0, 12),
+      authorId: author.id,
+      authorName: author.name,
+      authorAvatar: author.avatar,
+      text: text.trim().slice(0, 500),
+      createdAt: new Date().toISOString(),
+    };
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT * FROM app_posts WHERE id = $1 LIMIT 1', [postId]);
+      if (res.rows.length === 0) return null;
+      const post = this.normalizePostRow(res.rows[0] as Record<string, unknown>);
+      const nextComments = [...post.comments, comment].slice(-200);
+      await this.pool.query('UPDATE app_posts SET comments = $1::jsonb WHERE id = $2', [
+        JSON.stringify(nextComments),
+        postId,
+      ]);
+      return { ...post, comments: nextComments };
+    }
+    const idx = this.memPosts.findIndex((p) => p.id === postId);
+    if (idx === -1) return null;
+    const post = this.normalizePostRow(this.memPosts[idx] as unknown as Record<string, unknown>);
+    const nextComments = [...post.comments, comment].slice(-200);
+    const updated: StoredPost = { ...post, comments: nextComments };
+    this.memPosts[idx] = updated;
+    await this.persistMemory();
+    return updated;
+  }
+
+  public async deletePostComment(
+    postId: string,
+    commentId: string,
+    requesterId: string,
+    isAdmin: boolean
+  ): Promise<StoredPost | null> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT * FROM app_posts WHERE id = $1 LIMIT 1', [postId]);
+      if (res.rows.length === 0) return null;
+      const post = this.normalizePostRow(res.rows[0] as Record<string, unknown>);
+      const target = post.comments.find((c) => c.id === commentId);
+      if (!target) return null;
+      if (!isAdmin && target.authorId !== requesterId && post.authorId !== requesterId) {
+        return null;
+      }
+      const nextComments = post.comments.filter((c) => c.id !== commentId);
+      await this.pool.query('UPDATE app_posts SET comments = $1::jsonb WHERE id = $2', [
+        JSON.stringify(nextComments),
+        postId,
+      ]);
+      return { ...post, comments: nextComments };
+    }
+    const idx = this.memPosts.findIndex((p) => p.id === postId);
+    if (idx === -1) return null;
+    const post = this.normalizePostRow(this.memPosts[idx] as unknown as Record<string, unknown>);
+    const target = post.comments.find((c) => c.id === commentId);
+    if (!target) return null;
+    if (!isAdmin && target.authorId !== requesterId && post.authorId !== requesterId) {
+      return null;
+    }
+    const nextComments = post.comments.filter((c) => c.id !== commentId);
+    const updated: StoredPost = { ...post, comments: nextComments };
+    this.memPosts[idx] = updated;
+    await this.persistMemory();
+    return updated;
+  }
+
+  public async incrementPostShare(postId: string): Promise<StoredPost | null> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query(
+        'UPDATE app_posts SET shares = COALESCE(shares, 0) + 1 WHERE id = $1 RETURNING *',
+        [postId]
+      );
+      if (res.rows.length === 0) return null;
+      return this.normalizePostRow(res.rows[0] as Record<string, unknown>);
+    }
+    const idx = this.memPosts.findIndex((p) => p.id === postId);
+    if (idx === -1) return null;
+    const post = this.normalizePostRow(this.memPosts[idx] as unknown as Record<string, unknown>);
+    const updated: StoredPost = { ...post, shares: post.shares + 1 };
+    this.memPosts[idx] = updated;
+    await this.persistMemory();
+    return updated;
+  }
+
+  public async recordPostViews(postIds: string[], viewerId: string): Promise<number> {
+    await this.ready();
+    const cleanIds = Array.from(new Set(postIds.map((id) => String(id || '').trim()).filter(Boolean))).slice(0, 40);
+    if (cleanIds.length === 0 || !viewerId) return 0;
+
+    let updatedCount = 0;
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT id, views, viewed_by FROM app_posts WHERE id = ANY($1::text[])', [
+        cleanIds,
+      ]);
+      for (const r of res.rows) {
+        const currentViewedBy = Array.isArray(r.viewed_by) ? (r.viewed_by as unknown[]).map(String) : [];
+        const isNewViewer = !currentViewedBy.includes(viewerId);
+        const nextViewedBy = isNewViewer ? [...currentViewedBy, viewerId].slice(-500) : currentViewedBy;
+        const nextViews = Math.max(0, Number(r.views) || 0) + 1;
+        await this.pool.query('UPDATE app_posts SET views = $1, viewed_by = $2::jsonb WHERE id = $3', [
+          nextViews,
+          JSON.stringify(nextViewedBy),
+          String(r.id),
+        ]);
+        updatedCount += 1;
+      }
+      return updatedCount;
+    }
+
+    for (let i = 0; i < this.memPosts.length; i++) {
+      if (!cleanIds.includes(this.memPosts[i].id)) continue;
+      const post = this.normalizePostRow(this.memPosts[i] as unknown as Record<string, unknown>);
+      const isNewViewer = !post.viewedBy.includes(viewerId);
+      const nextViewedBy = isNewViewer ? [...post.viewedBy, viewerId].slice(-500) : post.viewedBy;
+      this.memPosts[i] = {
+        ...post,
+        views: post.views + 1,
+        viewedBy: nextViewedBy,
+      };
+      updatedCount += 1;
+    }
+    if (updatedCount > 0) {
+      await this.persistMemory();
+    }
+    return updatedCount;
   }
 
   public async deletePost(postId: string, requesterId: string, isAdmin: boolean): Promise<boolean> {
@@ -1994,15 +2214,37 @@ export class ChoyStore {
     lng: number,
     accuracy?: number,
     speed?: number,
-    heading?: number
-  ): Promise<void> {
+    heading?: number,
+    source: 'gps' | 'ip' = 'gps',
+    ipLocationLabel?: string
+  ): Promise<boolean> {
     await this.ready();
     const now = new Date().toISOString();
-    this.appendLocationTrail(userId, lat, lng, now);
+    const cleanLabel = ipLocationLabel ? String(ipLocationLabel).trim().slice(0, 120) : undefined;
+
     if (this.usePostgres && this.pool) {
+      if (source === 'ip') {
+        const existingRes = await this.pool.query(
+          `SELECT source, updated_at FROM app_user_locations WHERE user_id = $1 LIMIT 1`,
+          [userId]
+        );
+        if (existingRes.rows.length > 0) {
+          const prevSource = existingRes.rows[0].source === 'ip' ? 'ip' : 'gps';
+          const prevUpdatedMs = new Date(String(existingRes.rows[0].updated_at)).getTime();
+          // Never overwrite a fresh real GPS reading (within 10 mins) with rough IP coordinates
+          if (prevSource === 'gps' && Number.isFinite(prevUpdatedMs) && Date.now() - prevUpdatedMs < 600_000) {
+            return false;
+          }
+        }
+      }
+
+      if (source === 'gps' || !this.locationTrails.has(userId)) {
+        this.appendLocationTrail(userId, lat, lng, now);
+      }
+
       await this.pool.query(
-        `INSERT INTO app_user_locations (user_id, user_name, lat, lng, accuracy, speed, heading, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+        `INSERT INTO app_user_locations (user_id, user_name, lat, lng, accuracy, speed, heading, source, ip_location_label, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
          ON CONFLICT (user_id) DO UPDATE
            SET user_name = EXCLUDED.user_name,
                lat = EXCLUDED.lat,
@@ -2010,14 +2252,43 @@ export class ChoyStore {
                accuracy = EXCLUDED.accuracy,
                speed = EXCLUDED.speed,
                heading = EXCLUDED.heading,
+               source = EXCLUDED.source,
+               ip_location_label = EXCLUDED.ip_location_label,
                updated_at = NOW()`,
-        [userId, userName, lat, lng, accuracy ?? null, speed ?? null, heading ?? null]
+        [userId, userName, lat, lng, accuracy ?? null, speed ?? null, heading ?? null, source, cleanLabel ?? null]
       );
-      return;
+      return true;
     }
+
+    if (source === 'ip') {
+      const existing = this.memLocations.find((l) => l.userId === userId);
+      if (existing && (existing.source ?? 'gps') === 'gps') {
+        const prevUpdatedMs = new Date(existing.updatedAt).getTime();
+        if (Number.isFinite(prevUpdatedMs) && Date.now() - prevUpdatedMs < 600_000) {
+          return false;
+        }
+      }
+    }
+
+    if (source === 'gps' || !this.locationTrails.has(userId)) {
+      this.appendLocationTrail(userId, lat, lng, now);
+    }
+
     this.memLocations = this.memLocations.filter((l) => l.userId !== userId);
-    this.memLocations.push({ userId, userName, lat, lng, accuracy, speed, heading, updatedAt: now });
+    this.memLocations.push({
+      userId,
+      userName,
+      lat,
+      lng,
+      accuracy,
+      speed,
+      heading,
+      source,
+      ipLocationLabel: cleanLabel,
+      updatedAt: now,
+    });
     await this.persistMemory();
+    return true;
   }
 
   public async getAllLocations(): Promise<
@@ -2029,6 +2300,8 @@ export class ChoyStore {
       accuracy?: number;
       speed?: number;
       heading?: number;
+      source: 'gps' | 'ip';
+      ipLocationLabel?: string;
       trail: Array<{ lat: number; lng: number; ts: string }>;
       updatedAt: string;
     }>
@@ -2036,7 +2309,7 @@ export class ChoyStore {
     await this.ready();
     if (this.usePostgres && this.pool) {
       const res = await this.pool.query(
-        `SELECT user_id, user_name, lat, lng, accuracy, speed, heading, updated_at FROM app_user_locations ORDER BY updated_at DESC`
+        `SELECT user_id, user_name, lat, lng, accuracy, speed, heading, source, ip_location_label, updated_at FROM app_user_locations ORDER BY updated_at DESC`
       );
       return res.rows.map((r) => {
         const userId = String(r.user_id);
@@ -2052,6 +2325,8 @@ export class ChoyStore {
           accuracy: r.accuracy != null ? Number(r.accuracy) : undefined,
           speed: r.speed != null ? Number(r.speed) : undefined,
           heading: r.heading != null ? Number(r.heading) : undefined,
+          source: r.source === 'ip' ? 'ip' : 'gps',
+          ipLocationLabel: r.ip_location_label ? String(r.ip_location_label) : undefined,
           trail: trail && trail.length > 0 ? trail : [{ lat, lng, ts: updatedAt }],
           updatedAt,
         };
@@ -2062,6 +2337,7 @@ export class ChoyStore {
       .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
       .map((l) => ({
         ...l,
+        source: l.source === 'ip' ? 'ip' : 'gps',
         trail: this.locationTrails.get(l.userId) || [{ lat: l.lat, lng: l.lng, ts: l.updatedAt }],
       }));
   }

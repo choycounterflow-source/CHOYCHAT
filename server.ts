@@ -32,8 +32,13 @@ import {
 } from './src/server/choyStore.ts';
 import {
   getSupabaseStorageStatus,
+  normalizeMediaMime,
   uploadToSupabaseStorage,
 } from './src/server/supabaseStorage.ts';
+import {
+  getR2StorageStatus,
+  uploadToR2Storage,
+} from './src/server/r2Storage.ts';
 
 dotenv.config();
 if (fs.existsSync('/etc/secrets/.env')) {
@@ -436,15 +441,34 @@ app.get('/api/auth/status', async (_req, res) => {
 app.get('/api/admin/env-status', requireAuth, requireAdmin, async (_req, res) => {
   await store.ready();
   const mediaStorage = getSupabaseStorageStatus();
+  const r2Storage = getR2StorageStatus();
+  const mediaStorageMode =
+    r2Storage.configured && mediaStorage.configured
+      ? 'r2+supabase'
+      : r2Storage.configured
+      ? 'r2'
+      : mediaStorage.configured
+      ? 'supabase'
+      : 'inline';
   res.json({
     storageMode: store.storageMode,
     connectionPool: store.getPoolStats(),
-    mediaStorageMode: mediaStorage.configured ? 'supabase' : 'inline',
+    mediaStorageMode,
+    r2Storage: {
+      configured: r2Storage.configured,
+      bucket: r2Storage.bucket,
+      hasAccountId: r2Storage.hasAccountId,
+      hasAccessKeyId: r2Storage.hasAccessKeyId,
+      hasSecretAccessKey: r2Storage.hasSecretAccessKey,
+      hasPublicUrl: r2Storage.hasPublicUrl,
+      publicUrlOrigin: r2Storage.publicUrlOrigin,
+    },
     defaults: {
       APP_URL: (process.env.APP_URL || 'https://chat-9-si9x.onrender.com').trim(),
       ADMIN_PHONE: (process.env.ADMIN_PHONE || '09361223978').trim(),
       SUPABASE_URL: (process.env.SUPABASE_URL || '').trim(),
       SUPABASE_BUCKET: mediaStorage.bucket,
+      R2_BUCKET: r2Storage.bucket,
     },
     configured: {
       DATABASE_URL: Boolean((process.env.DATABASE_URL || '').trim()),
@@ -453,6 +477,11 @@ app.get('/api/admin/env-status', requireAuth, requireAdmin, async (_req, res) =>
       ADMIN_PIN: Boolean((process.env.ADMIN_PIN || '').trim()),
       APP_URL: Boolean((process.env.APP_URL || 'https://chat-9-si9x.onrender.com').trim()),
       GEMINI_API_KEY: Boolean((process.env.GEMINI_API_KEY || '').trim()),
+      R2_ACCOUNT_ID: r2Storage.hasAccountId,
+      R2_ACCESS_KEY_ID: r2Storage.hasAccessKeyId,
+      R2_SECRET_ACCESS_KEY: r2Storage.hasSecretAccessKey,
+      R2_BUCKET: Boolean(r2Storage.bucket),
+      R2_PUBLIC_URL: r2Storage.hasPublicUrl,
       SUPABASE_URL: mediaStorage.hasUrl,
       SUPABASE_ANON_KEY: Boolean((process.env.SUPABASE_ANON_KEY || '').trim()),
       SUPABASE_SERVICE_ROLE_KEY: mediaStorage.hasServiceKey,
@@ -461,11 +490,11 @@ app.get('/api/admin/env-status', requireAuth, requireAdmin, async (_req, res) =>
   });
 });
 
-// ---- SUPABASE STORAGE MEDIA UPLOAD ENDPOINT ----
+// ---- CLOUDFLARE R2 + SUPABASE STORAGE MEDIA UPLOAD ENDPOINT ----
 app.post(
   '/api/media/upload',
   requireAuth,
-  express.raw({ type: () => true, limit: '26mb' }),
+  express.raw({ type: () => true, limit: '62mb' }),
   async (req: AuthedRequest, res: Response) => {
     try {
       const user = req.choyUser;
@@ -492,13 +521,14 @@ app.post(
         }
       }
 
-      const status = getSupabaseStorageStatus();
-      if (!status.configured) {
+      const r2Status = getR2StorageStatus();
+      const supabaseStatus = getSupabaseStorageStatus();
+      if (!r2Status.configured && !supabaseStatus.configured) {
         return res.json({
           uploaded: false,
           configured: false,
           fallback: true,
-          bucket: status.bucket,
+          bucket: r2Status.bucket || supabaseStatus.bucket,
         });
       }
 
@@ -507,11 +537,49 @@ app.post(
       }
 
       const contentType = String(req.headers['content-type'] || '');
+      const normalizedMime = normalizeMediaMime(contentType);
+      const isVideo = normalizedMime.startsWith('video/');
       const folder = String(req.headers['x-media-folder'] || 'posts');
+      const r2VideosOnly = (process.env.R2_VIDEOS_ONLY || '').trim().toLowerCase() === 'true';
+
+      // Priority: Videos always go to Cloudflare R2 first when configured (keeps Supabase small & zero egress).
+      // Non-video media also uses R2 unless R2_VIDEOS_ONLY=true with Supabase active.
+      const preferR2 =
+        r2Status.configured && (isVideo || !supabaseStatus.configured || !r2VideosOnly);
+
+      if (preferR2) {
+        try {
+          const result = await uploadToR2Storage(req.body, contentType, folder);
+          return res.status(201).json({
+            uploaded: true,
+            configured: true,
+            ...result,
+          });
+        } catch (r2Err: unknown) {
+          const msg = r2Err instanceof Error ? r2Err.message : '';
+          const isValidationErr =
+            msg.includes('Unsupported media') ||
+            msg.includes('Empty file') ||
+            msg.includes('exceeds maximum');
+          // Gracefully fall back to Supabase only for non-validation failures when payload fits Supabase limits
+          if (!isValidationErr && supabaseStatus.configured && req.body.length <= 25 * 1024 * 1024) {
+            const fallbackResult = await uploadToSupabaseStorage(req.body, contentType, folder);
+            return res.status(201).json({
+              uploaded: true,
+              configured: true,
+              provider: 'supabase',
+              ...fallbackResult,
+            });
+          }
+          throw r2Err;
+        }
+      }
+
       const result = await uploadToSupabaseStorage(req.body, contentType, folder);
       return res.status(201).json({
         uploaded: true,
         configured: true,
+        provider: 'supabase',
         ...result,
       });
     } catch (err: unknown) {
@@ -1010,6 +1078,132 @@ app.get('/api/choy/rtc/poll', requireAuth, (req: AuthedRequest, res: Response) =
   });
 });
 
+const ipGeoCache = new Map<
+  string,
+  { lat: number; lng: number; label: string; fetchedAt: number }
+>();
+
+function isPrivateOrLocalIp(ip: string): boolean {
+  const clean = ip.trim().toLowerCase();
+  if (!clean) return true;
+  if (
+    clean === '::1' ||
+    clean === 'localhost' ||
+    clean.startsWith('127.') ||
+    clean.startsWith('10.') ||
+    clean.startsWith('192.168.') ||
+    clean.startsWith('169.254.') ||
+    clean.startsWith('0.') ||
+    clean.startsWith('fc') ||
+    clean.startsWith('fd') ||
+    clean.startsWith('fe80:')
+  ) {
+    return true;
+  }
+  const m172 = clean.match(/^172\.(\d+)\./);
+  if (m172) {
+    const second = Number(m172[1]);
+    if (second >= 16 && second <= 31) return true;
+  }
+  return false;
+}
+
+function extractClientPublicIp(req: Request): string | null {
+  const candidates: string[] = [];
+  const xff = req.headers['x-forwarded-for'];
+  if (typeof xff === 'string') {
+    for (const part of xff.split(',')) {
+      candidates.push(part.trim());
+    }
+  } else if (Array.isArray(xff)) {
+    for (const entry of xff) {
+      for (const part of entry.split(',')) {
+        candidates.push(part.trim());
+      }
+    }
+  }
+  const cfIp = req.headers['cf-connecting-ip'];
+  if (typeof cfIp === 'string') candidates.push(cfIp.trim());
+  const realIp = req.headers['x-real-ip'];
+  if (typeof realIp === 'string') candidates.push(realIp.trim());
+  if (req.socket?.remoteAddress) candidates.push(req.socket.remoteAddress.trim());
+
+  for (const raw of candidates) {
+    const cleaned = raw.replace(/^::ffff:/i, '').replace(/^\[|\]$/g, '').trim();
+    if (!cleaned || isPrivateOrLocalIp(cleaned)) continue;
+    if (/^[0-9a-fA-F:.]{3,45}$/.test(cleaned)) {
+      return cleaned;
+    }
+  }
+  return null;
+}
+
+async function resolveIpGeolocation(
+  ip: string
+): Promise<{ lat: number; lng: number; label: string } | null> {
+  const cached = ipGeoCache.get(ip);
+  if (cached && Date.now() - cached.fetchedAt < 30 * 60 * 1000) {
+    return { lat: cached.lat, lng: cached.lng, label: cached.label };
+  }
+
+  const fetchWithTimeout = async (url: string): Promise<Record<string, unknown> | null> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+      const resp = await fetch(url, {
+        signal: controller.signal,
+        headers: { Accept: 'application/json', 'User-Agent': 'ChoyChat/2.6' },
+      });
+      if (!resp.ok) return null;
+      return (await resp.json()) as Record<string, unknown>;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  // Provider 1: ipwho.is (HTTPS, free, no API key)
+  const p1 = await fetchWithTimeout(`https://ipwho.is/${encodeURIComponent(ip)}`);
+  if (
+    p1 &&
+    p1.success !== false &&
+    typeof p1.latitude === 'number' &&
+    typeof p1.longitude === 'number' &&
+    Number.isFinite(p1.latitude) &&
+    Number.isFinite(p1.longitude)
+  ) {
+    const label = [p1.city, p1.region, p1.country_code]
+      .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+      .slice(0, 2)
+      .join(', ') || 'IP Approx';
+    const result = { lat: p1.latitude, lng: p1.longitude, label };
+    ipGeoCache.set(ip, { ...result, fetchedAt: Date.now() });
+    return result;
+  }
+
+  // Provider 2 fallback: ipapi.co (HTTPS, free, no API key)
+  const p2 = await fetchWithTimeout(`https://ipapi.co/${encodeURIComponent(ip)}/json/`);
+  if (
+    p2 &&
+    !p2.error &&
+    typeof p2.latitude === 'number' &&
+    typeof p2.longitude === 'number' &&
+    Number.isFinite(p2.latitude) &&
+    Number.isFinite(p2.longitude)
+  ) {
+    const label = [p2.city, p2.region, p2.country_code]
+      .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+      .slice(0, 2)
+      .join(', ') || 'IP Approx';
+    const result = { lat: p2.latitude, lng: p2.longitude, label };
+    ipGeoCache.set(ip, { ...result, fetchedAt: Date.now() });
+    return result;
+  }
+
+  return null;
+}
+
 app.post('/api/choy/gps/ping', requireAuth, async (req: AuthedRequest, res: Response) => {
   try {
     const user = req.choyUser!;
@@ -1030,12 +1224,44 @@ app.post('/api/choy/gps/ping', requireAuth, async (req: AuthedRequest, res: Resp
     const safeSpeed = typeof speed === 'number' && Number.isFinite(speed) && speed >= 0 ? speed : undefined;
     const safeHeading =
       typeof heading === 'number' && Number.isFinite(heading) && heading >= 0 && heading <= 360 ? heading : undefined;
-    await store.upsertLocation(user.id, user.name, lat, lng, safeAcc, safeSpeed, safeHeading);
+    await store.upsertLocation(user.id, user.name, lat, lng, safeAcc, safeSpeed, safeHeading, 'gps');
     broadcastGpsToAdmins(user.id);
-    res.json({ success: true });
+    res.json({ success: true, source: 'gps' });
   } catch (err) {
     console.error('[GPS Ping Error]:', err);
     res.status(500).json({ error: 'Failed to record location' });
+  }
+});
+
+app.post('/api/choy/gps/ip-ping', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const clientIp = extractClientPublicIp(req);
+    if (!clientIp) {
+      return res.json({ success: false, skipped: 'local_ip' });
+    }
+    const geo = await resolveIpGeolocation(clientIp);
+    if (!geo) {
+      return res.json({ success: false, skipped: 'ip_lookup_unavailable' });
+    }
+    const updated = await store.upsertLocation(
+      user.id,
+      user.name,
+      geo.lat,
+      geo.lng,
+      5000,
+      undefined,
+      undefined,
+      'ip',
+      geo.label
+    );
+    if (updated) {
+      broadcastGpsToAdmins(user.id);
+    }
+    return res.json({ success: updated, source: 'ip', label: geo.label });
+  } catch (err) {
+    console.error('[IP Fallback GPS Error]:', err);
+    return res.status(500).json({ error: 'Failed to record IP location fallback' });
   }
 });
 
@@ -1450,6 +1676,83 @@ app.delete('/api/choy/posts/:id', requireAuth, async (req: AuthedRequest, res: R
     return res.json({ deleted: true });
   } catch (err: unknown) {
     return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to delete post' });
+  }
+});
+
+app.post('/api/choy/posts/views', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const postIds = Array.isArray(req.body?.postIds) ? req.body.postIds.map(String) : [];
+    if (postIds.length === 0) {
+      return res.json({ recorded: 0 });
+    }
+    const recorded = await store.recordPostViews(postIds, user.id);
+    if (recorded > 0) {
+      broadcastSync('posts');
+    }
+    return res.json({ recorded });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to record post views' });
+  }
+});
+
+app.post('/api/choy/posts/:id/like', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const updated = await store.togglePostLike(req.params.id, user.id);
+    if (!updated) return res.status(404).json({ error: 'Post not found' });
+    broadcastSync('posts');
+    return res.json(updated);
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to toggle like' });
+  }
+});
+
+app.post('/api/choy/posts/:id/comments', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
+    if (!text || text.length > 500) {
+      return res.status(400).json({ error: 'Comment text is required (max 500 characters)' });
+    }
+    const updated = await store.addPostComment(
+      req.params.id,
+      { id: user.id, name: user.name, avatar: user.avatar || DEFAULT_PROFILE_ICON },
+      text
+    );
+    if (!updated) return res.status(404).json({ error: 'Post not found' });
+    broadcastSync('posts');
+    return res.status(201).json(updated);
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to add comment' });
+  }
+});
+
+app.delete('/api/choy/posts/:id/comments/:commentId', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const updated = await store.deletePostComment(
+      req.params.id,
+      req.params.commentId,
+      user.id,
+      user.role === 'admin'
+    );
+    if (!updated) return res.status(404).json({ error: 'Comment not found or not authorized' });
+    broadcastSync('posts');
+    return res.json(updated);
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to delete comment' });
+  }
+});
+
+app.post('/api/choy/posts/:id/share', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const updated = await store.incrementPostShare(req.params.id);
+    if (!updated) return res.status(404).json({ error: 'Post not found' });
+    broadcastSync('posts');
+    return res.json(updated);
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to record share' });
   }
 });
 

@@ -11,6 +11,8 @@ export interface LiveGpsUserLocation {
   accuracy?: number;
   speed?: number;
   heading?: number;
+  source?: 'gps' | 'ip';
+  ipLocationLabel?: string;
   avatar?: string;
   trail?: Array<{ lat: number; lng: number; ts: string }>;
   updatedAt: string;
@@ -236,6 +238,8 @@ export const LiveGpsMap: React.FC<LiveGpsMapProps> = ({
       const speedKmh = loc.speed != null && loc.speed > 0.4 ? Math.round(loc.speed * 3.6) : 0;
       const safeName = escapeHtml(loc.userName);
       const safeAvatar = escapeHtml(sanitizeAvatar(loc.avatar, defaultAvatar));
+      const isIpFallback = loc.source === 'ip';
+      const safeIpLabel = loc.ipLocationLabel ? escapeHtml(loc.ipLocationLabel) : '';
       const headingStyle =
         loc.heading != null && Number.isFinite(loc.heading)
           ? `transform: rotate(${Math.round(loc.heading)}deg);`
@@ -246,7 +250,7 @@ export const LiveGpsMap: React.FC<LiveGpsMapProps> = ({
           <div style="position:relative;width:${isSelected ? 46 : 40}px;height:${isSelected ? 46 : 40}px;display:flex;align-items:center;justify-content:center;">
             ${
               isFreshLive
-                ? `<div class="choy-gps-pulse-ring" style="position:absolute;inset:0;border-radius:9999px;background:${color};opacity:0.45;"></div>`
+                ? `<div class="choy-gps-pulse-ring" style="position:absolute;inset:0;border-radius:9999px;background:${isIpFallback ? '#f59e0b' : color};opacity:0.45;"></div>`
                 : ''
             }
             ${
@@ -254,12 +258,12 @@ export const LiveGpsMap: React.FC<LiveGpsMapProps> = ({
                 ? `<div style="position:absolute;inset:-6px;display:flex;align-items:flex-start;justify-content:center;${headingStyle}"><span style="width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:8px solid ${color};filter:drop-shadow(0 1px 2px rgba(0,0,0,0.6));"></span></div>`
                 : ''
             }
-            <div style="position:relative;width:${isSelected ? 40 : 34}px;height:${isSelected ? 40 : 34}px;border-radius:9999px;border:3px solid ${isSelected ? '#fbbf24' : color};background:#022c22;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,0.45);">
+            <div style="position:relative;width:${isSelected ? 40 : 34}px;height:${isSelected ? 40 : 34}px;border-radius:9999px;border:3px ${isIpFallback ? 'dashed #f59e0b' : `solid ${isSelected ? '#fbbf24' : color}`};background:#022c22;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,0.45);">
               <img src="${safeAvatar}" alt="${safeName}" style="width:100%;height:100%;object-fit:cover;" />
             </div>
           </div>
-          <div style="margin-top:2px;padding:2px 7px;border-radius:9999px;background:${isSelected ? '#fbbf24' : '#022c22'};color:${isSelected ? '#020617' : '#ffffff'};border:1px solid ${isSelected ? '#f59e0b' : color};font-size:10px;font-weight:800;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,0.35);">
-            ${safeName}${speedKmh > 0 ? ` · ${speedKmh} km/h` : ''}
+          <div style="margin-top:2px;padding:2px 7px;border-radius:9999px;background:${isSelected ? '#fbbf24' : isIpFallback ? '#78350f' : '#022c22'};color:${isSelected ? '#020617' : '#ffffff'};border:1px solid ${isSelected ? '#f59e0b' : isIpFallback ? '#f59e0b' : color};font-size:10px;font-weight:800;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,0.35);">
+            ${safeName}${isIpFallback ? ' · IP' : speedKmh > 0 ? ` · ${speedKmh} km/h` : ''}
           </div>
         </div>
       `;
@@ -275,6 +279,9 @@ export const LiveGpsMap: React.FC<LiveGpsMapProps> = ({
       const popupHtml = `
         <div style="font-family:system-ui,sans-serif;min-width:170px;">
           <div style="font-weight:800;font-size:13px;color:#022c22;margin-bottom:2px;">${safeName}</div>
+          <div style="font-size:10px;font-weight:800;color:${isIpFallback ? '#b45309' : '#047857'};margin-bottom:3px;">
+            ${isIpFallback ? `IP Approx${safeIpLabel ? ` · ${safeIpLabel}` : ''}` : 'Exact Live GPS'}
+          </div>
           <div style="font-size:11px;color:#065f46;margin-bottom:4px;">
             ${speedKmh > 0 ? `Moving · ${speedKmh} km/h` : formatTimeAgoShort(loc.updatedAt)}
           </div>
@@ -282,8 +289,10 @@ export const LiveGpsMap: React.FC<LiveGpsMapProps> = ({
             ${loc.lat.toFixed(5)}, ${loc.lng.toFixed(5)}
           </div>
           ${
-            loc.accuracy != null
+            !isIpFallback && loc.accuracy != null
               ? `<div style="font-size:10px;color:#475569;">Accuracy: ±${Math.round(loc.accuracy)}m</div>`
+              : isIpFallback
+              ? `<div style="font-size:10px;color:#92400e;">City/ISP estimate (GPS off/blocked)</div>`
               : ''
           }
         </div>
@@ -410,13 +419,15 @@ export const LiveGpsMap: React.FC<LiveGpsMapProps> = ({
       accuracyCircleRef.current = null;
     }
     if (selectedLocation) {
-      const color = getUserColor(selectedLocation.userId);
+      const isSelectedIp = selectedLocation.source === 'ip';
+      const color = isSelectedIp ? '#f59e0b' : getUserColor(selectedLocation.userId);
       accuracyCircleRef.current = L.circle([selectedLocation.lat, selectedLocation.lng], {
-        radius: Math.max(12, Math.min(selectedLocation.accuracy ?? 25, 500)),
+        radius: isSelectedIp ? 1500 : Math.max(12, Math.min(selectedLocation.accuracy ?? 25, 500)),
         color,
         fillColor: color,
-        fillOpacity: 0.12,
+        fillOpacity: isSelectedIp ? 0.08 : 0.12,
         weight: 1.5,
+        dashArray: isSelectedIp ? '6, 6' : undefined,
       }).addTo(map);
     }
 
@@ -563,11 +574,17 @@ export const LiveGpsMap: React.FC<LiveGpsMapProps> = ({
           <div className="flex items-center gap-2 min-w-0">
             <Navigation className="w-3.5 h-3.5 text-amber-400 shrink-0" />
             <span className="font-extrabold truncate">{selectedLocation.userName}</span>
-            <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 text-[10px] font-bold">
-              {selectedLocation.speed != null && selectedLocation.speed > 0.4
-                ? `Moving · ${Math.round(selectedLocation.speed * 3.6)} km/h`
-                : formatTimeAgoShort(selectedLocation.updatedAt)}
-            </span>
+            {selectedLocation.source === 'ip' ? (
+              <span className="px-1.5 py-0.5 rounded bg-amber-500/25 border border-amber-400/50 text-amber-300 text-[10px] font-bold">
+                IP Approx{selectedLocation.ipLocationLabel ? ` · ${selectedLocation.ipLocationLabel}` : ''}
+              </span>
+            ) : (
+              <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 text-[10px] font-bold">
+                {selectedLocation.speed != null && selectedLocation.speed > 0.4
+                  ? `GPS · ${Math.round(selectedLocation.speed * 3.6)} km/h`
+                  : `GPS · ${formatTimeAgoShort(selectedLocation.updatedAt)}`}
+              </span>
+            )}
           </div>
           <div className="font-mono text-[10px] text-emerald-200/90">
             Lat: {selectedLocation.lat.toFixed(4)}, Lng: {selectedLocation.lng.toFixed(4)}

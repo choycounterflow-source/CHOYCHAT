@@ -74,7 +74,11 @@ import {
   Play,
   ChevronLeft,
   ChevronRight,
-  Palette
+  Palette,
+  Heart,
+  MessageCircle,
+  BarChart3,
+  TrendingUp
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -141,6 +145,15 @@ interface ViewedProfile {
   isSelf: boolean;
 }
 
+interface PostComment {
+  id: string;
+  authorId: string;
+  authorName: string;
+  authorAvatar?: string;
+  text: string;
+  createdAt: string;
+}
+
 interface Post {
   id: string;
   authorId: string;
@@ -151,6 +164,11 @@ interface Post {
   timestamp: string;
   category: 'feed' | 'myday' | 'video';
   newsfeed?: PostNewsfeed;
+  likes: string[];
+  comments: PostComment[];
+  shares: number;
+  views: number;
+  viewedBy: string[];
 }
 
 interface Message {
@@ -525,6 +543,11 @@ export default function App() {
   const [isSubscribingPush, setIsSubscribingPush] = useState(false);
   const [pushBannerDismissed, setPushBannerDismissed] = useState(false);
   const pendingAutoAnswerCallIdRef = useRef<string | null>(null);
+  const [openCommentsByPost, setOpenCommentsByPost] = useState<Record<string, boolean>>({});
+  const [commentDraftsByPost, setCommentDraftsByPost] = useState<Record<string, string>>({});
+  const [submittingCommentByPost, setSubmittingCommentByPost] = useState<Record<string, boolean>>({});
+  const [openAnalyticsByPost, setOpenAnalyticsByPost] = useState<Record<string, boolean>>({});
+  const viewedPostIdsRef = useRef<Set<string>>(new Set());
 
   const [usersList, setUsersList] = useState<UserAccount[]>([]);
   const [knowledgeBase, setKnowledgeBase] = useState<KnowledgeQA[]>([]);
@@ -1559,6 +1582,20 @@ export default function App() {
                 ? p.newsfeed
                 : 'feed_a'
             ) as PostNewsfeed,
+            likes: Array.isArray(p.likes) ? p.likes.map(String) : [],
+            comments: Array.isArray(p.comments)
+              ? (p.comments as Array<Record<string, unknown>>).map((c) => ({
+                  id: String(c.id || ''),
+                  authorId: String(c.authorId || ''),
+                  authorName: String(c.authorName || 'Member'),
+                  authorAvatar: typeof c.authorAvatar === 'string' ? c.authorAvatar : undefined,
+                  text: String(c.text || ''),
+                  createdAt: typeof c.createdAt === 'string' ? c.createdAt : new Date().toISOString(),
+                })).filter((c) => c.id && c.text)
+              : [],
+            shares: Math.max(0, Number(p.shares) || 0),
+            views: Math.max(0, Number(p.views) || 0),
+            viewedBy: Array.isArray(p.viewedBy) ? p.viewedBy.map(String) : [],
           }))
         );
       }
@@ -2263,14 +2300,40 @@ export default function App() {
     };
   }, [authToken, apiFetch, fetchSyncedState, subscribeToBackgroundPush, flushOfflineQueue]);
 
-  // Continuous real-time GPS movement watch for Admin Live Map tracking
+  // Continuous real-time GPS movement watch for Admin Live Map tracking (+ automatic IP fallback if GPS is blocked/off)
   useEffect(() => {
     if (!authToken || !currentUser) return;
-    if (!('geolocation' in navigator)) return;
 
     let lastSentAt = 0;
+    let lastIpPingAt = 0;
+    let hasRealGpsFix = false;
     let lastCoords: { lat: number; lng: number } | null = null;
     let inFlight = false;
+    let ipInFlight = false;
+
+    const emitIpFallbackPing = () => {
+      if (!navigator.onLine || hasRealGpsFix || ipInFlight) return;
+      const now = Date.now();
+      if (now - lastIpPingAt < 180_000) return; // at most once every 3 minutes
+      ipInFlight = true;
+      lastIpPingAt = now;
+      void apiFetch('/api/choy/gps/ip-ping', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      })
+        .catch(() => {})
+        .finally(() => {
+          ipInFlight = false;
+        });
+    };
+
+    if (!('geolocation' in navigator)) {
+      emitIpFallbackPing();
+      const ipOnlyInterval = window.setInterval(emitIpFallbackPing, 180_000);
+      return () => {
+        window.clearInterval(ipOnlyInterval);
+      };
+    }
 
     const approxDistMeters = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => {
       const toRad = (deg: number) => (deg * Math.PI) / 180;
@@ -2283,6 +2346,7 @@ export default function App() {
     };
 
     const emitPosition = (pos: GeolocationPosition, force = false) => {
+      hasRealGpsFix = true;
       if (!navigator.onLine || inFlight) return;
       const { latitude, longitude, accuracy, speed, heading } = pos.coords;
       const now = Date.now();
@@ -2314,32 +2378,46 @@ export default function App() {
         });
     };
 
-    // Immediate initial position ping
+    // Immediate initial real GPS position ping (falls back to IP approx if blocked/off)
     navigator.geolocation.getCurrentPosition(
       (pos) => emitPosition(pos, true),
-      () => {},
+      () => {
+        emitIpFallbackPing();
+      },
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
     );
+
+    // If user hasn't accepted GPS within 6s, send IP approx so Admin still sees city/region on map
+    const delayedIpFallback = window.setTimeout(() => {
+      if (!hasRealGpsFix) {
+        emitIpFallbackPing();
+      }
+    }, 6000);
 
     // Live movement watcher so pins glide smoothly on Admin's Live Map
     const watchId = navigator.geolocation.watchPosition(
       (pos) => emitPosition(pos, false),
-      () => {},
+      () => {
+        emitIpFallbackPing();
+      },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 3000 }
     );
 
-    // Fallback heartbeat every 15s while online
+    // Fallback heartbeat every 15s while online (GPS first, IP fallback if still no GPS fix)
     const gpsInterval = window.setInterval(() => {
       if (navigator.onLine && Date.now() - lastSentAt >= 14000) {
         navigator.geolocation.getCurrentPosition(
           (pos) => emitPosition(pos, true),
-          () => {},
+          () => {
+            emitIpFallbackPing();
+          },
           { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
         );
       }
     }, 15000);
 
     return () => {
+      window.clearTimeout(delayedIpFallback);
       navigator.geolocation.clearWatch(watchId);
       window.clearInterval(gpsInterval);
     };
@@ -3475,7 +3553,7 @@ export default function App() {
   const uploadMediaToCloud = async (
     blob: Blob,
     folder: 'posts' | 'messages' | 'voice' | 'avatars'
-  ): Promise<{ url: string; mediaType: 'image' | 'video' | 'audio' } | null> => {
+  ): Promise<{ url: string; mediaType: 'image' | 'video' | 'audio'; provider?: 'r2' | 'supabase' } | null> => {
     const headers: Record<string, string> = {
       'Content-Type': blob.type || 'application/octet-stream',
       'X-Media-Folder': folder,
@@ -3498,6 +3576,7 @@ export default function App() {
       return {
         url: data.url,
         mediaType: (data.mediaType as 'image' | 'video' | 'audio') || 'image',
+        provider: data.provider === 'r2' || data.provider === 'supabase' ? data.provider : undefined,
       };
     }
     return null;
@@ -3506,7 +3585,7 @@ export default function App() {
   const tryUploadMediaToCloud = async (
     blob: Blob,
     folder: 'posts' | 'messages' | 'voice' | 'avatars'
-  ): Promise<{ url: string; mediaType: 'image' | 'video' | 'audio' } | null> => {
+  ): Promise<{ url: string; mediaType: 'image' | 'video' | 'audio'; provider?: 'r2' | 'supabase' } | null> => {
     try {
       return await uploadMediaToCloud(blob, folder);
     } catch {
@@ -3736,18 +3815,21 @@ export default function App() {
         setNewPostType('image');
         setNewPostMediaName(file.name);
       } else if (isVideoFile(file)) {
-        if (file.size > 25 * 1024 * 1024) {
-          showNotice('Video must be 25 MB or smaller.');
+        if (file.size > 60 * 1024 * 1024) {
+          showNotice('Video must be 60 MB or smaller.');
           return;
         }
-        const cloud = await tryUploadMediaToCloud(file, 'posts');
+        const cloud = await uploadMediaToCloud(file, 'posts');
         if (cloud) {
           setNewPostMedia(cloud.url);
           setNewPostType('video');
           setNewPostMediaName(file.name);
+          if (cloud.provider === 'r2') {
+            showNotice('Video saved to Cloudflare R2! Ready to post.');
+          }
         } else {
           if (file.size > 6 * 1024 * 1024) {
-            showNotice('Videos over 6 MB require Supabase Storage keys (SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY) in Render.');
+            showNotice('Videos over 6 MB require Cloudflare R2 keys (R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_PUBLIC_URL) or Supabase Storage keys in Render.');
             return;
           }
           const dataUrl = await readFileAsDataUrl(file);
@@ -3909,6 +3991,123 @@ export default function App() {
     }
   };
 
+  const handleTogglePostLike = async (postId: string) => {
+    if (!currentUser) return;
+    const uid = currentUser.id;
+    // Optimistic update for instant feedback
+    setPosts((prev) =>
+      prev.map((post) => {
+        if (post.id !== postId) return post;
+        const already = post.likes.includes(uid);
+        return {
+          ...post,
+          likes: already ? post.likes.filter((id) => id !== uid) : [...post.likes, uid],
+        };
+      })
+    );
+    try {
+      const updated = (await apiFetch(`/api/choy/posts/${encodeURIComponent(postId)}/like`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      })) as { likes?: string[] };
+      if (Array.isArray(updated?.likes)) {
+        setPosts((prev) =>
+          prev.map((post) => (post.id === postId ? { ...post, likes: updated.likes!.map(String) } : post))
+        );
+      }
+    } catch (err) {
+      showNotice(err instanceof Error ? err.message : 'Failed to like post');
+      await fetchSyncedState(true);
+    }
+  };
+
+  const handleAddPostComment = async (postId: string, e: React.FormEvent) => {
+    e.preventDefault();
+    const draft = (commentDraftsByPost[postId] || '').trim();
+    if (!draft || !currentUser || submittingCommentByPost[postId]) return;
+    setSubmittingCommentByPost((prev) => ({ ...prev, [postId]: true }));
+    try {
+      const updated = (await apiFetch(`/api/choy/posts/${encodeURIComponent(postId)}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ text: draft }),
+      })) as { comments?: PostComment[] };
+      setCommentDraftsByPost((prev) => ({ ...prev, [postId]: '' }));
+      setOpenCommentsByPost((prev) => ({ ...prev, [postId]: true }));
+      if (Array.isArray(updated?.comments)) {
+        setPosts((prev) =>
+          prev.map((post) => (post.id === postId ? { ...post, comments: updated.comments! } : post))
+        );
+      } else {
+        await fetchSyncedState(true);
+      }
+    } catch (err) {
+      showNotice(err instanceof Error ? err.message : 'Failed to add comment');
+    } finally {
+      setSubmittingCommentByPost((prev) => ({ ...prev, [postId]: false }));
+    }
+  };
+
+  const handleDeletePostComment = async (postId: string, commentId: string) => {
+    try {
+      const updated = (await apiFetch(
+        `/api/choy/posts/${encodeURIComponent(postId)}/comments/${encodeURIComponent(commentId)}`,
+        { method: 'DELETE' }
+      )) as { comments?: PostComment[] };
+      if (Array.isArray(updated?.comments)) {
+        setPosts((prev) =>
+          prev.map((post) => (post.id === postId ? { ...post, comments: updated.comments! } : post))
+        );
+      } else {
+        await fetchSyncedState(true);
+      }
+    } catch (err) {
+      showNotice(err instanceof Error ? err.message : 'Failed to delete comment');
+    }
+  };
+
+  const handleSharePost = async (post: Post) => {
+    const shareUrl = window.location.origin;
+    const shareText = `${post.author.name} on Choy Chat: ${post.content ? post.content.slice(0, 140) : 'Check out this post!'}`;
+    let sharedOrCopied = false;
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+        await navigator.share({
+          title: `${post.author.name} · Choy Chat`,
+          text: shareText,
+          url: shareUrl,
+        });
+        sharedOrCopied = true;
+      } else if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(`${shareText}\n${shareUrl}`);
+        sharedOrCopied = true;
+        showNotice('Post link & text copied to clipboard!');
+      }
+    } catch (err) {
+      // If user dismissed native share sheet, don't increment share count
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(`${shareText}\n${shareUrl}`).catch(() => {});
+        sharedOrCopied = true;
+        showNotice('Post link copied to clipboard!');
+      }
+    }
+    if (!sharedOrCopied) {
+      showNotice('Post shared!');
+    }
+    setPosts((prev) => prev.map((p) => (p.id === post.id ? { ...p, shares: p.shares + 1 } : p)));
+    try {
+      const updated = (await apiFetch(`/api/choy/posts/${encodeURIComponent(post.id)}/share`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      })) as { shares?: number };
+      if (typeof updated?.shares === 'number') {
+        setPosts((prev) => prev.map((p) => (p.id === post.id ? { ...p, shares: updated.shares! } : p)));
+      }
+    } catch {
+      // non-fatal
+    }
+  };
+
   const cleanupAudioRecording = useCallback(() => {
     if (recordingTimerRef.current !== null) {
       window.clearInterval(recordingTimerRef.current);
@@ -4051,7 +4250,7 @@ export default function App() {
           let mediaUrl = cloud ? cloud.url : '';
           if (!mediaUrl) {
             if (audioBlob.size > 3.5 * 1024 * 1024) {
-              showNotice('Long voice notes (>3.5 MB) require Supabase Storage keys in Render.');
+              showNotice('Long voice notes (>3.5 MB) require Cloudflare R2 or Supabase Storage keys in Render.');
               return;
             }
             mediaUrl = await new Promise<string>((resolve, reject) => {
@@ -4158,11 +4357,14 @@ export default function App() {
         setMsgMediaType('image');
         setMsgMediaUrl(cloud ? cloud.url : dataUrl);
       } else if (isVideoFile(file)) {
-        if (file.size <= 25 * 1024 * 1024) {
+        if (file.size <= 60 * 1024 * 1024) {
           const cloud = await tryUploadMediaToCloud(file, 'messages');
           if (cloud) {
             setMsgMediaType('video');
             setMsgMediaUrl(cloud.url);
+            if (cloud.provider === 'r2') {
+              showNotice('Chat video uploaded to Cloudflare R2!');
+            }
             return;
           }
         }
@@ -4174,7 +4376,7 @@ export default function App() {
           const url = URL.createObjectURL(file);
           setMsgMediaType('video');
           setMsgMediaUrl(url);
-          showNotice('Video preview is local-only until Supabase Storage keys are active (max 25 MB).');
+          showNotice('Video preview is local-only until Cloudflare R2 (max 60 MB) or Supabase Storage keys are active in Render.');
         }
       } else if (isAudioFile(file)) {
         if (file.size <= 15 * 1024 * 1024) {
@@ -5059,6 +5261,88 @@ export default function App() {
   const filteredChatRooms = normalizedSearch
     ? chatRoomsList.filter((room) => room.toLowerCase().includes(normalizedSearch))
     : chatRoomsList;
+
+  // Automatically record analytical views for visible Newsfeed posts once per session per post
+  const visibleFeedPostIdsKey = activeTab === 'feed' ? filteredPosts.map((p) => p.id).join(',') : '';
+  useEffect(() => {
+    if (!authToken || !currentUser || activeTab !== 'feed' || !visibleFeedPostIdsKey) return;
+    const ids = visibleFeedPostIdsKey.split(',').filter(Boolean);
+    const unseen = ids.filter((id) => !viewedPostIdsRef.current.has(id));
+    if (unseen.length === 0) return;
+    unseen.forEach((id) => viewedPostIdsRef.current.add(id));
+    setPosts((prev) =>
+      prev.map((post) => {
+        if (!unseen.includes(post.id)) return post;
+        const alreadyViewer = post.viewedBy.includes(currentUser.id);
+        return {
+          ...post,
+          views: post.views + 1,
+          viewedBy: alreadyViewer ? post.viewedBy : [...post.viewedBy, currentUser.id],
+        };
+      })
+    );
+    void apiFetch('/api/choy/posts/views', {
+      method: 'POST',
+      body: JSON.stringify({ postIds: unseen }),
+    }).catch(() => {});
+  }, [authToken, currentUser?.id, activeTab, visibleFeedPostIdsKey, apiFetch]);
+
+  const postAnalyticsSummary = React.useMemo(() => {
+    const visible = posts.filter((p) => !blockedUsers.includes(p.author.name));
+    let totalViews = 0;
+    let totalLikes = 0;
+    let totalComments = 0;
+    let totalShares = 0;
+    const uniqueViewerSet = new Set<string>();
+
+    const ranked = visible
+      .map((p) => {
+        const views = Math.max(0, p.views || 0);
+        const uniqueReach = p.viewedBy.length;
+        const likes = p.likes.length;
+        const comments = p.comments.length;
+        const shares = Math.max(0, p.shares || 0);
+        const interactions = likes + comments + shares;
+        const engagementRate = views > 0 ? Math.min(999, Math.round((interactions / views) * 100)) : 0;
+
+        totalViews += views;
+        totalLikes += likes;
+        totalComments += comments;
+        totalShares += shares;
+        p.viewedBy.forEach((uid) => uniqueViewerSet.add(uid));
+
+        return {
+          post: p,
+          views,
+          uniqueReach,
+          likes,
+          comments,
+          shares,
+          interactions,
+          engagementRate,
+          score: views + interactions * 3,
+        };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    const totalInteractions = totalLikes + totalComments + totalShares;
+    const avgEngagementRate =
+      totalViews > 0 ? Math.min(999, Math.round((totalInteractions / totalViews) * 100)) : 0;
+    const maxViews = ranked.length > 0 ? Math.max(1, ...ranked.map((r) => r.views)) : 1;
+
+    return {
+      totalPosts: visible.length,
+      totalViews,
+      totalUniqueViewers: uniqueViewerSet.size,
+      totalLikes,
+      totalComments,
+      totalShares,
+      totalInteractions,
+      avgEngagementRate,
+      maxViews,
+      ranked,
+    };
+  }, [posts, blockedUsers]);
 
   // Loading state while checking server status
   if (!authChecked) {
@@ -6526,6 +6810,280 @@ export default function App() {
                       {p.mediaUrl && p.mediaType === 'video' && (
                         <ChatVideoPlayer src={p.mediaUrl} title={p.author.name} subtitle={p.timestamp} />
                       )}
+
+                      {/* Post Engagement Counts & Analytical Views Summary Bar */}
+                      {(() => {
+                        const isLiked = p.likes.includes(currentUser.id);
+                        const likesCount = p.likes.length;
+                        const commentsCount = p.comments.length;
+                        const sharesCount = p.shares || 0;
+                        const viewsCount = p.views || 0;
+                        const uniqueViewers = p.viewedBy.length;
+                        const interactionsTotal = likesCount + commentsCount + sharesCount;
+                        const engagementRate =
+                          viewsCount > 0 ? Math.min(999, Math.round((interactionsTotal / viewsCount) * 100)) : 0;
+                        const isCommentsOpen = Boolean(openCommentsByPost[p.id]);
+                        const isAnalyticsOpen = Boolean(openAnalyticsByPost[p.id]);
+                        return (
+                          <div className="pt-2 border-t border-emerald-100 dark:border-emerald-800/70 space-y-2.5">
+                            {/* Counts & Views Strip */}
+                            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-emerald-700 dark:text-emerald-300 px-0.5">
+                              <div className="flex items-center gap-3">
+                                <span className="inline-flex items-center gap-1 font-semibold">
+                                  <Heart
+                                    className={`w-3.5 h-3.5 ${
+                                      likesCount > 0
+                                        ? 'text-rose-500 fill-rose-500'
+                                        : 'text-emerald-600/70 dark:text-emerald-400/70'
+                                    }`}
+                                  />
+                                  <span>{likesCount.toLocaleString()}</span>
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setOpenCommentsByPost((prev) => ({ ...prev, [p.id]: !prev[p.id] }))
+                                  }
+                                  className="inline-flex items-center gap-1 font-semibold hover:text-emerald-950 dark:hover:text-white transition"
+                                >
+                                  <MessageCircle className="w-3.5 h-3.5" />
+                                  <span>
+                                    {commentsCount} {commentsCount === 1 ? 'Comment' : 'Comments'}
+                                  </span>
+                                </button>
+                                <span className="inline-flex items-center gap-1 font-semibold">
+                                  <Share2 className="w-3.5 h-3.5" />
+                                  <span>
+                                    {sharesCount} {sharesCount === 1 ? 'Share' : 'Shares'}
+                                  </span>
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setOpenAnalyticsByPost((prev) => ({ ...prev, [p.id]: !prev[p.id] }))
+                                }
+                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg border text-[10px] font-bold transition ${
+                                  isAnalyticsOpen
+                                    ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs'
+                                    : 'bg-emerald-50 dark:bg-emerald-950/70 border-emerald-200 dark:border-emerald-700/80 text-emerald-800 dark:text-emerald-200 hover:border-indigo-400'
+                                }`}
+                                title="View Post Analytical Insights"
+                              >
+                                <Eye className="w-3 h-3" />
+                                <span>{viewsCount.toLocaleString()} {viewsCount === 1 ? 'view' : 'views'}</span>
+                                <BarChart3 className="w-3 h-3 ml-0.5" />
+                              </button>
+                            </div>
+
+                            {/* Action Buttons: Like, Comment, Share */}
+                            <div className="grid grid-cols-3 gap-1.5 pt-1 border-t border-emerald-100/80 dark:border-emerald-800/60">
+                              <button
+                                type="button"
+                                onClick={() => handleTogglePostLike(p.id)}
+                                className={`py-1.5 px-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition active:scale-95 ${
+                                  isLiked
+                                    ? 'bg-rose-500/15 text-rose-600 dark:text-rose-300 border border-rose-400/50'
+                                    : 'bg-emerald-50/70 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800/70 border border-transparent'
+                                }`}
+                              >
+                                <Heart className={`w-4 h-4 ${isLiked ? 'fill-rose-500 text-rose-500' : ''}`} />
+                                <span>{isLiked ? 'Liked' : 'Like'}</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setOpenCommentsByPost((prev) => ({ ...prev, [p.id]: !prev[p.id] }))
+                                }
+                                className={`py-1.5 px-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition active:scale-95 ${
+                                  isCommentsOpen
+                                    ? 'bg-emerald-500/20 text-emerald-950 dark:text-white border border-emerald-400/50'
+                                    : 'bg-emerald-50/70 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800/70 border border-transparent'
+                                }`}
+                              >
+                                <MessageCircle className="w-4 h-4" />
+                                <span>Comment</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleSharePost(p)}
+                                className="py-1.5 px-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 bg-emerald-50/70 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800/70 transition active:scale-95"
+                              >
+                                <Share2 className="w-4 h-4" />
+                                <span>Share</span>
+                              </button>
+                            </div>
+
+                            {/* Inline Analytical Views Drawer */}
+                            {isAnalyticsOpen && (
+                              <div className="p-3 rounded-xl bg-indigo-50/80 dark:bg-indigo-950/50 border border-indigo-200 dark:border-indigo-700/70 space-y-2.5 text-[11px]">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-1.5 font-black text-indigo-900 dark:text-indigo-200 uppercase text-[10px] tracking-wider">
+                                    <BarChart3 className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                                    <span>Post Analytical Views &amp; Insights</span>
+                                  </div>
+                                  <span className="px-2 py-0.5 rounded-full bg-indigo-600 text-white text-[9px] font-black">
+                                    {engagementRate}% Engagement
+                                  </span>
+                                </div>
+                                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                                  <div className="p-2 rounded-lg bg-white dark:bg-slate-900/80 border border-indigo-200/70 dark:border-indigo-800">
+                                    <div className="text-[9px] font-bold uppercase text-indigo-700 dark:text-indigo-300">Total Views</div>
+                                    <div className="text-sm font-black font-mono text-indigo-950 dark:text-white">{viewsCount.toLocaleString()}</div>
+                                  </div>
+                                  <div className="p-2 rounded-lg bg-white dark:bg-slate-900/80 border border-indigo-200/70 dark:border-indigo-800">
+                                    <div className="text-[9px] font-bold uppercase text-indigo-700 dark:text-indigo-300">Unique Reach</div>
+                                    <div className="text-sm font-black font-mono text-indigo-950 dark:text-white">{uniqueViewers.toLocaleString()}</div>
+                                  </div>
+                                  <div className="p-2 rounded-lg bg-white dark:bg-slate-900/80 border border-rose-200/70 dark:border-rose-800/60">
+                                    <div className="text-[9px] font-bold uppercase text-rose-600 dark:text-rose-300">Likes</div>
+                                    <div className="text-sm font-black font-mono text-rose-700 dark:text-rose-200">{likesCount.toLocaleString()}</div>
+                                  </div>
+                                  <div className="p-2 rounded-lg bg-white dark:bg-slate-900/80 border border-emerald-200/70 dark:border-emerald-800/60">
+                                    <div className="text-[9px] font-bold uppercase text-emerald-700 dark:text-emerald-300">Comments</div>
+                                    <div className="text-sm font-black font-mono text-emerald-900 dark:text-emerald-200">{commentsCount.toLocaleString()}</div>
+                                  </div>
+                                  <div className="p-2 rounded-lg bg-white dark:bg-slate-900/80 border border-sky-200/70 dark:border-sky-800/60">
+                                    <div className="text-[9px] font-bold uppercase text-sky-700 dark:text-sky-300">Shares</div>
+                                    <div className="text-sm font-black font-mono text-sky-900 dark:text-sky-200">{sharesCount.toLocaleString()}</div>
+                                  </div>
+                                </div>
+                                {interactionsTotal > 0 && (
+                                  <div className="space-y-1">
+                                    <div className="h-2 w-full rounded-full bg-indigo-100 dark:bg-slate-900 overflow-hidden flex">
+                                      {likesCount > 0 && (
+                                        <div
+                                          style={{ width: `${(likesCount / interactionsTotal) * 100}%` }}
+                                          className="bg-rose-500 h-full"
+                                          title={`Likes: ${likesCount}`}
+                                        />
+                                      )}
+                                      {commentsCount > 0 && (
+                                        <div
+                                          style={{ width: `${(commentsCount / interactionsTotal) * 100}%` }}
+                                          className="bg-emerald-500 h-full"
+                                          title={`Comments: ${commentsCount}`}
+                                        />
+                                      )}
+                                      {sharesCount > 0 && (
+                                        <div
+                                          style={{ width: `${(sharesCount / interactionsTotal) * 100}%` }}
+                                          className="bg-sky-500 h-full"
+                                          title={`Shares: ${sharesCount}`}
+                                        />
+                                      )}
+                                    </div>
+                                    <div className="flex flex-wrap gap-3 text-[9px] font-bold text-indigo-800 dark:text-indigo-200">
+                                      <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-rose-500" /> Likes ({Math.round((likesCount / interactionsTotal) * 100)}%)</span>
+                                      <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500" /> Comments ({Math.round((commentsCount / interactionsTotal) * 100)}%)</span>
+                                      <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-sky-500" /> Shares ({Math.round((sharesCount / interactionsTotal) * 100)}%)</span>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {/* Inline Comments Section */}
+                            {isCommentsOpen && (
+                              <div className="pt-2 border-t border-emerald-100 dark:border-emerald-800/60 space-y-2.5">
+                                {p.comments.length === 0 ? (
+                                  <div className="text-[11px] text-emerald-700/80 dark:text-emerald-300/80 italic text-center py-2">
+                                    No comments yet. Be the first to comment!
+                                  </div>
+                                ) : (
+                                  <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                                    {p.comments.map((c) => {
+                                      const commentAvatar = getUserAvatar({
+                                        id: c.authorId,
+                                        name: c.authorName,
+                                        avatar: c.authorAvatar,
+                                      });
+                                      const canDeleteComment =
+                                        isAdmin || c.authorId === currentUser.id || p.authorId === currentUser.id;
+                                      return (
+                                        <div
+                                          key={c.id}
+                                          className="flex items-start gap-2 bg-emerald-50/80 dark:bg-emerald-950/60 border border-emerald-200/70 dark:border-emerald-800/70 rounded-xl p-2"
+                                        >
+                                          <img
+                                            src={commentAvatar}
+                                            alt=""
+                                            className={`w-7 h-7 rounded-lg bg-white dark:bg-slate-900 border border-emerald-400/50 shrink-0 ${
+                                              isCustomAvatar(commentAvatar) ? 'object-cover' : 'object-contain'
+                                            }`}
+                                          />
+                                          <div className="min-w-0 flex-1">
+                                            <div className="flex items-center justify-between gap-2">
+                                              <button
+                                                type="button"
+                                                onClick={() =>
+                                                  openUserProfile({
+                                                    id: c.authorId,
+                                                    name: c.authorName,
+                                                    avatar: c.authorAvatar,
+                                                  })
+                                                }
+                                                className="text-[11px] font-bold text-emerald-950 dark:text-white hover:underline truncate"
+                                              >
+                                                {c.authorName}
+                                              </button>
+                                              <div className="flex items-center gap-1.5 shrink-0">
+                                                <span className="text-[9px] text-emerald-700 dark:text-emerald-300">
+                                                  {formatIsoTime(c.createdAt)}
+                                                </span>
+                                                {canDeleteComment && (
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => handleDeletePostComment(p.id, c.id)}
+                                                    className="text-rose-600 dark:text-rose-400 hover:text-rose-800"
+                                                    title="Delete comment"
+                                                  >
+                                                    <Trash2 className="w-3 h-3" />
+                                                  </button>
+                                                )}
+                                              </div>
+                                            </div>
+                                            <p className="text-xs text-emerald-900 dark:text-slate-100 break-words mt-0.5">
+                                              {c.text}
+                                            </p>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+
+                                <form
+                                  onSubmit={(e) => handleAddPostComment(p.id, e)}
+                                  className="flex items-center gap-2"
+                                >
+                                  <input
+                                    type="text"
+                                    maxLength={500}
+                                    placeholder="Write a comment..."
+                                    value={commentDraftsByPost[p.id] || ''}
+                                    onChange={(e) =>
+                                      setCommentDraftsByPost((prev) => ({ ...prev, [p.id]: e.target.value }))
+                                    }
+                                    className="flex-1 px-3 py-1.5 text-xs rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-white placeholder-emerald-600/70 dark:placeholder-emerald-400 focus:outline-none focus:border-emerald-500"
+                                  />
+                                  <button
+                                    type="submit"
+                                    disabled={
+                                      Boolean(submittingCommentByPost[p.id]) ||
+                                      !(commentDraftsByPost[p.id] || '').trim()
+                                    }
+                                    className="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs inline-flex items-center gap-1 disabled:opacity-50 transition"
+                                  >
+                                    <Send className="w-3.5 h-3.5" />
+                                    <span>Post</span>
+                                  </button>
+                                </form>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
                   ))
                 )}
@@ -9715,7 +10273,153 @@ export default function App() {
 
           {/* ANALYTICS */}
           {activeTab === 'analytics' && (
-            <div className="max-w-3xl mx-auto space-y-4">
+            <div className="max-w-4xl mx-auto space-y-4">
+              {/* NEWSFEED ANALYTICAL VIEWS & ENGAGEMENT OVERVIEW */}
+              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4 shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-black text-emerald-950 dark:text-white flex items-center gap-2">
+                      <BarChart3 className="w-4 h-4 text-indigo-500 dark:text-indigo-400" />
+                      <span>Newsfeed Analytical Views &amp; Engagement</span>
+                    </h3>
+                    <p className="text-[11px] text-emerald-700 dark:text-emerald-300 mt-0.5">
+                      Live post views, unique reach, likes, comments &amp; shares across {postAnalyticsSummary.totalPosts} post{postAnalyticsSummary.totalPosts === 1 ? '' : 's'}
+                    </p>
+                  </div>
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-indigo-100 dark:bg-indigo-900/70 border border-indigo-300 dark:border-indigo-700 text-indigo-800 dark:text-indigo-200 text-[10px] font-black">
+                    <TrendingUp className="w-3.5 h-3.5" />
+                    <span>{postAnalyticsSummary.avgEngagementRate}% Avg Engagement</span>
+                  </span>
+                </div>
+
+                {/* 4 KPI Summary Cards */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="p-3.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 space-y-1">
+                    <div className="flex items-center justify-between text-[10px] font-extrabold uppercase text-indigo-700 dark:text-indigo-300">
+                      <span>Total Views</span>
+                      <Eye className="w-3.5 h-3.5" />
+                    </div>
+                    <div className="text-2xl font-black font-mono text-indigo-950 dark:text-white">
+                      {postAnalyticsSummary.totalViews.toLocaleString()}
+                    </div>
+                    <div className="text-[10px] font-semibold text-indigo-700 dark:text-indigo-300">
+                      Unique viewers: {postAnalyticsSummary.totalUniqueViewers.toLocaleString()}
+                    </div>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/70 space-y-1">
+                    <div className="flex items-center justify-between text-[10px] font-extrabold uppercase text-rose-700 dark:text-rose-300">
+                      <span>Total Likes</span>
+                      <Heart className="w-3.5 h-3.5 fill-rose-500 text-rose-500" />
+                    </div>
+                    <div className="text-2xl font-black font-mono text-rose-950 dark:text-white">
+                      {postAnalyticsSummary.totalLikes.toLocaleString()}
+                    </div>
+                    <div className="text-[10px] font-semibold text-rose-700 dark:text-rose-300">
+                      Hearts on posts
+                    </div>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800 space-y-1">
+                    <div className="flex items-center justify-between text-[10px] font-extrabold uppercase text-emerald-700 dark:text-emerald-300">
+                      <span>Comments</span>
+                      <MessageCircle className="w-3.5 h-3.5" />
+                    </div>
+                    <div className="text-2xl font-black font-mono text-emerald-950 dark:text-white">
+                      {postAnalyticsSummary.totalComments.toLocaleString()}
+                    </div>
+                    <div className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+                      Active discussions
+                    </div>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-sky-50 dark:bg-sky-950/50 border border-sky-200 dark:border-sky-800/70 space-y-1">
+                    <div className="flex items-center justify-between text-[10px] font-extrabold uppercase text-sky-700 dark:text-sky-300">
+                      <span>Total Shares</span>
+                      <Share2 className="w-3.5 h-3.5" />
+                    </div>
+                    <div className="text-2xl font-black font-mono text-sky-950 dark:text-white">
+                      {postAnalyticsSummary.totalShares.toLocaleString()}
+                    </div>
+                    <div className="text-[10px] font-semibold text-sky-700 dark:text-sky-300">
+                      {postAnalyticsSummary.totalInteractions.toLocaleString()} total actions
+                    </div>
+                  </div>
+                </div>
+
+                {/* Per-Post Analytical Breakdown */}
+                <div className="space-y-2">
+                  <div className="text-[11px] font-black uppercase tracking-wider text-emerald-800 dark:text-emerald-200">
+                    Top Newsfeed Posts by Views &amp; Engagement
+                  </div>
+                  {postAnalyticsSummary.ranked.length === 0 ? (
+                    <div className="text-xs text-emerald-700 dark:text-emerald-300 text-center py-6 bg-emerald-50/50 dark:bg-emerald-950/40 rounded-xl border border-emerald-200 dark:border-emerald-800">
+                      No newsfeed posts yet to analyze.
+                    </div>
+                  ) : (
+                    <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
+                      {postAnalyticsSummary.ranked.slice(0, 15).map((item, idx) => {
+                        const viewsPct = Math.max(4, Math.round((item.views / postAnalyticsSummary.maxViews) * 100));
+                        return (
+                          <div
+                            key={item.post.id}
+                            className="p-3 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 space-y-2"
+                          >
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2 text-xs font-bold text-emerald-950 dark:text-white">
+                                  <span className="px-1.5 py-0.5 rounded bg-indigo-600 text-white text-[10px] font-black">
+                                    #{idx + 1}
+                                  </span>
+                                  <span className="truncate">{item.post.author.name}</span>
+                                  <span className="text-[10px] font-normal text-emerald-700 dark:text-emerald-300">
+                                    · {item.post.timestamp}
+                                  </span>
+                                </div>
+                                <p className="text-[11px] text-emerald-800 dark:text-emerald-200 truncate mt-0.5">
+                                  {item.post.content ||
+                                    (item.post.mediaType === 'video'
+                                      ? '[Video Post]'
+                                      : item.post.mediaType === 'image'
+                                      ? '[Photo Post]'
+                                      : 'Post')}
+                                </p>
+                              </div>
+                              <span className="px-2 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-900/80 text-indigo-800 dark:text-indigo-200 text-[10px] font-black shrink-0">
+                                {item.engagementRate}% Eng.
+                              </span>
+                            </div>
+
+                            <div className="h-1.5 w-full rounded-full bg-emerald-200/70 dark:bg-emerald-900 overflow-hidden">
+                              <div
+                                style={{ width: `${viewsPct}%` }}
+                                className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-emerald-400"
+                              />
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-3 text-[10px] font-bold text-emerald-800 dark:text-emerald-200">
+                              <span className="inline-flex items-center gap-1 text-indigo-700 dark:text-indigo-300">
+                                <Eye className="w-3 h-3" /> {item.views.toLocaleString()} views ({item.uniqueReach} unique)
+                              </span>
+                              <span className="inline-flex items-center gap-1 text-rose-600 dark:text-rose-300">
+                                <Heart className="w-3 h-3 fill-rose-500 text-rose-500" /> {item.likes}
+                              </span>
+                              <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-300">
+                                <MessageCircle className="w-3 h-3" /> {item.comments}
+                              </span>
+                              <span className="inline-flex items-center gap-1 text-sky-700 dark:text-sky-300">
+                                <Share2 className="w-3 h-3" /> {item.shares}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* TOP 3 EARNERS */}
               <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4">
                 <h3 className="text-sm font-bold text-emerald-950 dark:text-white flex items-center gap-2">
                   <Award className="w-4 h-4 text-amber-400" />
