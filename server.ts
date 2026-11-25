@@ -37,6 +37,7 @@ import {
 } from './src/server/supabaseStorage.ts';
 import {
   getR2StorageStatus,
+  runR2Diagnostic,
   uploadToR2Storage,
 } from './src/server/r2Storage.ts';
 
@@ -491,6 +492,36 @@ app.get('/api/admin/env-status', requireAuth, requireAdmin, async (_req, res) =>
       SUPABASE_BUCKET: Boolean(mediaStorage.bucket),
     },
   });
+});
+
+// ---- ADMIN CLOUDFLARE R2 BUCKET DIAGNOSTIC ENDPOINT ----
+app.post('/api/admin/r2-diagnostic', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    // CSRF protection when authenticated via session cookie
+    const hasBearer = Boolean(req.headers.authorization?.startsWith('Bearer '));
+    if (!hasBearer) {
+      const origin = req.headers.origin;
+      const expectedHost = (req.headers['x-forwarded-host'] || req.headers.host || '').toString().split(',')[0].trim();
+      const hasRequestedWith = req.headers['x-requested-with'] === 'XMLHttpRequest';
+      let originMatches = false;
+      if (typeof origin === 'string' && expectedHost) {
+        try {
+          originMatches = new URL(origin).host === expectedHost;
+        } catch {
+          originMatches = false;
+        }
+      }
+      if (!originMatches && !hasRequestedWith) {
+        return res.status(403).json({ error: 'Cross-origin diagnostic blocked' });
+      }
+    }
+
+    const report = await runR2Diagnostic();
+    return res.json(report);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'R2 diagnostic failed';
+    return res.status(500).json({ error: message });
+  }
 });
 
 // ---- CLOUDFLARE R2 + SUPABASE STORAGE MEDIA UPLOAD ENDPOINT ----

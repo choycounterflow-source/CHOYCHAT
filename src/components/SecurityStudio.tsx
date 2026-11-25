@@ -44,7 +44,11 @@ import {
   ChevronRight,
   Pencil,
   LocateFixed,
-  Upload
+  Upload,
+  Activity,
+  AlertTriangle,
+  CheckCircle2,
+  XCircle
 } from 'lucide-react';
 import { LiveGpsMap, type LiveGpsUserLocation } from './LiveGpsMap';
 import {
@@ -348,6 +352,53 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
     hasPublicUrl: false,
     publicUrlOrigin: '',
   });
+  const [r2DiagnosticLoading, setR2DiagnosticLoading] = useState(false);
+  const [r2DiagnosticError, setR2DiagnosticError] = useState('');
+  const [r2DiagnosticReport, setR2DiagnosticReport] = useState<{
+    checkedAt: string;
+    bucket: string;
+    accountIdMasked: string;
+    endpointHost: string;
+    publicUrlOrigin: string;
+    category:
+      | 'healthy'
+      | 'env_missing'
+      | 'env_invalid'
+      | 'bucket_not_found'
+      | 'permissions_error'
+      | 'connectivity_error'
+      | 'public_url_error';
+    summary: string;
+    nextStep: string;
+    envChecks: Array<{ key: string; present: boolean; valid: boolean; detail: string }>;
+    detectedR2EnvNames: string[];
+    bucketExistsCheck: {
+      ran: boolean;
+      ok: boolean;
+      httpStatus: number | null;
+      latencyMs: number | null;
+      detail: string;
+    };
+    listObjectsCheck: {
+      ran: boolean;
+      ok: boolean;
+      httpStatus: number | null;
+      latencyMs: number | null;
+      errorCode?: string;
+      errorMessage?: string;
+      objectCount: number;
+      sampleFiles: Array<{ key: string; sizeBytes: number; lastModified: string }>;
+      detail: string;
+    };
+    publicAccessCheck: {
+      ran: boolean;
+      ok: boolean;
+      httpStatus: number | null;
+      latencyMs: number | null;
+      testedPath: string;
+      detail: string;
+    };
+  } | null>(null);
   const [revealedFields, setRevealedFields] = useState<Record<string, boolean>>({});
   const [customPairs, setCustomPairs] = useState<KeyValueItem[]>(() => {
     try {
@@ -1440,6 +1491,33 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
       cancelled = true;
     };
   }, [authToken]);
+
+  const handleRunR2Diagnostic = async () => {
+    setR2DiagnosticLoading(true);
+    setR2DiagnosticError('');
+    try {
+      const headers: Record<string, string> = {
+        'X-Requested-With': 'XMLHttpRequest',
+      };
+      if (authToken) {
+        headers.Authorization = `Bearer ${authToken}`;
+      }
+      const res = await fetch('/api/admin/r2-diagnostic', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || `Diagnostic failed (HTTP ${res.status})`);
+      }
+      setR2DiagnosticReport(data);
+    } catch (err: unknown) {
+      setR2DiagnosticError(err instanceof Error ? err.message : 'Failed to run R2 diagnostic');
+    } finally {
+      setR2DiagnosticLoading(false);
+    }
+  };
 
   const handleAutoFillKnownDefaults = () => {
     const filled: MainKeysConfig = {
@@ -3601,14 +3679,29 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
                 10 GB Free Storage · Zero Egress Fees · Up to 60 MB Videos — URL lang ang ma-save sa Supabase para dili modako ang DB.
               </p>
             </div>
-            <a
-              href="https://dash.cloudflare.com/?to=/:account/r2/overview"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="px-3 py-1.5 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-bold flex items-center gap-1.5 text-[11px]"
-            >
-              <ExternalLink className="w-3.5 h-3.5" /> Open Cloudflare R2
-            </a>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleRunR2Diagnostic}
+                disabled={r2DiagnosticLoading}
+                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-bold flex items-center gap-1.5 text-[11px] shadow-sm transition"
+              >
+                {r2DiagnosticLoading ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Activity className="w-3.5 h-3.5" />
+                )}
+                {r2DiagnosticLoading ? 'Testing R2 Bucket...' : 'Run R2 Diagnostic'}
+              </button>
+              <a
+                href="https://dash.cloudflare.com/?to=/:account/r2/overview"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-3 py-1.5 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-bold flex items-center gap-1.5 text-[11px]"
+              >
+                <ExternalLink className="w-3.5 h-3.5" /> Open Cloudflare R2
+              </a>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-[10px] font-mono">
@@ -3637,6 +3730,122 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           {r2StorageInfo.publicUrlOrigin && (
             <div className="text-[10px] font-mono text-emerald-700 dark:text-emerald-300">
               Active Public Origin: {r2StorageInfo.publicUrlOrigin}
+            </div>
+          )}
+
+          {r2DiagnosticError && (
+            <div className="p-3 rounded-lg bg-rose-500/15 border border-rose-500/40 text-rose-800 dark:text-rose-200 text-[11px] font-semibold flex items-center gap-2">
+              <XCircle className="w-4 h-4 shrink-0" />
+              <span>{r2DiagnosticError}</span>
+            </div>
+          )}
+
+          {r2DiagnosticReport && (
+            <div className="p-3.5 rounded-xl bg-white/90 dark:bg-slate-950/80 border border-emerald-300/70 dark:border-emerald-700/60 space-y-3">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="flex items-start gap-2">
+                  {r2DiagnosticReport.category === 'healthy' ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                  ) : r2DiagnosticReport.category === 'env_missing' || r2DiagnosticReport.category === 'env_invalid' ? (
+                    <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                  ) : (
+                    <XCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                  )}
+                  <div>
+                    <div className="font-bold text-emerald-950 dark:text-white text-[11px]">
+                      {r2DiagnosticReport.summary}
+                    </div>
+                    <div className="text-[10px] text-emerald-800/80 dark:text-emerald-300/80 mt-0.5">
+                      {r2DiagnosticReport.nextStep}
+                    </div>
+                  </div>
+                </div>
+                <span className="px-2 py-0.5 rounded-md font-mono text-[10px] font-bold uppercase bg-emerald-100 dark:bg-emerald-900 text-emerald-900 dark:text-emerald-200">
+                  {r2DiagnosticReport.category.replace(/_/g, ' ')}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-[10px]">
+                <div className="p-2.5 rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50/50 dark:bg-emerald-950/40 space-y-1">
+                  <div className="flex items-center justify-between font-bold text-emerald-950 dark:text-white">
+                    <span>1. Bucket Exists (HEAD)</span>
+                    <span className={r2DiagnosticReport.bucketExistsCheck.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>
+                      {r2DiagnosticReport.bucketExistsCheck.ran
+                        ? r2DiagnosticReport.bucketExistsCheck.ok
+                          ? `OK · ${r2DiagnosticReport.bucketExistsCheck.latencyMs ?? 0}ms`
+                          : `HTTP ${r2DiagnosticReport.bucketExistsCheck.httpStatus ?? 'ERR'}`
+                        : 'Skipped'}
+                    </span>
+                  </div>
+                  <p className="text-emerald-800/80 dark:text-emerald-200/80 leading-relaxed">
+                    {r2DiagnosticReport.bucketExistsCheck.detail}
+                  </p>
+                </div>
+
+                <div className="p-2.5 rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50/50 dark:bg-emerald-950/40 space-y-1">
+                  <div className="flex items-center justify-between font-bold text-emerald-950 dark:text-white">
+                    <span>2. List Files (S3 API)</span>
+                    <span className={r2DiagnosticReport.listObjectsCheck.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>
+                      {r2DiagnosticReport.listObjectsCheck.ran
+                        ? r2DiagnosticReport.listObjectsCheck.ok
+                          ? `${r2DiagnosticReport.listObjectsCheck.objectCount} listed · ${r2DiagnosticReport.listObjectsCheck.latencyMs ?? 0}ms`
+                          : r2DiagnosticReport.listObjectsCheck.errorCode || `HTTP ${r2DiagnosticReport.listObjectsCheck.httpStatus ?? 'ERR'}`
+                        : 'Skipped'}
+                    </span>
+                  </div>
+                  <p className="text-emerald-800/80 dark:text-emerald-200/80 leading-relaxed">
+                    {r2DiagnosticReport.listObjectsCheck.detail}
+                  </p>
+                </div>
+
+                <div className="p-2.5 rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50/50 dark:bg-emerald-950/40 space-y-1">
+                  <div className="flex items-center justify-between font-bold text-emerald-950 dark:text-white">
+                    <span>3. Public URL Access</span>
+                    <span className={r2DiagnosticReport.publicAccessCheck.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>
+                      {r2DiagnosticReport.publicAccessCheck.ran
+                        ? r2DiagnosticReport.publicAccessCheck.ok
+                          ? `HTTP ${r2DiagnosticReport.publicAccessCheck.httpStatus} · ${r2DiagnosticReport.publicAccessCheck.latencyMs ?? 0}ms`
+                          : `HTTP ${r2DiagnosticReport.publicAccessCheck.httpStatus ?? 'ERR'}`
+                        : 'Skipped'}
+                    </span>
+                  </div>
+                  <p className="text-emerald-800/80 dark:text-emerald-200/80 leading-relaxed">
+                    {r2DiagnosticReport.publicAccessCheck.detail}
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-1 text-[10px] font-mono">
+                <div className="font-bold text-emerald-950 dark:text-white">Environment Key Details (Server Runtime)</div>
+                {r2DiagnosticReport.envChecks.map((ec) => (
+                  <div key={ec.key} className="flex flex-wrap items-center justify-between gap-2 py-1 border-b border-emerald-100 dark:border-emerald-900/60 last:border-b-0">
+                    <span className="font-bold text-emerald-950 dark:text-white">{ec.key}</span>
+                    <span className={ec.valid && ec.present ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'}>
+                      {ec.detail}
+                    </span>
+                  </div>
+                ))}
+                <div className="pt-1 text-emerald-700/90 dark:text-emerald-300/80">
+                  Detected R2/Cloudflare env var names on server:{' '}
+                  {r2DiagnosticReport.detectedR2EnvNames.length > 0
+                    ? r2DiagnosticReport.detectedR2EnvNames.join(', ')
+                    : 'None detected (0 R2_* or CLOUDFLARE_* keys loaded in this server process)'}
+                </div>
+              </div>
+
+              {r2DiagnosticReport.listObjectsCheck.sampleFiles.length > 0 && (
+                <div className="space-y-1 text-[10px] font-mono pt-1 border-t border-emerald-200/70 dark:border-emerald-800/60">
+                  <div className="font-bold text-emerald-950 dark:text-white">
+                    Sample Objects in &quot;{r2DiagnosticReport.bucket}&quot;
+                  </div>
+                  {r2DiagnosticReport.listObjectsCheck.sampleFiles.map((f) => (
+                    <div key={f.key} className="flex items-center justify-between gap-2 text-emerald-800 dark:text-emerald-200">
+                      <span className="truncate">{f.key}</span>
+                      <span className="shrink-0 opacity-80">{formatBytes(f.sizeBytes)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
           <div className="pt-2 border-t border-orange-200/70 dark:border-orange-800/50 space-y-1.5">
