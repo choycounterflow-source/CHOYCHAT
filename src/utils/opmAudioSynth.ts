@@ -27,7 +27,7 @@ export const OPM_PLAYLIST: OpmSongTrack[] = [
   {
     id: 'opm-huling-el-bimbo',
     title: 'Ang Huling El Bimbo',
-    artist: 'Eraserheads (Acoustic Mix)',
+    artist: 'Eraserheads',
     year: '1995',
     genre: 'OPM Rock',
     genreGroup: 'classic',
@@ -38,7 +38,7 @@ export const OPM_PLAYLIST: OpmSongTrack[] = [
   {
     id: 'opm-tadhana',
     title: 'Tadhana',
-    artist: 'Up Dharma Down (Rhodes Mix)',
+    artist: 'Up Dharma Down',
     year: '2012',
     genre: 'Indie Soul',
     genreGroup: 'indie',
@@ -49,7 +49,7 @@ export const OPM_PLAYLIST: OpmSongTrack[] = [
   {
     id: 'opm-214',
     title: '214',
-    artist: 'Rivermaya (Piano Ballad)',
+    artist: 'Rivermaya',
     year: '1994',
     genre: 'OPM Classic',
     genreGroup: 'classic',
@@ -60,7 +60,7 @@ export const OPM_PLAYLIST: OpmSongTrack[] = [
   {
     id: 'opm-buwan',
     title: 'Buwan',
-    artist: 'Juan Karlos (Midnight 6/8)',
+    artist: 'Juan Karlos',
     year: '2018',
     genre: 'Blues Soul',
     genreGroup: 'ballad',
@@ -71,7 +71,7 @@ export const OPM_PLAYLIST: OpmSongTrack[] = [
   {
     id: 'opm-kundiman',
     title: 'Kundiman',
-    artist: 'Silent Sanctuary (Harana Mix)',
+    artist: 'Silent Sanctuary',
     year: '2007',
     genre: 'Acoustic Strings',
     genreGroup: 'ballad',
@@ -82,7 +82,7 @@ export const OPM_PLAYLIST: OpmSongTrack[] = [
   {
     id: 'opm-kathang-isip',
     title: 'Kathang Isip',
-    artist: 'Ben&Ben (Folk Breeze)',
+    artist: 'Ben&Ben',
     year: '2017',
     genre: 'Indie Folk',
     genreGroup: 'indie',
@@ -93,7 +93,7 @@ export const OPM_PLAYLIST: OpmSongTrack[] = [
   {
     id: 'opm-rainbow',
     title: 'Rainbow',
-    artist: 'South Border (Smooth R&B)',
+    artist: 'South Border',
     year: '2005',
     genre: 'OPM R&B',
     genreGroup: 'ballad',
@@ -104,7 +104,7 @@ export const OPM_PLAYLIST: OpmSongTrack[] = [
   {
     id: 'opm-with-a-smile',
     title: 'With A Smile',
-    artist: 'Eraserheads (Sunny Acoustic)',
+    artist: 'Eraserheads',
     year: '1994',
     genre: 'OPM Classic',
     genreGroup: 'classic',
@@ -112,7 +112,39 @@ export const OPM_PLAYLIST: OpmSongTrack[] = [
     durationSec: 38,
     coverGradient: 'from-emerald-500 via-teal-700 to-sky-900',
   },
+  {
+    id: 'opm-mundo',
+    title: 'Mundo',
+    artist: 'IV of Spades',
+    year: '2018',
+    genre: 'Indie Funk',
+    genreGroup: 'indie',
+    bpm: 104,
+    durationSec: 37,
+    coverGradient: 'from-violet-700 via-indigo-900 to-slate-950',
+  },
+  {
+    id: 'opm-torete',
+    title: 'Torete',
+    artist: 'Moonstar88',
+    year: '2002',
+    genre: 'OPM Acoustic',
+    genreGroup: 'classic',
+    bpm: 94,
+    durationSec: 41,
+    coverGradient: 'from-rose-600 via-pink-800 to-slate-950',
+  },
 ];
+
+export function getOpmStreamingLinks(track: Pick<OpmSongTrack, 'title' | 'artist'>) {
+  const cleanArtist = track.artist.split('·')[0].trim();
+  const query = encodeURIComponent(`${track.title} ${cleanArtist} OPM`);
+  return {
+    youtube: `https://www.youtube.com/results?search_query=${query}`,
+    spotify: `https://open.spotify.com/search/${query}`,
+    appleMusic: `https://music.apple.com/search?term=${query}`,
+  };
+}
 
 // Expressive chord & motif arrangements keyed to each OPM track
 const ARRANGEMENTS: Record<string, SynthArrangement> = {
@@ -328,6 +360,59 @@ const ARRANGEMENTS: Record<string, SynthArrangement> = {
       { step: 22, midi: 76, lenSteps: 2 },
       { step: 24, midi: 74, lenSteps: 4 },
       { step: 28, midi: 73, lenSteps: 4 },
+    ],
+  },
+  'opm-mundo': {
+    // Groove Dmaj7 - Gmaj7 - Bm7 - A6
+    bpm: 104,
+    beatsPerBar: 4,
+    bars: 16,
+    instrument: 'rhodes',
+    chords: [
+      [50, 57, 61, 66, 69],
+      [43, 55, 59, 62, 66],
+      [47, 54, 57, 62, 66],
+      [45, 57, 61, 64, 66],
+    ],
+    melody: [
+      { step: 1, midi: 74, lenSteps: 2 },
+      { step: 3, midi: 76, lenSteps: 2 },
+      { step: 5, midi: 78, lenSteps: 3 },
+      { step: 9, midi: 76, lenSteps: 2 },
+      { step: 11, midi: 74, lenSteps: 2 },
+      { step: 13, midi: 71, lenSteps: 3 },
+      { step: 17, midi: 74, lenSteps: 2 },
+      { step: 19, midi: 78, lenSteps: 3 },
+      { step: 22, midi: 76, lenSteps: 2 },
+      { step: 24, midi: 74, lenSteps: 4 },
+      { step: 28, midi: 73, lenSteps: 4 },
+    ],
+  },
+  'opm-torete': {
+    // Warm F#m - D - A - E acoustic strumming
+    bpm: 94,
+    beatsPerBar: 4,
+    bars: 16,
+    instrument: 'acoustic',
+    chords: [
+      [45, 57, 61, 64, 69],
+      [40, 56, 59, 64, 68],
+      [42, 54, 57, 61, 66],
+      [50, 57, 62, 66, 69],
+    ],
+    melody: [
+      { step: 0, midi: 76, lenSteps: 2 },
+      { step: 2, midi: 76, lenSteps: 2 },
+      { step: 4, midi: 74, lenSteps: 2 },
+      { step: 6, midi: 73, lenSteps: 2 },
+      { step: 8, midi: 73, lenSteps: 4 },
+      { step: 12, midi: 71, lenSteps: 4 },
+      { step: 16, midi: 73, lenSteps: 2 },
+      { step: 18, midi: 74, lenSteps: 2 },
+      { step: 20, midi: 76, lenSteps: 2 },
+      { step: 22, midi: 73, lenSteps: 2 },
+      { step: 24, midi: 71, lenSteps: 4 },
+      { step: 28, midi: 69, lenSteps: 4 },
     ],
   },
 };

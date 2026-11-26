@@ -5,6 +5,7 @@ import {
   Circle,
   ExternalLink,
   Film,
+  Link2,
   Pause,
   Play,
   RotateCcw,
@@ -14,6 +15,7 @@ import {
   Upload,
   Volume2,
   VolumeX,
+  X,
 } from 'lucide-react';
 import {
   ONE_PIECE_LATEST_30_EPISODES,
@@ -23,6 +25,7 @@ import {
 import { ChatVideoPlayer } from './ChatVideoPlayer';
 
 const WATCHED_STORAGE_KEY = 'choychat_one_piece_watched_eps_v1';
+const EPISODE_LINKS_STORAGE_KEY = 'choychat_one_piece_ep_links_v1';
 const RECAP_DURATION_SEC = 24;
 
 function loadWatchedEpisodes(): number[] {
@@ -33,6 +36,63 @@ function loadWatchedEpisodes(): number[] {
     return Array.isArray(parsed) ? parsed.filter((n): n is number => typeof n === 'number') : [];
   } catch {
     return [];
+  }
+}
+
+function loadSavedEpisodeLinks(): Record<number, string> {
+  try {
+    const raw = localStorage.getItem(EPISODE_LINKS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+    const out: Record<number, string> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      const epNum = Number(k);
+      if (Number.isInteger(epNum) && typeof v === 'string' && /^https?:\/\//i.test(v)) {
+        out[epNum] = v;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function parseSafeVideoSource(rawUrl: string): { kind: 'video' | 'iframe'; url: string } | null {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('blob:')) {
+    return { kind: 'video', url: trimmed };
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      return null;
+    }
+    const host = parsed.hostname.toLowerCase();
+    // Convert standard YouTube links into clean embed URLs
+    if (host.includes('youtube.com') || host === 'youtu.be') {
+      let ytId = '';
+      if (host === 'youtu.be') {
+        ytId = parsed.pathname.replace(/^\//, '').split('/')[0] || '';
+      } else if (parsed.pathname.startsWith('/embed/')) {
+        ytId = parsed.pathname.replace('/embed/', '').split('/')[0] || '';
+      } else {
+        ytId = parsed.searchParams.get('v') || '';
+      }
+      if (/^[a-zA-Z0-9_-]{6,20}$/.test(ytId)) {
+        return { kind: 'iframe', url: `https://www.youtube.com/embed/${ytId}?autoplay=1` };
+      }
+    }
+    if (host.includes('vimeo.com')) {
+      const vimeoId = parsed.pathname.split('/').filter(Boolean).pop() || '';
+      if (/^\d{4,15}$/.test(vimeoId)) {
+        return { kind: 'iframe', url: `https://player.vimeo.com/video/${vimeoId}?autoplay=1` };
+      }
+    }
+    return { kind: 'video', url: parsed.toString() };
+  } catch {
+    return null;
   }
 }
 
@@ -198,11 +258,15 @@ export const OnePieceEpisodesPanel: React.FC = () => {
   const [showAllRows, setShowAllRows] = useState(false);
   const [watchedEps, setWatchedEps] = useState<number[]>(loadWatchedEpisodes);
 
-  // Recap Video Player State
+  // Recap & Custom Full-Episode Video Player State
   const [isRecapPlaying, setIsRecapPlaying] = useState(false);
   const [recapElapsedSec, setRecapElapsedSec] = useState(0);
   const [isRecapMuted, setIsRecapMuted] = useState(false);
   const [localEpisodeVideos, setLocalEpisodeVideos] = useState<Record<number, string>>({});
+  const [savedEpisodeLinks, setSavedEpisodeLinks] = useState<Record<number, string>>(loadSavedEpisodeLinks);
+  const [isUrlInputOpen, setIsUrlInputOpen] = useState(false);
+  const [urlDraft, setUrlDraft] = useState('');
+  const [urlError, setUrlError] = useState('');
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -216,6 +280,14 @@ export const OnePieceEpisodesPanel: React.FC = () => {
       // ignore storage errors
     }
   }, [watchedEps]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(EPISODE_LINKS_STORAGE_KEY, JSON.stringify(savedEpisodeLinks));
+    } catch {
+      // ignore storage errors
+    }
+  }, [savedEpisodeLinks]);
 
   useEffect(() => {
     return () => {
@@ -248,7 +320,12 @@ export const OnePieceEpisodesPanel: React.FC = () => {
     [selectedEpNumber]
   );
 
-  const activeCustomVideoUrl = localEpisodeVideos[activeEpisode.episodeNumber] || null;
+  const rawCustomSource =
+    localEpisodeVideos[activeEpisode.episodeNumber] ||
+    savedEpisodeLinks[activeEpisode.episodeNumber] ||
+    '';
+  const activeCustomSource = useMemo(() => parseSafeVideoSource(rawCustomSource), [rawCustomSource]);
+  const activeCustomVideoUrl = activeCustomSource?.url || null;
   const visibleRows = showAllRows ? filteredEpisodes : filteredEpisodes.slice(0, 10);
 
   // Paint Canvas Recap Frame whenever episode or timestamp updates
@@ -382,10 +459,47 @@ export const OnePieceEpisodesPanel: React.FC = () => {
     const url = URL.createObjectURL(file);
     localUrlsRef.current.push(url);
     setIsRecapPlaying(false);
+    setUrlError('');
     setLocalEpisodeVideos((prev) => ({
       ...prev,
       [activeEpisode.episodeNumber]: url,
     }));
+  };
+
+  const handleSaveEpisodeUrl = (e: React.FormEvent) => {
+    e.preventDefault();
+    const parsed = parseSafeVideoSource(urlDraft);
+    if (!parsed || parsed.url.startsWith('blob:')) {
+      setUrlError('Enter a valid https:// video link (.mp4, .webm, or YouTube URL).');
+      return;
+    }
+    setUrlError('');
+    setIsRecapPlaying(false);
+    setLocalEpisodeVideos((prev) => {
+      const next = { ...prev };
+      delete next[activeEpisode.episodeNumber];
+      return next;
+    });
+    setSavedEpisodeLinks((prev) => ({
+      ...prev,
+      [activeEpisode.episodeNumber]: urlDraft.trim(),
+    }));
+    setIsUrlInputOpen(false);
+    setUrlDraft('');
+  };
+
+  const handleClearCustomSource = () => {
+    const epNum = activeEpisode.episodeNumber;
+    setLocalEpisodeVideos((prev) => {
+      const next = { ...prev };
+      delete next[epNum];
+      return next;
+    });
+    setSavedEpisodeLinks((prev) => {
+      const next = { ...prev };
+      delete next[epNum];
+      return next;
+    });
   };
 
   const isWatched = watchedEps.includes(activeEpisode.episodeNumber);
@@ -423,13 +537,25 @@ export const OnePieceEpisodesPanel: React.FC = () => {
 
       {/* Selected Episode Theater Player */}
       <div className="p-4 border-b border-emerald-200/80 dark:border-emerald-800/80 space-y-3 bg-emerald-50/40 dark:bg-emerald-950/40">
-        {activeCustomVideoUrl ? (
-          <ChatVideoPlayer
-            src={activeCustomVideoUrl}
-            title={`One Piece Episode ${activeEpisode.episodeNumber}: ${activeEpisode.title}`}
-            subtitle={`${activeEpisode.arc} Arc · ${activeEpisode.airedDate}`}
-            autoPlayWithSound
-          />
+        {activeCustomSource ? (
+          activeCustomSource.kind === 'iframe' ? (
+            <div className="rounded-2xl overflow-hidden bg-black border border-emerald-500/40 shadow-md aspect-video w-full">
+              <iframe
+                src={activeCustomSource.url}
+                title={`One Piece Episode ${activeEpisode.episodeNumber}`}
+                className="w-full h-full border-0"
+                allow="autoplay; fullscreen; picture-in-picture"
+                allowFullScreen
+              />
+            </div>
+          ) : (
+            <ChatVideoPlayer
+              src={activeCustomSource.url}
+              title={`One Piece Episode ${activeEpisode.episodeNumber}: ${activeEpisode.title}`}
+              subtitle={`${activeEpisode.arc} Arc · ${activeEpisode.airedDate}`}
+              autoPlayWithSound
+            />
+          )
         ) : (
           <div className="rounded-2xl overflow-hidden bg-slate-950 border border-emerald-500/30 shadow-md">
             <div className="relative aspect-video w-full bg-slate-950">
@@ -443,12 +569,12 @@ export const OnePieceEpisodesPanel: React.FC = () => {
                 <button
                   type="button"
                   onClick={toggleRecapPlay}
-                  aria-label={`Play Episode ${activeEpisode.episodeNumber} recap`}
+                  aria-label={`Play Episode ${activeEpisode.episodeNumber} 24-second story preview`}
                   className="absolute inset-0 flex items-center justify-center bg-slate-950/35 hover:bg-slate-950/25 transition"
                 >
                   <span className="min-h-[56px] px-5 rounded-full bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-extrabold text-xs inline-flex items-center gap-2 shadow-xl">
                     <Play className="w-4 h-4 fill-current" />
-                    <span>Play Ep. {activeEpisode.episodeNumber} Recap</span>
+                    <span>Play 24s Story Preview</span>
                   </span>
                 </button>
               )}
@@ -564,6 +690,12 @@ export const OnePieceEpisodesPanel: React.FC = () => {
             {activeEpisode.summary}
           </p>
 
+          {!activeCustomVideoUrl && (
+            <p className="text-[11px] text-amber-900 dark:text-amber-200 bg-amber-100/80 dark:bg-amber-950/60 border border-amber-300/70 dark:border-amber-700/60 rounded-xl px-3 py-2 leading-relaxed">
+              Note: Ang built-in player nagpakita lang ug 24-second story preview tungod kay ang full 25–30 min nga copyrighted episode naa sa Crunchyroll/Netflix. Para mo-play ang full 25–30 min dinhi, pag-load ug downloaded video file o i-paste ang video link sa ubos.
+            </p>
+          )}
+
           <div className="flex flex-wrap items-center gap-2 pt-1">
             <input
               ref={fileInputRef}
@@ -578,8 +710,30 @@ export const OnePieceEpisodesPanel: React.FC = () => {
               className="min-h-[40px] px-3 py-1.5 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-100 dark:hover:bg-emerald-800 text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap transition"
             >
               <Upload className="w-3.5 h-3.5 shrink-0" />
-              <span>{activeCustomVideoUrl ? 'Change Local Video' : 'Load Video File'}</span>
+              <span>{localEpisodeVideos[activeEpisode.episodeNumber] ? 'Change Video File' : 'Load Video File'}</span>
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                setUrlDraft(savedEpisodeLinks[activeEpisode.episodeNumber] || '');
+                setUrlError('');
+                setIsUrlInputOpen((prev) => !prev);
+              }}
+              className="min-h-[40px] px-3 py-1.5 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-100 dark:hover:bg-emerald-800 text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap transition"
+            >
+              <Link2 className="w-3.5 h-3.5 shrink-0" />
+              <span>Paste Video Link</span>
+            </button>
+            {activeCustomVideoUrl && (
+              <button
+                type="button"
+                onClick={handleClearCustomSource}
+                className="min-h-[40px] px-3 py-1.5 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-700 text-rose-700 dark:text-rose-200 hover:bg-rose-100 text-xs font-bold inline-flex items-center gap-1 whitespace-nowrap transition"
+              >
+                <X className="w-3.5 h-3.5 shrink-0" />
+                <span>Clear Video</span>
+              </button>
+            )}
             <a
               href={activeEpisode.crunchyrollSearchUrl}
               target="_blank"
@@ -587,9 +741,48 @@ export const OnePieceEpisodesPanel: React.FC = () => {
               className="min-h-[40px] px-3.5 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-extrabold inline-flex items-center gap-1.5 whitespace-nowrap shadow-sm transition"
             >
               <ExternalLink className="w-3.5 h-3.5 shrink-0" />
-              <span>Watch Full Episode on Crunchyroll</span>
+              <span>Crunchyroll</span>
+            </a>
+            <a
+              href={`https://www.bilibili.tv/en/search-result?q=${encodeURIComponent(`One Piece ${activeEpisode.episodeNumber}`)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="min-h-[40px] px-3 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-extrabold inline-flex items-center gap-1.5 whitespace-nowrap shadow-sm transition"
+            >
+              <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+              <span>Bilibili</span>
+            </a>
+            <a
+              href="https://www.netflix.com/title/80107103"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="min-h-[40px] px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-extrabold inline-flex items-center gap-1.5 whitespace-nowrap shadow-sm transition"
+            >
+              <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+              <span>Netflix</span>
             </a>
           </div>
+
+          {isUrlInputOpen && (
+            <form onSubmit={handleSaveEpisodeUrl} className="pt-1 space-y-1.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  type="url"
+                  value={urlDraft}
+                  onChange={(e) => setUrlDraft(e.target.value)}
+                  placeholder={`Paste MP4, WebM, or YouTube URL for Ep. ${activeEpisode.episodeNumber}...`}
+                  className="flex-1 min-w-[200px] min-h-[40px] px-3 py-1.5 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white placeholder-emerald-700/60 dark:placeholder-emerald-300/60 focus:outline-none focus:border-emerald-500"
+                />
+                <button
+                  type="submit"
+                  className="min-h-[40px] px-4 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-extrabold whitespace-nowrap transition"
+                >
+                  Load Episode
+                </button>
+              </div>
+              {urlError && <p className="text-[11px] font-semibold text-rose-600 dark:text-rose-300">{urlError}</p>}
+            </form>
+          )}
         </div>
       </div>
 

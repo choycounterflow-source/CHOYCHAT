@@ -695,7 +695,23 @@ export default function App() {
   const [newPostType, setNewPostType] = useState<'text' | 'image' | 'video'>('text');
   const [newPostCategory, setNewPostCategory] = useState<'feed' | 'myday' | 'video'>('feed');
   const [feedCategoryFilter, setFeedCategoryFilter] = useState<'all' | 'image' | 'video' | 'music' | 'people'>('all');
-  const [opmTracks, setOpmTracks] = useState<OpmSongTrack[]>(OPM_PLAYLIST);
+  const [opmTracks, setOpmTracks] = useState<OpmSongTrack[]>(() => {
+    try {
+      const raw = localStorage.getItem('choychat_opm_custom_links_v1');
+      if (!raw) return OPM_PLAYLIST;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return OPM_PLAYLIST;
+      return OPM_PLAYLIST.map((t) => {
+        const u = (parsed as Record<string, unknown>)[t.id];
+        if (typeof u === 'string' && /^https?:\/\//i.test(u) && !/youtube\.com|youtu\.be/i.test(u)) {
+          return { ...t, audioUrl: u };
+        }
+        return t;
+      });
+    } catch {
+      return OPM_PLAYLIST;
+    }
+  });
   const [currentMusicTrackId, setCurrentMusicTrackId] = useState<string | null>(OPM_PLAYLIST[0].id);
   const [isMusicPlaying, setIsMusicPlaying] = useState(false);
   const [musicCurrentTime, setMusicCurrentTime] = useState(0);
@@ -6686,6 +6702,39 @@ export default function App() {
     [currentMusicTrackId, opmTracks]
   );
 
+  const pauseOpmAudio = useCallback(() => {
+    if (opmAudioRef.current) {
+      opmAudioRef.current.pause();
+    }
+    setIsMusicPlaying(false);
+  }, []);
+
+  const handleAttachTrackAudioUrl = useCallback(
+    (trackId: string, audioUrl: string | null) => {
+      setOpmTracks((prev) =>
+        prev.map((t) =>
+          t.id === trackId ? { ...t, audioUrl: audioUrl || undefined } : t
+        )
+      );
+      if (audioUrl && opmAudioRef.current) {
+        const audioEl = opmAudioRef.current;
+        audioEl.src = audioUrl;
+        audioEl.currentTime = 0;
+        audioEl.volume = isMusicMuted ? 0 : musicVolume;
+        setCurrentMusicTrackId(trackId);
+        setMusicCurrentTime(0);
+        void audioEl
+          .play()
+          .then(() => setIsMusicPlaying(true))
+          .catch(() => setIsMusicPlaying(false));
+      } else if (!audioUrl && currentMusicTrackId === trackId && opmAudioRef.current) {
+        opmAudioRef.current.pause();
+        setIsMusicPlaying(false);
+      }
+    },
+    [currentMusicTrackId, isMusicMuted, musicVolume]
+  );
+
   useEffect(() => {
     if (isInVideoCall && isMusicPlaying && opmAudioRef.current) {
       opmAudioRef.current.pause();
@@ -8336,6 +8385,7 @@ export default function App() {
                   volume={musicVolume}
                   onSelectTrack={startOpmTrack}
                   onTogglePlay={toggleOpmPlayPause}
+                  onPauseAudio={pauseOpmAudio}
                   onPrevTrack={handlePrevOpmTrack}
                   onNextTrack={handleNextOpmTrack}
                   onSeek={handleSeekOpm}
@@ -8344,6 +8394,7 @@ export default function App() {
                   onToggleMute={handleToggleOpmMute}
                   onVolumeChange={handleOpmVolumeChange}
                   onUploadSongs={handleUploadOpmSongs}
+                  onAttachTrackAudioUrl={handleAttachTrackAudioUrl}
                   onRemoveCustomTrack={handleRemoveCustomOpmTrack}
                 />
               ) : feedCategoryFilter === 'people' ? (
