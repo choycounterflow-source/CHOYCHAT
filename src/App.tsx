@@ -78,7 +78,11 @@ import {
   Heart,
   MessageCircle,
   BarChart3,
-  TrendingUp
+  TrendingUp,
+  ScreenShare,
+  ScreenShareOff,
+  SkipForward,
+  Disc3
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -91,6 +95,27 @@ import { GitHubIntelligence } from './components/GitHubIntelligence';
 import { ChatVideoPlayer } from './components/ChatVideoPlayer';
 import { CallDurationTimer, type CallTimeLimitSeconds } from './components/CallDurationTimer';
 import { CallSignalIndicator, type CallNetworkQuality } from './components/CallSignalIndicator';
+import {
+  CreateGroupModal,
+  GroupMembersModal,
+  type ChatGroupItem,
+  type ActiveGroupCallItem,
+} from './components/GroupChatModals';
+import { GroupVideoCallGrid, type RemoteCallPeer } from './components/GroupVideoCallGrid';
+import { VideoBackgroundPicker, VIDEO_BACKGROUND_OPTIONS } from './components/VideoBackgroundPicker';
+import {
+  createVideoBackgroundProcessor,
+  type VideoBackgroundProcessorHandle,
+  type VideoBackgroundPresetId,
+} from './utils/videoBackgroundProcessor';
+import { NewsfeedMusicPlayer } from './components/NewsfeedMusicPlayer';
+import {
+  OPM_PLAYLIST,
+  getOrRenderOpmTrackAudioUrl,
+  type OpmSongTrack,
+} from './utils/opmAudioSynth';
+import { OnePieceEpisodesPanel } from './components/OnePieceEpisodesPanel';
+import { ONE_PIECE_LATEST_30_EPISODES } from './data/onePieceEpisodes';
 import { ImageZoomModal } from './components/ImageZoomModal';
 import { useThemePreferences } from './hooks/useThemePreferences';
 import { COLOR_THEME_LIST, THEME_PRESETS } from './themePresets';
@@ -257,22 +282,37 @@ interface KnowledgeQA {
 interface IncomingCallPayload {
   callId: string;
   roomId: string;
+  callMode?: 'direct' | 'group';
+  groupName?: string;
   fromUserId: string;
   fromUserName: string;
-  sdp: RTCSessionDescriptionInit;
+  sdp?: RTCSessionDescriptionInit;
 }
 
 interface RtcSignalPayload {
-  type: 'offer' | 'answer' | 'ice' | 'hangup' | 'decline';
+  type:
+    | 'offer'
+    | 'answer'
+    | 'ice'
+    | 'hangup'
+    | 'decline'
+    | 'group_invite'
+    | 'group_join'
+    | 'group_here'
+    | 'group_leave';
   callId: string;
   signalId?: string;
   seq?: number;
   roomId?: string;
+  callMode?: 'direct' | 'group';
+  groupName?: string;
+  targetUserId?: string;
   targetName?: string;
   fromUserId?: string;
   fromUserName?: string;
   sdp?: RTCSessionDescriptionInit;
   candidate?: RTCIceCandidateInit;
+  ts?: number;
 }
 
 const DEFAULT_AVATAR = '/assets/aistudio/image_20261121_145253_f477cbfa.webp';
@@ -314,8 +354,30 @@ const RTC_ICE_CONFIG: RTCConfiguration = {
   iceCandidatePoolSize: 10
 };
 
+function isCustomGroupRoomId(room: string): boolean {
+  return room.trim().startsWith('grp_');
+}
+
+function isGroupRoomId(room: string): boolean {
+  const t = room.trim();
+  return t.toLowerCase() === 'vip group' || isCustomGroupRoomId(t);
+}
+
+function getRoomDisplayName(room: string, chatGroups: ChatGroupItem[] = []): string {
+  const t = room.trim();
+  if (!t) return 'VIP Group';
+  if (isCustomGroupRoomId(t)) {
+    return chatGroups.find((g) => g.id === t)?.name || 'Group Chat';
+  }
+  return t;
+}
+
 function messageBelongsToRoom(m: Message, room: string, myName: string): boolean {
-  const r = room.trim().toLowerCase();
+  const cleanRoom = room.trim();
+  if (isCustomGroupRoomId(cleanRoom)) {
+    return (m.receiver || '').trim() === cleanRoom;
+  }
+  const r = cleanRoom.toLowerCase();
   const me = myName.trim().toLowerCase();
   const sender = (m.sender || '').trim().toLowerCase();
   const receiver = (m.receiver || '').trim().toLowerCase();
@@ -329,24 +391,35 @@ function messageBelongsToRoom(m: Message, room: string, myName: string): boolean
   return (receiver === r && sender === me) || (sender === r && receiver === me);
 }
 
-function getMessageRoomLabel(m: Message, myName: string): string {
+function getMessageRoomTargetId(m: Message, myName: string): string {
   const receiver = (m.receiver || '').trim();
   const sender = (m.sender || '').trim();
+  if (isCustomGroupRoomId(receiver)) return receiver;
   if (receiver.toLowerCase() === 'vip group') return 'VIP Group';
   const me = myName.trim().toLowerCase();
   if (me) {
-    if (sender.toLowerCase() === me) return receiver || 'Direct Chat';
-    if (receiver.toLowerCase() === me) return sender || 'Direct Chat';
+    if (sender.toLowerCase() === me) return receiver || 'VIP Group';
+    if (receiver.toLowerCase() === me) return sender || 'VIP Group';
   }
   return receiver || sender || 'VIP Group';
 }
 
-function messageMatchesFullText(m: Message, query: string, myName: string): boolean {
+function getMessageRoomLabel(m: Message, myName: string, chatGroups: ChatGroupItem[] = []): string {
+  const target = getMessageRoomTargetId(m, myName);
+  return getRoomDisplayName(target, chatGroups);
+}
+
+function messageMatchesFullText(
+  m: Message,
+  query: string,
+  myName: string,
+  chatGroups: ChatGroupItem[] = []
+): boolean {
   const trimmed = query.trim().toLowerCase();
   if (!trimmed) return true;
   const terms = trimmed.split(/\s+/).filter(Boolean);
   if (terms.length === 0) return true;
-  const roomLabel = getMessageRoomLabel(m, myName);
+  const roomLabel = getMessageRoomLabel(m, myName, chatGroups);
   const haystack = [
     m.text || '',
     m.transcript || '',
@@ -507,8 +580,9 @@ export default function App() {
   const [isMenuDrawerOpen, setIsMenuDrawerOpen] = useState(false);
   const searchContainerRef = useRef<HTMLDivElement>(null);
 
-  // Real Live WebRTC Video Call State & Refs
+  // Real Live WebRTC Video Call State & Refs (supports 1-on-1 & Group Video Calls)
   const [isInVideoCall, setIsInVideoCall] = useState(false);
+  const [isGroupCallMode, setIsGroupCallMode] = useState(false);
   const [callStatus, setCallStatus] = useState<'idle' | 'calling' | 'ringing' | 'connected' | 'error'>('idle');
   const [callError, setCallError] = useState('');
   const [callPartnerName, setCallPartnerName] = useState('');
@@ -523,19 +597,41 @@ export default function App() {
   });
   const [isVideoMuted, setIsVideoMuted] = useState(false);
   const [isAudioMuted, setIsAudioMuted] = useState(false);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [isBgPickerOpen, setIsBgPickerOpen] = useState(false);
+  const [callBgPreset, setCallBgPreset] = useState<VideoBackgroundPresetId>('none');
+  const [callBgCustomImageUrl, setCallBgCustomImageUrl] = useState<string | null>(null);
+  const [isApplyingCallBg, setIsApplyingCallBg] = useState(false);
   const [cameraFacing, setCameraFacing] = useState<'user' | 'environment'>('user');
-  const [hasRemoteStream, setHasRemoteStream] = useState(false);
+  const [remotePeers, setRemotePeers] = useState<RemoteCallPeer[]>([]);
   const [callPeerOfflineHint, setCallPeerOfflineHint] = useState(false);
   const [incomingCall, setIncomingCall] = useState<IncomingCallPayload | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
-  const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
-  const remoteStreamRef = useRef<MediaStream | null>(null);
-  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
-  const pendingIceCandidatesRef = useRef<{ callId: string; candidate: RTCIceCandidateInit }[]>([]);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const cameraTrackBeforeShareRef = useRef<MediaStreamTrack | null>(null);
+  const bgProcessorRef = useRef<VideoBackgroundProcessorHandle | null>(null);
+  const rawCameraTrackRef = useRef<MediaStreamTrack | null>(null);
+  const peerConnectionsMapRef = useRef<
+    Map<
+      string,
+      {
+        pc: RTCPeerConnection;
+        peerId: string;
+        peerName: string;
+        avatar?: string;
+        stream: MediaStream;
+        hasVideo: boolean;
+        connectionState: string;
+      }
+    >
+  >(new Map());
+  const pendingIceCandidatesRef = useRef<{ callId: string; peerUserId?: string; candidate: RTCIceCandidateInit }[]>([]);
   const processedRtcSignalIdsRef = useRef<Set<string>>(new Set());
   const lastRtcSeqRef = useRef<number>(0);
   const activeCallIdRef = useRef<string | null>(null);
+  const callModeRef = useRef<'direct' | 'group'>('direct');
+  const callGroupNameRef = useRef<string>('');
   const callTargetNameRef = useRef<string>('');
   const callRoomIdRef = useRef<string>('VIP Group');
   const incomingCallRef = useRef<IncomingCallPayload | null>(null);
@@ -598,7 +694,17 @@ export default function App() {
   const [newPostMediaName, setNewPostMediaName] = useState('');
   const [newPostType, setNewPostType] = useState<'text' | 'image' | 'video'>('text');
   const [newPostCategory, setNewPostCategory] = useState<'feed' | 'myday' | 'video'>('feed');
-  const [feedCategoryFilter, setFeedCategoryFilter] = useState<'all' | 'image' | 'video' | 'people'>('all');
+  const [feedCategoryFilter, setFeedCategoryFilter] = useState<'all' | 'image' | 'video' | 'music' | 'people'>('all');
+  const [opmTracks, setOpmTracks] = useState<OpmSongTrack[]>(OPM_PLAYLIST);
+  const [currentMusicTrackId, setCurrentMusicTrackId] = useState<string | null>(OPM_PLAYLIST[0].id);
+  const [isMusicPlaying, setIsMusicPlaying] = useState(false);
+  const [musicCurrentTime, setMusicCurrentTime] = useState(0);
+  const [musicDuration, setMusicDuration] = useState(0);
+  const [isMusicShuffle, setIsMusicShuffle] = useState(false);
+  const [isMusicRepeatOne, setIsMusicRepeatOne] = useState(false);
+  const [isMusicMuted, setIsMusicMuted] = useState(false);
+  const [musicVolume, setMusicVolume] = useState(0.85);
+  const opmAudioRef = useRef<HTMLAudioElement | null>(null);
   const [newPostNewsfeed, setNewPostNewsfeed] = useState<SelectableNewsfeed>('feed_a');
   const [newsfeedConfig, setNewsfeedConfig] = useState<{ feedATitle: string; feedBTitle: string; feedCTitle: string }>(() => ({
     feedATitle: localStorage.getItem('choychat_nf_a_title') || 'Newsfeed A',
@@ -628,6 +734,10 @@ export default function App() {
   const [activeChat, setActiveChat] = useState<string>('VIP Group');
   const [activeChatMobileView, setActiveChatMobileView] = useState(false);
   const [pinnedChatRooms, setPinnedChatRooms] = useState<string[]>([]);
+  const [chatGroups, setChatGroups] = useState<ChatGroupItem[]>([]);
+  const [activeGroupCalls, setActiveGroupCalls] = useState<ActiveGroupCallItem[]>([]);
+  const [isCreateGroupModalOpen, setIsCreateGroupModalOpen] = useState(false);
+  const [groupMembersModalId, setGroupMembersModalId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!activeChat) return;
@@ -1612,9 +1722,17 @@ export default function App() {
           }))
         );
       }
+      if (Array.isArray(data.chatGroups)) {
+        setChatGroups(data.chatGroups as ChatGroupItem[]);
+      }
+      if (Array.isArray(data.activeGroupCalls)) {
+        setActiveGroupCalls(data.activeGroupCalls as ActiveGroupCallItem[]);
+      }
       if (Array.isArray(data.messages)) {
         const myId = data.user?.id;
         const myNameLower = String(data.user?.name || '').trim().toLowerCase();
+        const latestGroups = Array.isArray(data.chatGroups) ? (data.chatGroups as ChatGroupItem[]) : [];
+        const latestGroupIdSet = new Set(latestGroups.map((g) => g.id));
         const mappedMsgs: Message[] = data.messages.map((m: Record<string, unknown>) => ({
           id: String(m.id),
           senderId: String(m.senderId || ''),
@@ -1635,13 +1753,20 @@ export default function App() {
             (m) =>
               !seenMessageIdsRef.current.has(m.id) &&
               !m.isMe &&
+              m.senderId !== 'system' &&
               (m.receiver.trim().toLowerCase() === 'vip group' ||
-                m.receiver.trim().toLowerCase() === myNameLower)
+                m.receiver.trim().toLowerCase() === myNameLower ||
+                latestGroupIdSet.has(m.receiver.trim()))
           );
           if (brandNewIncoming.length > 0) {
             const latest = brandNewIncoming[brandNewIncoming.length - 1];
-            const targetRoom =
-              latest.receiver.trim().toLowerCase() === 'vip group' ? 'VIP Group' : latest.sender;
+            const recvClean = latest.receiver.trim();
+            const matchedGroup = latestGroups.find((g) => g.id === recvClean);
+            const targetRoom = matchedGroup
+              ? matchedGroup.id
+              : recvClean.toLowerCase() === 'vip group'
+              ? 'VIP Group'
+              : latest.sender;
             const preview =
               latest.text ||
               (latest.mediaType === 'image'
@@ -1651,7 +1776,11 @@ export default function App() {
                 : latest.mediaType === 'audio'
                 ? 'Sent a voice message'
                 : 'New message');
-            setLiveMsgBanner({ sender: latest.sender, room: targetRoom, preview });
+            setLiveMsgBanner({
+              sender: matchedGroup ? `${latest.sender} · ${matchedGroup.name}` : latest.sender,
+              room: targetRoom,
+              preview,
+            });
             playMessageNotificationTune();
           }
         } else {
@@ -2556,7 +2685,9 @@ export default function App() {
     const rooms: string[] = [];
     const meLower = (currentUser?.name || '').trim().toLowerCase();
     const visibleNameSet = new Set(visibleUsersList.map((u) => u.name.trim().toLowerCase()));
+    const groupIdSet = new Set(chatGroups.map((g) => g.id));
     const isAllowedRoom = (name: string) => {
+      if (groupIdSet.has(name)) return true;
       const lower = name.trim().toLowerCase();
       if (isAdmin) return true;
       if (lower === 'vip group' || lower === 'choy admin') return true;
@@ -2574,6 +2705,7 @@ export default function App() {
     };
 
     addRoom('VIP Group', true);
+    chatGroups.forEach((g) => addRoom(g.id, true));
     if (activeChat) addRoom(activeChat, true);
     pinnedChatRooms.forEach((r) => addRoom(r, true));
     visibleUsersList.forEach((u) => addRoom(u.name));
@@ -2581,7 +2713,7 @@ export default function App() {
     messages.forEach((m) => {
       const recv = (m.receiver || '').trim();
       const snd = (m.sender || '').trim();
-      if (recv.toLowerCase() === 'vip group') return;
+      if (recv.toLowerCase() === 'vip group' || isCustomGroupRoomId(recv)) return;
       if (meLower && snd.toLowerCase() === meLower) {
         addRoom(recv);
       } else if (meLower && recv.toLowerCase() === meLower) {
@@ -2591,12 +2723,31 @@ export default function App() {
     return rooms;
   })();
 
-  // ---- REAL LIVE WEBRTC VIDEO CALL ENGINE ----
+  // ---- REAL LIVE WEBRTC VIDEO CALL ENGINE (1-on-1 & MULTI-PEER GROUP CALLS) ----
+  const syncRemotePeersState = useCallback(() => {
+    const nextPeers: RemoteCallPeer[] = Array.from(peerConnectionsMapRef.current.values()).map((entry) => {
+      const videoTracks = entry.stream.getVideoTracks();
+      const hasLiveVideo = videoTracks.some((t) => t.readyState === 'live' && t.enabled !== false);
+      return {
+        peerId: entry.peerId,
+        peerName: entry.peerName,
+        avatar: entry.avatar,
+        stream: entry.stream,
+        hasVideo: entry.hasVideo || hasLiveVideo,
+        connectionState: entry.connectionState,
+      };
+    });
+    setRemotePeers(nextPeers);
+  }, []);
+
   const sendRtcSignalToServer = useCallback(
     async (payload: {
-      type: 'offer' | 'answer' | 'ice' | 'hangup' | 'decline';
+      type: RtcSignalPayload['type'];
       callId: string;
       roomId: string;
+      callMode?: 'direct' | 'group';
+      groupName?: string;
+      targetUserId?: string;
       targetName: string;
       sdp?: RTCSessionDescriptionInit;
       candidate?: RTCIceCandidateInit;
@@ -2618,56 +2769,126 @@ export default function App() {
     [apiFetch]
   );
 
-  const cleanupVideoCallResources = useCallback((preservePendingIce = false) => {
-    if (peerConnectionRef.current) {
+  const removePeerConnection = useCallback(
+    (peerKey: string) => {
+      const existing = peerConnectionsMapRef.current.get(peerKey);
+      if (!existing) return;
       try {
-        peerConnectionRef.current.onicecandidate = null;
-        peerConnectionRef.current.ontrack = null;
-        peerConnectionRef.current.onconnectionstatechange = null;
-        peerConnectionRef.current.close();
+        existing.pc.onicecandidate = null;
+        existing.pc.ontrack = null;
+        existing.pc.onconnectionstatechange = null;
+        existing.pc.oniceconnectionstatechange = null;
+        existing.pc.close();
       } catch {
         // ignore
       }
-      peerConnectionRef.current = null;
-    }
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((t) => t.stop());
-      localStreamRef.current = null;
-    }
-    if (remoteStreamRef.current) {
-      remoteStreamRef.current.getTracks().forEach((t) => t.stop());
-      remoteStreamRef.current = null;
-    }
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = null;
-    }
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.srcObject = null;
-    }
-    if (!preservePendingIce) {
-      pendingIceCandidatesRef.current = [];
-    }
-    activeCallIdRef.current = null;
-    callTargetNameRef.current = '';
-    setHasRemoteStream(false);
-    setCallPeerOfflineHint(false);
-    setIsAudioMuted(false);
-    setIsVideoMuted(false);
-    setCallElapsedSec(0);
-  }, []);
+      existing.stream.getTracks().forEach((t) => t.stop());
+      peerConnectionsMapRef.current.delete(peerKey);
+      syncRemotePeersState();
+    },
+    [syncRemotePeersState]
+  );
+
+  const cleanupVideoCallResources = useCallback(
+    (preservePendingIce = false) => {
+      for (const [, entry] of peerConnectionsMapRef.current.entries()) {
+        try {
+          entry.pc.onicecandidate = null;
+          entry.pc.ontrack = null;
+          entry.pc.onconnectionstatechange = null;
+          entry.pc.oniceconnectionstatechange = null;
+          entry.pc.close();
+        } catch {
+          // ignore
+        }
+        entry.stream.getTracks().forEach((t) => t.stop());
+      }
+      peerConnectionsMapRef.current.clear();
+
+      if (bgProcessorRef.current) {
+        try {
+          bgProcessorRef.current.dispose();
+        } catch {
+          // ignore
+        }
+        bgProcessorRef.current = null;
+      }
+      if (rawCameraTrackRef.current) {
+        try {
+          rawCameraTrackRef.current.stop();
+        } catch {
+          // ignore
+        }
+        rawCameraTrackRef.current = null;
+      }
+      if (screenStreamRef.current) {
+        screenStreamRef.current.getTracks().forEach((t) => {
+          t.onended = null;
+          t.stop();
+        });
+        screenStreamRef.current = null;
+      }
+      if (cameraTrackBeforeShareRef.current) {
+        try {
+          cameraTrackBeforeShareRef.current.stop();
+        } catch {
+          // ignore
+        }
+        cameraTrackBeforeShareRef.current = null;
+      }
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((t) => t.stop());
+        localStreamRef.current = null;
+      }
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = null;
+      }
+      if (!preservePendingIce) {
+        pendingIceCandidatesRef.current = [];
+      }
+      activeCallIdRef.current = null;
+      callModeRef.current = 'direct';
+      callGroupNameRef.current = '';
+      callTargetNameRef.current = '';
+      setRemotePeers([]);
+      setIsGroupCallMode(false);
+      setCallPeerOfflineHint(false);
+      setIsAudioMuted(false);
+      setIsVideoMuted(false);
+      setIsScreenSharing(false);
+      setIsBgPickerOpen(false);
+      setCallBgPreset('none');
+      setIsApplyingCallBg(false);
+      setCallElapsedSec(0);
+    },
+    []
+  );
 
   const endVideoCall = useCallback(
     (notifyRemote = true) => {
       const currentCallId = activeCallIdRef.current;
       const currentTarget = callTargetNameRef.current;
       const currentRoom = callRoomIdRef.current;
-      if (notifyRemote && currentCallId && currentTarget) {
-        void sendRtcSignalToServer({
-          type: 'hangup',
-          callId: currentCallId,
-          roomId: currentRoom,
-          targetName: currentTarget
-        });
+      const currentMode = callModeRef.current;
+      if (notifyRemote && currentCallId) {
+        if (currentMode === 'group') {
+          void sendRtcSignalToServer({
+            type: 'group_leave',
+            callId: currentCallId,
+            roomId: currentRoom,
+            callMode: 'group',
+            groupName: callGroupNameRef.current || currentTarget,
+            targetName: callGroupNameRef.current || currentRoom,
+          });
+        } else if (currentTarget) {
+          void sendRtcSignalToServer({
+            type: 'hangup',
+            callId: currentCallId,
+            roomId: currentRoom,
+            callMode: 'direct',
+            targetName: currentTarget,
+          });
+        }
       }
       cleanupVideoCallResources();
       setIsInVideoCall(false);
@@ -2700,23 +2921,65 @@ export default function App() {
     }
   }, []);
 
-  const flushPendingIceCandidates = useCallback(async (pc: RTCPeerConnection, callId: string) => {
-    while (true) {
-      const idx = pendingIceCandidatesRef.current.findIndex((item) => item.callId === callId);
-      if (idx < 0) break;
-      const [item] = pendingIceCandidatesRef.current.splice(idx, 1);
-      if (!pc.remoteDescription) {
-        pendingIceCandidatesRef.current.unshift(item);
-        break;
+  const flushPendingIceCandidates = useCallback(
+    async (pc: RTCPeerConnection, callId: string, peerUserId?: string) => {
+      const remaining: typeof pendingIceCandidatesRef.current = [];
+      for (const item of pendingIceCandidatesRef.current) {
+        const sameCall = item.callId === callId;
+        const samePeer = !peerUserId || !item.peerUserId || item.peerUserId === peerUserId;
+        if (!sameCall || !samePeer) {
+          remaining.push(item);
+          continue;
+        }
+        if (!pc.remoteDescription) {
+          remaining.push(item);
+          continue;
+        }
+        await pc.addIceCandidate(new RTCIceCandidate(item.candidate)).catch(() => {});
       }
-      await pc.addIceCandidate(new RTCIceCandidate(item.candidate)).catch(() => {});
-    }
-  }, []);
+      pendingIceCandidatesRef.current = remaining;
+    },
+    []
+  );
 
   const createPeerConnection = useCallback(
-    (callId: string, targetName: string, roomId: string) => {
+    (options: {
+      callId: string;
+      peerKey: string;
+      peerUserId?: string;
+      peerName: string;
+      roomId: string;
+      isGroup: boolean;
+      groupName?: string;
+    }) => {
+      const { callId, peerKey, peerUserId, peerName, roomId, isGroup, groupName } = options;
+      const existing = peerConnectionsMapRef.current.get(peerKey);
+      if (existing) {
+        return existing.pc;
+      }
+
       const pc = new RTCPeerConnection(RTC_ICE_CONFIG);
-      peerConnectionRef.current = pc;
+      const remoteStream = new MediaStream();
+      const peerAvatar =
+        usersList.find((u) => (peerUserId && u.id === peerUserId) || u.name.trim().toLowerCase() === peerName.trim().toLowerCase())?.avatar ||
+        DEFAULT_AVATAR;
+
+      const entry = {
+        pc,
+        peerId: peerKey,
+        peerName,
+        avatar: peerAvatar,
+        stream: remoteStream,
+        hasVideo: false,
+        connectionState: 'connecting',
+      };
+      peerConnectionsMapRef.current.set(peerKey, entry);
+
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((track) => {
+          pc.addTrack(track, localStreamRef.current!);
+        });
+      }
 
       pc.onicecandidate = (event) => {
         if (event.candidate) {
@@ -2724,41 +2987,67 @@ export default function App() {
             type: 'ice',
             callId,
             roomId,
-            targetName,
-            candidate: event.candidate.toJSON()
+            callMode: isGroup ? 'group' : 'direct',
+            groupName,
+            targetUserId: peerUserId,
+            targetName: peerName,
+            candidate: event.candidate.toJSON(),
           });
         }
       };
 
       pc.ontrack = (event) => {
-        const stream = event.streams[0] || remoteStreamRef.current || new MediaStream();
-        if (!event.streams[0]) {
-          stream.addTrack(event.track);
+        const incomingStream = event.streams[0];
+        if (incomingStream) {
+          incomingStream.getTracks().forEach((t) => {
+            if (!entry.stream.getTracks().some((existingTrack) => existingTrack.id === t.id)) {
+              entry.stream.addTrack(t);
+            }
+          });
+        } else if (!entry.stream.getTracks().some((existingTrack) => existingTrack.id === event.track.id)) {
+          entry.stream.addTrack(event.track);
         }
-        remoteStreamRef.current = stream;
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = stream;
-          remoteVideoRef.current.play().catch(() => {});
+        if (event.track.kind === 'video') {
+          entry.hasVideo = true;
+          event.track.onunmute = () => {
+            entry.hasVideo = true;
+            syncRemotePeersState();
+          };
+          event.track.onended = () => {
+            entry.hasVideo = entry.stream.getVideoTracks().some((t) => t.readyState === 'live');
+            syncRemotePeersState();
+          };
         }
-        setHasRemoteStream(true);
+        entry.connectionState = 'connected';
         setCallPeerOfflineHint(false);
         setCallStatus('connected');
+        syncRemotePeersState();
       };
 
       pc.onconnectionstatechange = () => {
+        entry.connectionState = pc.connectionState;
         if (pc.connectionState === 'connected') {
           setCallStatus('connected');
           setCallPeerOfflineHint(false);
-        } else if (pc.connectionState === 'failed') {
-          setCallError('Connection lost. Tap Retry Call to reconnect.');
-          setCallStatus('error');
+          syncRemotePeersState();
+        } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+          if (isGroup) {
+            removePeerConnection(peerKey);
+          } else if (pc.connectionState === 'failed') {
+            setCallError('Connection lost. Tap Retry Call to reconnect.');
+            setCallStatus('error');
+          }
+        } else {
+          syncRemotePeersState();
         }
       };
 
       pc.oniceconnectionstatechange = () => {
         if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+          entry.connectionState = 'connected';
           setCallStatus('connected');
           setCallPeerOfflineHint(false);
+          syncRemotePeersState();
         } else if (pc.iceConnectionState === 'disconnected') {
           try {
             pc.restartIce?.();
@@ -2766,24 +3055,81 @@ export default function App() {
             // ignore
           }
         } else if (pc.iceConnectionState === 'failed') {
-          setCallError('Connection lost. Tap Retry Call to reconnect.');
-          setCallStatus('error');
+          if (isGroup) {
+            removePeerConnection(peerKey);
+          } else {
+            setCallError('Connection lost. Tap Retry Call to reconnect.');
+            setCallStatus('error');
+          }
         }
       };
 
+      syncRemotePeersState();
       return pc;
     },
-    [sendRtcSignalToServer]
+    [removePeerConnection, sendRtcSignalToServer, syncRemotePeersState, usersList]
+  );
+
+  const joinGroupVideoCall = useCallback(
+    async (callId: string, roomId: string, explicitGroupName?: string) => {
+      if (!currentUser) return;
+      getUnlockedAudioContext();
+      const groupTitle = explicitGroupName || getRoomDisplayName(roomId, chatGroups);
+      cleanupVideoCallResources(true);
+      activeCallIdRef.current = callId;
+      callModeRef.current = 'group';
+      callRoomIdRef.current = roomId;
+      callGroupNameRef.current = groupTitle;
+      callTargetNameRef.current = groupTitle;
+      setIsGroupCallMode(true);
+      setIsInVideoCall(true);
+      setCallPartnerName(groupTitle);
+      setCallStatus('ringing');
+      setCallError('');
+      setCameraFacing('user');
+
+      try {
+        const stream = await acquireCallMedia('user');
+        if (activeCallIdRef.current !== callId) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        localStreamRef.current = stream;
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+          localVideoRef.current.play().catch(() => {});
+        }
+        const hasVideoTrack = stream.getVideoTracks().length > 0;
+        setIsVideoMuted(!hasVideoTrack);
+
+        await sendRtcSignalToServer({
+          type: 'group_join',
+          callId,
+          roomId,
+          callMode: 'group',
+          groupName: groupTitle,
+          targetName: groupTitle,
+        });
+      } catch (err) {
+        setCallStatus('error');
+        setCallError(err instanceof Error ? err.message : 'Unable to join group video call.');
+      }
+    },
+    [acquireCallMedia, chatGroups, cleanupVideoCallResources, currentUser, getUnlockedAudioContext, sendRtcSignalToServer]
   );
 
   const startVideoCall = useCallback(
     async (explicitTarget?: string) => {
       getUnlockedAudioContext();
-      const targetName = (explicitTarget || activeChat || 'VIP Group').trim();
+      const targetRoom = (explicitTarget || activeChat || 'VIP Group').trim();
+      const isGroup = isGroupRoomId(targetRoom);
+      const displayTitle = getRoomDisplayName(targetRoom, chatGroups);
+
       cleanupVideoCallResources();
       setIncomingCall(null);
+      setIsGroupCallMode(isGroup);
       setIsInVideoCall(true);
-      setCallPartnerName(targetName);
+      setCallPartnerName(displayTitle);
       setCallStatus('calling');
       setCallError('');
       setCameraFacing('user');
@@ -2798,13 +3144,45 @@ export default function App() {
         const hasVideoTrack = stream.getVideoTracks().length > 0;
         setIsVideoMuted(!hasVideoTrack);
 
+        if (isGroup) {
+          const callId = `gcall_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          activeCallIdRef.current = callId;
+          callModeRef.current = 'group';
+          callRoomIdRef.current = targetRoom;
+          callGroupNameRef.current = displayTitle;
+          callTargetNameRef.current = displayTitle;
+
+          const signalRes = await sendRtcSignalToServer({
+            type: 'group_invite',
+            callId,
+            roomId: targetRoom,
+            callMode: 'group',
+            groupName: displayTitle,
+            targetName: displayTitle,
+          });
+          if (!signalRes.targetOnline) {
+            setCallPeerOfflineHint(true);
+          }
+          return;
+        }
+
         const callId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         activeCallIdRef.current = callId;
-        callTargetNameRef.current = targetName;
-        callRoomIdRef.current = targetName;
+        callModeRef.current = 'direct';
+        callTargetNameRef.current = targetRoom;
+        callRoomIdRef.current = targetRoom;
 
-        const pc = createPeerConnection(callId, targetName, targetName);
-        stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+        const targetUserObj = usersList.find(
+          (u) => u.name.trim().toLowerCase() === targetRoom.toLowerCase()
+        );
+        const pc = createPeerConnection({
+          callId,
+          peerKey: targetUserObj?.id || '__direct__',
+          peerUserId: targetUserObj?.id,
+          peerName: targetRoom,
+          roomId: targetRoom,
+          isGroup: false,
+        });
 
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
@@ -2812,8 +3190,9 @@ export default function App() {
         const signalRes = await sendRtcSignalToServer({
           type: 'offer',
           callId,
-          roomId: targetName,
-          targetName,
+          roomId: targetRoom,
+          callMode: 'direct',
+          targetName: targetRoom,
           sdp: offer
         });
 
@@ -2825,7 +3204,16 @@ export default function App() {
         setCallError(err instanceof Error ? err.message : 'Unable to start video call.');
       }
     },
-    [activeChat, acquireCallMedia, cleanupVideoCallResources, createPeerConnection, getUnlockedAudioContext, sendRtcSignalToServer]
+    [
+      activeChat,
+      acquireCallMedia,
+      chatGroups,
+      cleanupVideoCallResources,
+      createPeerConnection,
+      getUnlockedAudioContext,
+      sendRtcSignalToServer,
+      usersList,
+    ]
   );
 
   const acceptIncomingCall = useCallback(async () => {
@@ -2834,12 +3222,23 @@ export default function App() {
     getUnlockedAudioContext();
     incomingCallRef.current = null;
     setIncomingCall(null);
-    // Preserve queued ICE candidates received while ringing!
+
+    if (callData.callMode === 'group' || !callData.sdp) {
+      await joinGroupVideoCall(
+        callData.callId,
+        callData.roomId,
+        callData.groupName || getRoomDisplayName(callData.roomId, chatGroups)
+      );
+      return;
+    }
+
+    // Direct 1-on-1 video call answer
     cleanupVideoCallResources(true);
-    // Bind active call refs immediately so hangup/ICE arriving during camera init are not dropped
     activeCallIdRef.current = callData.callId;
+    callModeRef.current = 'direct';
     callTargetNameRef.current = callData.fromUserName;
     callRoomIdRef.current = callData.roomId;
+    setIsGroupCallMode(false);
     setIsInVideoCall(true);
     setCallPartnerName(callData.fromUserName);
     setCallStatus('ringing');
@@ -2847,12 +3246,19 @@ export default function App() {
     setCameraFacing('user');
 
     try {
-      const pc = createPeerConnection(callData.callId, callData.fromUserName, callData.roomId);
+      const peerKey = callData.fromUserId || '__direct__';
+      const pc = createPeerConnection({
+        callId: callData.callId,
+        peerKey,
+        peerUserId: callData.fromUserId || undefined,
+        peerName: callData.fromUserName,
+        roomId: callData.roomId,
+        isGroup: false,
+      });
       await pc.setRemoteDescription(new RTCSessionDescription(callData.sdp));
-      await flushPendingIceCandidates(pc, callData.callId);
+      await flushPendingIceCandidates(pc, callData.callId, callData.fromUserId);
 
       const stream = await acquireCallMedia('user');
-      // If caller hung up while camera was initializing, clean up and exit
       if (activeCallIdRef.current !== callData.callId) {
         stream.getTracks().forEach((t) => t.stop());
         return;
@@ -2874,24 +3280,39 @@ export default function App() {
         type: 'answer',
         callId: callData.callId,
         roomId: callData.roomId,
+        callMode: 'direct',
         targetName: callData.fromUserName,
         sdp: answer
       });
-      await flushPendingIceCandidates(pc, callData.callId);
+      await flushPendingIceCandidates(pc, callData.callId, callData.fromUserId);
     } catch (err) {
       setCallStatus('error');
       setCallError(err instanceof Error ? err.message : 'Failed to accept video call.');
     }
-  }, [incomingCall, acquireCallMedia, cleanupVideoCallResources, createPeerConnection, flushPendingIceCandidates, getUnlockedAudioContext, sendRtcSignalToServer]);
+  }, [
+    incomingCall,
+    acquireCallMedia,
+    chatGroups,
+    cleanupVideoCallResources,
+    createPeerConnection,
+    flushPendingIceCandidates,
+    getUnlockedAudioContext,
+    joinGroupVideoCall,
+    sendRtcSignalToServer,
+  ]);
 
   const declineIncomingCall = useCallback(() => {
     if (!incomingCall) return;
-    void sendRtcSignalToServer({
-      type: 'decline',
-      callId: incomingCall.callId,
-      roomId: incomingCall.roomId,
-      targetName: incomingCall.fromUserName
-    });
+    if (incomingCall.callMode !== 'group') {
+      void sendRtcSignalToServer({
+        type: 'decline',
+        callId: incomingCall.callId,
+        roomId: incomingCall.roomId,
+        callMode: 'direct',
+        targetName: incomingCall.fromUserName
+      });
+    }
+    incomingCallRef.current = null;
     setIncomingCall(null);
   }, [incomingCall, sendRtcSignalToServer]);
 
@@ -2920,7 +3341,325 @@ export default function App() {
     setIsVideoMuted(nextMuted);
   }, [isVideoMuted]);
 
+  const replaceOutgoingVideoTrack = useCallback(async (nextTrack: MediaStreamTrack | null) => {
+    const replacePromises: Promise<void>[] = [];
+    for (const [, entry] of peerConnectionsMapRef.current.entries()) {
+      const sender =
+        entry.pc.getSenders().find((s) => s.track && s.track.kind === 'video') ||
+        entry.pc.getTransceivers().find((t) => t.receiver?.track?.kind === 'video')?.sender;
+      if (sender) {
+        replacePromises.push(sender.replaceTrack(nextTrack));
+      } else if (nextTrack && localStreamRef.current) {
+        entry.pc.addTrack(nextTrack, localStreamRef.current);
+      }
+    }
+    await Promise.allSettled(replacePromises);
+  }, []);
+
+  const applyVideoBackground = useCallback(
+    async (nextPreset: VideoBackgroundPresetId, customUrl?: string | null) => {
+      if (isScreenSharing) {
+        showNotice('Stop screen sharing before changing camera background.');
+        return;
+      }
+      const stream = localStreamRef.current;
+      if (!stream) {
+        showNotice('Camera stream is not ready yet.');
+        return;
+      }
+
+      if (customUrl !== undefined) {
+        setCallBgCustomImageUrl(customUrl);
+      }
+
+      if (nextPreset === 'none') {
+        setIsApplyingCallBg(true);
+        try {
+          let restoredTrack: MediaStreamTrack | null = null;
+          if (rawCameraTrackRef.current && rawCameraTrackRef.current.readyState === 'live') {
+            restoredTrack = rawCameraTrackRef.current;
+          }
+          rawCameraTrackRef.current = null;
+
+          if (bgProcessorRef.current) {
+            const processedTrack = bgProcessorRef.current.outputTrack;
+            stream.getVideoTracks().forEach((t) => {
+              if (t === processedTrack) {
+                stream.removeTrack(t);
+              }
+            });
+            bgProcessorRef.current.dispose();
+            bgProcessorRef.current = null;
+          }
+
+          if (!restoredTrack && navigator.mediaDevices?.getUserMedia) {
+            try {
+              const camStream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: { ideal: cameraFacing }, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } },
+                audio: false,
+              });
+              restoredTrack = camStream.getVideoTracks()[0] || null;
+            } catch {
+              restoredTrack = null;
+            }
+          }
+
+          if (restoredTrack) {
+            restoredTrack.enabled = !isVideoMuted;
+            stream.getVideoTracks().forEach((t) => {
+              if (t !== restoredTrack) {
+                stream.removeTrack(t);
+                t.stop();
+              }
+            });
+            if (!stream.getVideoTracks().includes(restoredTrack)) {
+              stream.addTrack(restoredTrack);
+            }
+            await replaceOutgoingVideoTrack(restoredTrack);
+          }
+
+          if (localVideoRef.current) {
+            localVideoRef.current.srcObject = stream;
+            localVideoRef.current.play().catch(() => {});
+          }
+          setCallBgPreset('none');
+        } finally {
+          setIsApplyingCallBg(false);
+        }
+        return;
+      }
+
+      setIsApplyingCallBg(true);
+      try {
+        const nextCustomUrl =
+          nextPreset === 'custom'
+            ? (customUrl !== undefined ? customUrl : callBgCustomImageUrl)
+            : null;
+
+        if (bgProcessorRef.current) {
+          await bgProcessorRef.current.updateConfig({
+            preset: nextPreset,
+            customImageUrl: nextCustomUrl,
+          });
+          setCallBgPreset(nextPreset);
+          return;
+        }
+
+        let rawTrack =
+          rawCameraTrackRef.current && rawCameraTrackRef.current.readyState === 'live'
+            ? rawCameraTrackRef.current
+            : stream.getVideoTracks().find((t) => t.readyState === 'live') || null;
+
+        if (!rawTrack && navigator.mediaDevices?.getUserMedia) {
+          try {
+            const camStream = await navigator.mediaDevices.getUserMedia({
+              video: { facingMode: { ideal: cameraFacing }, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } },
+              audio: false,
+            });
+            rawTrack = camStream.getVideoTracks()[0] || null;
+          } catch {
+            rawTrack = null;
+          }
+        }
+
+        if (!rawTrack) {
+          showNotice('No active camera feed available for background effects.');
+          return;
+        }
+
+        rawTrack.enabled = true;
+        rawCameraTrackRef.current = rawTrack;
+
+        const processor = await createVideoBackgroundProcessor(rawTrack, {
+          preset: nextPreset,
+          customImageUrl: nextCustomUrl,
+        });
+        bgProcessorRef.current = processor;
+
+        stream.getVideoTracks().forEach((t) => {
+          stream.removeTrack(t);
+          if (t !== rawTrack) {
+            t.stop();
+          }
+        });
+
+        processor.outputTrack.enabled = !isVideoMuted;
+        stream.addTrack(processor.outputTrack);
+        await replaceOutgoingVideoTrack(processor.outputTrack);
+
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+          localVideoRef.current.play().catch(() => {});
+        }
+        setCallBgPreset(nextPreset);
+      } catch {
+        showNotice('Unable to initialize camera background processor.');
+      } finally {
+        setIsApplyingCallBg(false);
+      }
+    },
+    [callBgCustomImageUrl, cameraFacing, isScreenSharing, isVideoMuted, replaceOutgoingVideoTrack]
+  );
+
+  const stopScreenShare = useCallback(async () => {
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((t) => {
+        t.onended = null;
+        t.stop();
+      });
+      screenStreamRef.current = null;
+    }
+
+    const stream = localStreamRef.current;
+    if (!stream) {
+      cameraTrackBeforeShareRef.current = null;
+      setIsScreenSharing(false);
+      return;
+    }
+
+    stream.getVideoTracks().forEach((t) => {
+      t.onended = null;
+      t.stop();
+      stream.removeTrack(t);
+    });
+
+    let restoredTrack: MediaStreamTrack | null = null;
+    const savedCameraTrack = cameraTrackBeforeShareRef.current;
+    cameraTrackBeforeShareRef.current = null;
+
+    if (savedCameraTrack && savedCameraTrack.readyState === 'live') {
+      restoredTrack = savedCameraTrack;
+    } else if (navigator.mediaDevices?.getUserMedia) {
+      try {
+        const camStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: cameraFacing }, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } },
+          audio: false,
+        });
+        restoredTrack = camStream.getVideoTracks()[0] || null;
+      } catch {
+        restoredTrack = null;
+      }
+    }
+
+    let outgoingTrack: MediaStreamTrack | null = restoredTrack;
+
+    if (restoredTrack && callBgPreset !== 'none') {
+      try {
+        restoredTrack.enabled = true;
+        rawCameraTrackRef.current = restoredTrack;
+        const processor = await createVideoBackgroundProcessor(restoredTrack, {
+          preset: callBgPreset,
+          customImageUrl: callBgCustomImageUrl,
+        });
+        bgProcessorRef.current = processor;
+        processor.outputTrack.enabled = !isVideoMuted;
+        outgoingTrack = processor.outputTrack;
+      } catch {
+        rawCameraTrackRef.current = null;
+        setCallBgPreset('none');
+        restoredTrack.enabled = !isVideoMuted;
+        outgoingTrack = restoredTrack;
+      }
+    } else if (restoredTrack) {
+      restoredTrack.enabled = !isVideoMuted;
+    }
+
+    if (outgoingTrack) {
+      stream.addTrack(outgoingTrack);
+    }
+
+    await replaceOutgoingVideoTrack(outgoingTrack);
+
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = stream;
+      localVideoRef.current.play().catch(() => {});
+    }
+    setIsScreenSharing(false);
+  }, [callBgCustomImageUrl, callBgPreset, cameraFacing, isVideoMuted, replaceOutgoingVideoTrack]);
+
+  const startScreenShare = useCallback(async () => {
+    if (!localStreamRef.current) {
+      showNotice('Call media is not ready yet.');
+      return;
+    }
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getDisplayMedia) {
+      showNotice('Screen sharing is not supported in this browser.');
+      return;
+    }
+
+    try {
+      const displayStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: false,
+      });
+      const screenTrack = displayStream.getVideoTracks()[0];
+      if (!screenTrack) {
+        displayStream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+
+      const stream = localStreamRef.current;
+      const existingVideoTracks = stream.getVideoTracks();
+      let liveCamTrack: MediaStreamTrack | null = null;
+
+      if (bgProcessorRef.current) {
+        if (rawCameraTrackRef.current && rawCameraTrackRef.current.readyState === 'live') {
+          liveCamTrack = rawCameraTrackRef.current;
+        }
+        rawCameraTrackRef.current = null;
+        bgProcessorRef.current.dispose();
+        bgProcessorRef.current = null;
+      } else {
+        liveCamTrack = existingVideoTracks.find((t) => t.readyState === 'live') || null;
+      }
+
+      if (liveCamTrack) {
+        cameraTrackBeforeShareRef.current = liveCamTrack;
+      }
+      existingVideoTracks.forEach((t) => {
+        stream.removeTrack(t);
+        if (t !== liveCamTrack) {
+          t.stop();
+        }
+      });
+
+      screenTrack.enabled = true;
+      screenStreamRef.current = displayStream;
+      stream.addTrack(screenTrack);
+
+      screenTrack.onended = () => {
+        void stopScreenShare();
+      };
+
+      await replaceOutgoingVideoTrack(screenTrack);
+
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+        localVideoRef.current.play().catch(() => {});
+      }
+      setIsBgPickerOpen(false);
+      setIsScreenSharing(true);
+    } catch (err) {
+      if (err instanceof Error && (err.name === 'AbortError' || err.name === 'NotAllowedError')) {
+        return;
+      }
+      showNotice('Unable to start screen sharing.');
+    }
+  }, [replaceOutgoingVideoTrack, stopScreenShare]);
+
+  const toggleScreenShare = useCallback(() => {
+    if (isScreenSharing) {
+      void stopScreenShare();
+    } else {
+      void startScreenShare();
+    }
+  }, [isScreenSharing, startScreenShare, stopScreenShare]);
+
   const flipCallCamera = useCallback(async () => {
+    if (isScreenSharing) {
+      showNotice('Stop screen sharing before switching cameras.');
+      return;
+    }
     if (!localStreamRef.current || !navigator.mediaDevices?.getUserMedia) return;
     const nextFacing: 'user' | 'environment' = cameraFacing === 'user' ? 'environment' : 'user';
     try {
@@ -2930,6 +3669,22 @@ export default function App() {
       });
       const newTrack = newVideoStream.getVideoTracks()[0];
       if (!newTrack) return;
+
+      if (bgProcessorRef.current) {
+        newTrack.enabled = true;
+        if (rawCameraTrackRef.current && rawCameraTrackRef.current !== newTrack) {
+          try {
+            rawCameraTrackRef.current.stop();
+          } catch {
+            // ignore
+          }
+        }
+        rawCameraTrackRef.current = newTrack;
+        await bgProcessorRef.current.updateInputTrack(newTrack);
+        setCameraFacing(nextFacing);
+        return;
+      }
+
       newTrack.enabled = !isVideoMuted;
 
       const oldStream = localStreamRef.current;
@@ -2939,12 +3694,7 @@ export default function App() {
       });
       oldStream.addTrack(newTrack);
 
-      const sender = peerConnectionRef.current
-        ?.getSenders()
-        .find((s) => s.track && s.track.kind === 'video');
-      if (sender) {
-        await sender.replaceTrack(newTrack);
-      }
+      await replaceOutgoingVideoTrack(newTrack);
 
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = oldStream;
@@ -2954,13 +3704,13 @@ export default function App() {
     } catch {
       showNotice('Only one camera is available on this device.');
     }
-  }, [cameraFacing, isVideoMuted]);
+  }, [cameraFacing, isScreenSharing, isVideoMuted, replaceOutgoingVideoTrack]);
 
   useEffect(() => {
     incomingCallRef.current = incomingCall;
   }, [incomingCall]);
 
-  // Keep SSE + Poll RTC signal handler always up-to-date & deduplicated
+  // Keep SSE + Poll RTC signal handler always up-to-date & deduplicated (1-on-1 + Group Call Mesh)
   useEffect(() => {
     handleRtcSignalRef.current = async (payload: RtcSignalPayload) => {
       if (!payload || !payload.type || !payload.callId) return;
@@ -2977,13 +3727,135 @@ export default function App() {
         }
       }
 
+      const myId = currentUser?.id || '';
+      const fromUserId = payload.fromUserId || '';
+      const fromUserName = payload.fromUserName || 'Member';
+      if (fromUserId && myId && fromUserId === myId) return;
+
+      // 1. Incoming Group Video Call Invitation
+      if (payload.type === 'group_invite') {
+        if (activeCallIdRef.current === payload.callId) return;
+        if (activeCallIdRef.current && activeCallIdRef.current !== payload.callId) return;
+        if (incomingCallRef.current?.callId === payload.callId) return;
+        const roomId = payload.roomId || 'VIP Group';
+        const groupTitle = payload.groupName || getRoomDisplayName(roomId, chatGroups);
+        const nextIncoming: IncomingCallPayload = {
+          callId: payload.callId,
+          roomId,
+          callMode: 'group',
+          groupName: groupTitle,
+          fromUserId,
+          fromUserName,
+        };
+        incomingCallRef.current = nextIncoming;
+        setIncomingCall(nextIncoming);
+        return;
+      }
+
+      // 2. Group Mesh Peer Discovery (glare-free deterministic offerer: smaller userId creates offer)
+      if (payload.type === 'group_join' || payload.type === 'group_here') {
+        if (activeCallIdRef.current !== payload.callId || callModeRef.current !== 'group' || !fromUserId) {
+          return;
+        }
+        const roomId = payload.roomId || callRoomIdRef.current;
+        const groupTitle = payload.groupName || callGroupNameRef.current || getRoomDisplayName(roomId, chatGroups);
+        const pc = createPeerConnection({
+          callId: payload.callId,
+          peerKey: fromUserId,
+          peerUserId: fromUserId,
+          peerName: fromUserName,
+          roomId,
+          isGroup: true,
+          groupName: groupTitle,
+        });
+
+        if (myId < fromUserId) {
+          if (pc.signalingState === 'stable' && !pc.remoteDescription) {
+            try {
+              const offer = await pc.createOffer();
+              await pc.setLocalDescription(offer);
+              await sendRtcSignalToServer({
+                type: 'offer',
+                callId: payload.callId,
+                roomId,
+                callMode: 'group',
+                groupName: groupTitle,
+                targetUserId: fromUserId,
+                targetName: fromUserName,
+                sdp: offer,
+              });
+            } catch {
+              // ignore offer race
+            }
+          }
+        } else if (payload.type === 'group_join') {
+          void sendRtcSignalToServer({
+            type: 'group_here',
+            callId: payload.callId,
+            roomId,
+            callMode: 'group',
+            groupName: groupTitle,
+            targetUserId: fromUserId,
+            targetName: fromUserName,
+          });
+        }
+        return;
+      }
+
+      // 3. Peer Left Group Call
+      if (payload.type === 'group_leave') {
+        if (activeCallIdRef.current === payload.callId && fromUserId) {
+          removePeerConnection(fromUserId);
+          showNotice(`${fromUserName} left the group call.`);
+        }
+        return;
+      }
+
+      // 4. WebRTC Offer (either targeted group mesh offer for an active group call, or incoming 1-on-1 call)
       if (payload.type === 'offer' && payload.sdp) {
+        if (payload.callMode === 'group' || isGroupRoomId(payload.roomId || '')) {
+          if (activeCallIdRef.current === payload.callId && fromUserId) {
+            const roomId = payload.roomId || callRoomIdRef.current;
+            const groupTitle = payload.groupName || callGroupNameRef.current || getRoomDisplayName(roomId, chatGroups);
+            const pc = createPeerConnection({
+              callId: payload.callId,
+              peerKey: fromUserId,
+              peerUserId: fromUserId,
+              peerName: fromUserName,
+              roomId,
+              isGroup: true,
+              groupName: groupTitle,
+            });
+            try {
+              await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+              await flushPendingIceCandidates(pc, payload.callId, fromUserId);
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+              await sendRtcSignalToServer({
+                type: 'answer',
+                callId: payload.callId,
+                roomId,
+                callMode: 'group',
+                groupName: groupTitle,
+                targetUserId: fromUserId,
+                targetName: fromUserName,
+                sdp: answer,
+              });
+              await flushPendingIceCandidates(pc, payload.callId, fromUserId);
+            } catch {
+              // ignore stale offer
+            }
+          }
+          return;
+        }
+
         if (activeCallIdRef.current && activeCallIdRef.current !== payload.callId) {
           void sendRtcSignalToServer({
             type: 'decline',
             callId: payload.callId,
             roomId: payload.roomId || 'VIP Group',
-            targetName: payload.fromUserName || 'Member'
+            callMode: 'direct',
+            targetName: fromUserName
           });
           return;
         }
@@ -2991,8 +3863,9 @@ export default function App() {
         const nextIncoming: IncomingCallPayload = {
           callId: payload.callId,
           roomId: payload.roomId || 'VIP Group',
-          fromUserId: payload.fromUserId || '',
-          fromUserName: payload.fromUserName || 'Member',
+          callMode: 'direct',
+          fromUserId,
+          fromUserName,
           sdp: payload.sdp
         };
         incomingCallRef.current = nextIncoming;
@@ -3000,43 +3873,62 @@ export default function App() {
         return;
       }
 
+      // 5. WebRTC Answer
       if (payload.type === 'answer' && payload.sdp) {
-        const pc = peerConnectionRef.current;
-        if (activeCallIdRef.current !== payload.callId || !pc) return;
+        if (activeCallIdRef.current !== payload.callId) return;
+        const directFallbackEntry = peerConnectionsMapRef.current.get('__direct__');
+        const targetEntry =
+          (fromUserId ? peerConnectionsMapRef.current.get(fromUserId) : undefined) ||
+          directFallbackEntry ||
+          Array.from(peerConnectionsMapRef.current.values())[0];
+        if (!targetEntry) return;
+        if (fromUserId && targetEntry.peerId === '__direct__') {
+          peerConnectionsMapRef.current.delete('__direct__');
+          targetEntry.peerId = fromUserId;
+          targetEntry.peerName = fromUserName;
+          peerConnectionsMapRef.current.set(fromUserId, targetEntry);
+        }
         try {
-          if (payload.fromUserName) {
-            callTargetNameRef.current = payload.fromUserName;
-            setCallPartnerName(payload.fromUserName);
+          if (callModeRef.current === 'direct' && fromUserName) {
+            callTargetNameRef.current = fromUserName;
+            setCallPartnerName(fromUserName);
           }
-          await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-          await flushPendingIceCandidates(pc, payload.callId);
+          await targetEntry.pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+          await flushPendingIceCandidates(targetEntry.pc, payload.callId, fromUserId);
           setCallPeerOfflineHint(false);
           setCallStatus('connected');
+          syncRemotePeersState();
         } catch {
           // Ignore stale answer
         }
         return;
       }
 
+      // 6. WebRTC ICE Candidate
       if (payload.type === 'ice' && payload.candidate) {
-        const pc = peerConnectionRef.current;
-        if (pc && activeCallIdRef.current === payload.callId && pc.remoteDescription) {
-          await pc.addIceCandidate(new RTCIceCandidate(payload.candidate)).catch(() => {});
+        const directFallbackEntry = peerConnectionsMapRef.current.get('__direct__');
+        const targetEntry =
+          (fromUserId ? peerConnectionsMapRef.current.get(fromUserId) : undefined) ||
+          (callModeRef.current === 'direct' ? directFallbackEntry || Array.from(peerConnectionsMapRef.current.values())[0] : undefined);
+        if (targetEntry && activeCallIdRef.current === payload.callId && targetEntry.pc.remoteDescription) {
+          await targetEntry.pc.addIceCandidate(new RTCIceCandidate(payload.candidate)).catch(() => {});
         } else {
           pendingIceCandidatesRef.current.push({
             callId: payload.callId,
+            peerUserId: fromUserId || undefined,
             candidate: payload.candidate
           });
         }
         return;
       }
 
+      // 7. Decline / Hangup (1-on-1)
       if (payload.type === 'decline') {
         pendingIceCandidatesRef.current = pendingIceCandidatesRef.current.filter(
           (item) => item.callId !== payload.callId
         );
-        if (activeCallIdRef.current === payload.callId) {
-          showNotice(`${payload.fromUserName || 'User'} declined the video call.`);
+        if (activeCallIdRef.current === payload.callId && callModeRef.current === 'direct') {
+          showNotice(`${fromUserName} declined the video call.`);
           endVideoCall(false);
         }
         return;
@@ -3051,12 +3943,25 @@ export default function App() {
           setIncomingCall(null);
         }
         if (activeCallIdRef.current === payload.callId) {
-          showNotice(`${payload.fromUserName || 'User'} ended the video call.`);
-          endVideoCall(false);
+          if (callModeRef.current === 'group' && fromUserId) {
+            removePeerConnection(fromUserId);
+          } else {
+            showNotice(`${fromUserName} ended the video call.`);
+            endVideoCall(false);
+          }
         }
       }
     };
-  }, [endVideoCall, flushPendingIceCandidates, sendRtcSignalToServer]);
+  }, [
+    chatGroups,
+    createPeerConnection,
+    currentUser?.id,
+    endVideoCall,
+    flushPendingIceCandidates,
+    removePeerConnection,
+    sendRtcSignalToServer,
+    syncRemotePeersState,
+  ]);
 
   // Auto-answer incoming call if user tapped "Answer Call" directly from the home-screen push notification
   useEffect(() => {
@@ -3197,7 +4102,7 @@ export default function App() {
 
   const jumpToSearchResultMessage = useCallback(
     (m: Message) => {
-      const targetRoom = getMessageRoomLabel(m, currentUser?.name || '');
+      const targetRoom = getMessageRoomTargetId(m, currentUser?.name || '');
       setActiveChat(targetRoom);
       setActiveChatMobileView(true);
       setMsgSearchScope('room');
@@ -3208,7 +4113,7 @@ export default function App() {
     [currentUser, markRoomSeen]
   );
 
-  // Bind live MediaStreams whenever the Video Call modal mounts/updates
+  // Bind live local MediaStream whenever the Video Call modal mounts/updates
   useEffect(() => {
     if (!isInVideoCall) return;
     if (localVideoRef.current && localStreamRef.current) {
@@ -3217,13 +4122,7 @@ export default function App() {
       }
       localVideoRef.current.play().catch(() => {});
     }
-    if (remoteVideoRef.current && remoteStreamRef.current) {
-      if (remoteVideoRef.current.srcObject !== remoteStreamRef.current) {
-        remoteVideoRef.current.srcObject = remoteStreamRef.current;
-      }
-      remoteVideoRef.current.play().catch(() => {});
-    }
-  }, [isInVideoCall, hasRemoteStream, callStatus]);
+  }, [isInVideoCall, remotePeers.length, callStatus]);
 
   // Live call duration timer
   useEffect(() => {
@@ -3295,33 +4194,43 @@ export default function App() {
       }
 
       const browserInfo = getBrowserConnectionInfo();
-      const pc = peerConnectionRef.current;
+      const activeConnections = Array.from(peerConnectionsMapRef.current.values()).map((e) => e.pc);
 
-      if (pc && callStatus === 'connected' && typeof pc.getStats === 'function') {
+      if (activeConnections.length > 0 && callStatus === 'connected') {
         try {
-          const stats = await pc.getStats();
-          let rttMs: number | null = null;
+          let rttSum = 0;
+          let rttCount = 0;
           let totalLost = 0;
           let totalReceived = 0;
           let foundInbound = false;
 
-          stats.forEach((report) => {
-            if (
-              report.type === 'candidate-pair' &&
-              report.state === 'succeeded' &&
-              (report.nominated || rttMs === null) &&
-              typeof report.currentRoundTripTime === 'number' &&
-              Number.isFinite(report.currentRoundTripTime)
-            ) {
-              rttMs = Math.round(report.currentRoundTripTime * 1000);
+          for (const pc of activeConnections) {
+            if (typeof pc.getStats !== 'function') continue;
+            const stats = await pc.getStats();
+            let peerRtt: number | null = null;
+            stats.forEach((report) => {
+              if (
+                report.type === 'candidate-pair' &&
+                report.state === 'succeeded' &&
+                (report.nominated || peerRtt === null) &&
+                typeof report.currentRoundTripTime === 'number' &&
+                Number.isFinite(report.currentRoundTripTime)
+              ) {
+                peerRtt = Math.round(report.currentRoundTripTime * 1000);
+              }
+              if (report.type === 'inbound-rtp' && (report.kind === 'video' || report.kind === 'audio')) {
+                foundInbound = true;
+                if (typeof report.packetsLost === 'number') totalLost += Math.max(0, report.packetsLost);
+                if (typeof report.packetsReceived === 'number') totalReceived += Math.max(0, report.packetsReceived);
+              }
+            });
+            if (peerRtt !== null) {
+              rttSum += peerRtt;
+              rttCount += 1;
             }
-            if (report.type === 'inbound-rtp' && (report.kind === 'video' || report.kind === 'audio')) {
-              foundInbound = true;
-              if (typeof report.packetsLost === 'number') totalLost += Math.max(0, report.packetsLost);
-              if (typeof report.packetsReceived === 'number') totalReceived += Math.max(0, report.packetsReceived);
-            }
-          });
+          }
 
+          const rttMs = rttCount > 0 ? Math.round(rttSum / rttCount) : null;
           let lossPct: number | null = null;
           if (foundInbound) {
             if (hasPrevSample) {
@@ -4138,18 +5047,21 @@ export default function App() {
       (a, b) => a.createdAtMs - b.createdAtMs
     );
 
+    const displayRoomName = getRoomDisplayName(activeChat, chatGroups);
+
     if (uniqueMsgs.length === 0) {
-      showNotice(`No messages found in ${activeChat} to backup.`);
+      showNotice(`No messages found in ${displayRoomName} to backup.`);
       return;
     }
 
     let fileContent = '';
-    let filename = `choychat-backup-${activeChat.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${new Date().toISOString().slice(0, 10)}`;
+    let filename = `choychat-backup-${displayRoomName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${new Date().toISOString().slice(0, 10)}`;
 
     if (format === 'json') {
       fileContent = JSON.stringify(
         {
-          room: activeChat,
+          room: displayRoomName,
+          roomId: activeChat,
           exportedAt: new Date().toISOString(),
           totalMessages: uniqueMsgs.length,
           messages: uniqueMsgs,
@@ -4159,7 +5071,7 @@ export default function App() {
       );
       filename += '.json';
     } else {
-      fileContent = `=== CHOY CHAT BACKUP ===\nRoom: ${activeChat}\nExported At: ${new Date().toISOString()}\nTotal Messages: ${uniqueMsgs.length}\n========================================\n\n` +
+      fileContent = `=== CHOY CHAT BACKUP ===\nRoom: ${displayRoomName}\nExported At: ${new Date().toISOString()}\nTotal Messages: ${uniqueMsgs.length}\n========================================\n\n` +
         uniqueMsgs
           .map(
             (m) =>
@@ -4797,7 +5709,7 @@ export default function App() {
         };
         setLocalMessages((prev) => [...prev, localCopy]);
         setForwardedTargets((prev) => (prev.includes(cleanTarget) ? prev : [...prev, cleanTarget]));
-        showNotice(`Forwarded message to ${cleanTarget}!`);
+        showNotice(`Forwarded message to ${getRoomDisplayName(cleanTarget, chatGroups)}!`);
         return;
       }
 
@@ -4812,13 +5724,86 @@ export default function App() {
         }),
       });
       setForwardedTargets((prev) => (prev.includes(cleanTarget) ? prev : [...prev, cleanTarget]));
-      showNotice(`Forwarded message to ${cleanTarget}!`);
+      showNotice(`Forwarded message to ${getRoomDisplayName(cleanTarget, chatGroups)}!`);
       await fetchSyncedState();
     } catch (err) {
       showNotice(err instanceof Error ? err.message : 'Failed to forward message');
     } finally {
       setForwardingTarget(null);
     }
+  };
+
+  const handleCreateGroupChat = async (name: string, memberIds: string[]) => {
+    const res = await apiFetch('/api/choy/groups', {
+      method: 'POST',
+      body: JSON.stringify({ name, memberIds }),
+    });
+    const createdGroup = res?.group as ChatGroupItem | undefined;
+    await fetchSyncedState(true);
+    if (createdGroup?.id) {
+      setActiveChat(createdGroup.id);
+      setActiveTab('messages');
+      setActiveChatMobileView(true);
+      showNotice(`Group "${createdGroup.name}" created!`);
+    }
+  };
+
+  const handleAddGroupMembers = async (groupId: string, addMemberIds: string[]) => {
+    await apiFetch(`/api/choy/groups/${encodeURIComponent(groupId)}/members`, {
+      method: 'PATCH',
+      body: JSON.stringify({ addMemberIds }),
+    });
+    await fetchSyncedState(true);
+    showNotice('Group members updated!');
+  };
+
+  const handleRemoveGroupMember = async (groupId: string, removeMemberId: string) => {
+    await apiFetch(`/api/choy/groups/${encodeURIComponent(groupId)}/members`, {
+      method: 'PATCH',
+      body: JSON.stringify({ removeMemberId }),
+    });
+    if (currentUser && removeMemberId === currentUser.id && activeChat === groupId) {
+      setActiveChat('VIP Group');
+    }
+    await fetchSyncedState(true);
+    showNotice(currentUser && removeMemberId === currentUser.id ? 'You left the group.' : 'Member removed.');
+  };
+
+  const handleRenameGroupChat = async (groupId: string, name: string) => {
+    const res = await apiFetch(`/api/choy/groups/${encodeURIComponent(groupId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    });
+    const updatedGroup = res?.group as ChatGroupItem | undefined;
+    if (updatedGroup?.id) {
+      setChatGroups((prev) => prev.map((g) => (g.id === updatedGroup.id ? { ...g, ...updatedGroup } : g)));
+    }
+    await fetchSyncedState(true);
+    showNotice(`Group renamed to "${updatedGroup?.name || name}".`);
+  };
+
+  const handleChangeGroupAdmin = async (groupId: string, adminId: string) => {
+    const res = await apiFetch(`/api/choy/groups/${encodeURIComponent(groupId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ adminId }),
+    });
+    const updatedGroup = res?.group as ChatGroupItem | undefined;
+    if (updatedGroup?.id) {
+      setChatGroups((prev) => prev.map((g) => (g.id === updatedGroup.id ? { ...g, ...updatedGroup } : g)));
+    }
+    await fetchSyncedState(true);
+    showNotice(`Group admin changed to ${updatedGroup?.adminName || 'selected member'}.`);
+  };
+
+  const handleDeleteGroupChat = async (groupId: string) => {
+    await apiFetch(`/api/choy/groups/${encodeURIComponent(groupId)}`, {
+      method: 'DELETE',
+    });
+    if (activeChat === groupId) {
+      setActiveChat('VIP Group');
+    }
+    await fetchSyncedState(true);
+    showNotice('Group chat deleted.');
   };
 
   useEffect(() => {
@@ -5510,12 +6495,207 @@ export default function App() {
     });
 
   const filteredChatRooms = normalizedSearch
-    ? chatRoomsList.filter((room) => room.toLowerCase().includes(normalizedSearch))
+    ? chatRoomsList.filter((room) =>
+        getRoomDisplayName(room, chatGroups).toLowerCase().includes(normalizedSearch) ||
+        room.toLowerCase().includes(normalizedSearch)
+      )
     : chatRoomsList;
+
+  const currentMusicTrack =
+    opmTracks.find((t) => t.id === currentMusicTrackId) || opmTracks[0] || null;
+
+  const startOpmTrack = useCallback(
+    (trackId: string) => {
+      const target = opmTracks.find((t) => t.id === trackId) || opmTracks[0];
+      if (!target) return;
+      const audioEl = opmAudioRef.current;
+      if (!audioEl) return;
+      const srcUrl = getOrRenderOpmTrackAudioUrl(target);
+      if (audioEl.src !== srcUrl) {
+        audioEl.src = srcUrl;
+      }
+      audioEl.currentTime = 0;
+      audioEl.volume = isMusicMuted ? 0 : musicVolume;
+      setCurrentMusicTrackId(target.id);
+      setMusicCurrentTime(0);
+      setMusicDuration(target.durationSec);
+      void audioEl.play().then(() => {
+        setIsMusicPlaying(true);
+      }).catch(() => {
+        setIsMusicPlaying(false);
+      });
+    },
+    [isMusicMuted, musicVolume, opmTracks]
+  );
+
+  const toggleOpmPlayPause = useCallback(() => {
+    const audioEl = opmAudioRef.current;
+    if (!audioEl) return;
+    if (isMusicPlaying) {
+      audioEl.pause();
+      setIsMusicPlaying(false);
+      return;
+    }
+    const target =
+      opmTracks.find((t) => t.id === currentMusicTrackId) || opmTracks[0];
+    if (!target) return;
+    const srcUrl = getOrRenderOpmTrackAudioUrl(target);
+    if (!audioEl.src || audioEl.src !== srcUrl) {
+      audioEl.src = srcUrl;
+      setCurrentMusicTrackId(target.id);
+      setMusicDuration(target.durationSec);
+    }
+    audioEl.volume = isMusicMuted ? 0 : musicVolume;
+    void audioEl.play().then(() => {
+      setIsMusicPlaying(true);
+    }).catch(() => {
+      setIsMusicPlaying(false);
+    });
+  }, [currentMusicTrackId, isMusicMuted, isMusicPlaying, musicVolume, opmTracks]);
+
+  const handleNextOpmTrack = useCallback(() => {
+    if (opmTracks.length === 0) return;
+    const currentIdx = opmTracks.findIndex((t) => t.id === currentMusicTrackId);
+    let nextIdx = 0;
+    if (isMusicShuffle && opmTracks.length > 1) {
+      do {
+        nextIdx = Math.floor(Math.random() * opmTracks.length);
+      } while (nextIdx === currentIdx);
+    } else {
+      nextIdx = currentIdx >= 0 ? (currentIdx + 1) % opmTracks.length : 0;
+    }
+    startOpmTrack(opmTracks[nextIdx].id);
+  }, [currentMusicTrackId, isMusicShuffle, opmTracks, startOpmTrack]);
+
+  const handlePrevOpmTrack = useCallback(() => {
+    if (opmTracks.length === 0) return;
+    const audioEl = opmAudioRef.current;
+    if (audioEl && audioEl.currentTime > 3) {
+      audioEl.currentTime = 0;
+      setMusicCurrentTime(0);
+      return;
+    }
+    const currentIdx = opmTracks.findIndex((t) => t.id === currentMusicTrackId);
+    const prevIdx =
+      currentIdx > 0 ? currentIdx - 1 : Math.max(0, opmTracks.length - 1);
+    startOpmTrack(opmTracks[prevIdx].id);
+  }, [currentMusicTrackId, opmTracks, startOpmTrack]);
+
+  const handleSeekOpm = useCallback((timeSec: number) => {
+    const audioEl = opmAudioRef.current;
+    if (!audioEl) return;
+    audioEl.currentTime = Math.max(0, timeSec);
+    setMusicCurrentTime(Math.max(0, timeSec));
+  }, []);
+
+  const handleOpmVolumeChange = useCallback((val: number) => {
+    const clamped = Math.max(0, Math.min(1, val));
+    setMusicVolume(clamped);
+    setIsMusicMuted(clamped === 0);
+    if (opmAudioRef.current) {
+      opmAudioRef.current.volume = clamped;
+    }
+  }, []);
+
+  const handleToggleOpmMute = useCallback(() => {
+    setIsMusicMuted((prev) => {
+      const next = !prev;
+      if (opmAudioRef.current) {
+        opmAudioRef.current.volume = next ? 0 : musicVolume;
+      }
+      return next;
+    });
+  }, [musicVolume]);
+
+  const handleUploadOpmSongs = useCallback(
+    (files: FileList) => {
+      const added: OpmSongTrack[] = [];
+      Array.from(files).forEach((file, idx) => {
+        if (!file.type.startsWith('audio/') && !/\.(mp3|wav|m4a|ogg|aac|flac|webm)$/i.test(file.name)) {
+          return;
+        }
+        const url = URL.createObjectURL(file);
+        const cleanTitle = file.name.replace(/\.[^/.]+$/, '').replace(/[_-]+/g, ' ').trim() || 'Uploaded Song';
+        const trackId = `custom-${Date.now()}-${idx}`;
+        added.push({
+          id: trackId,
+          title: cleanTitle,
+          artist: currentUser?.name ? `${currentUser.name} · Local Audio` : 'Local Audio',
+          year: String(new Date().getFullYear()),
+          genre: 'Added Track',
+          genreGroup: 'custom',
+          bpm: 100,
+          durationSec: 0,
+          coverGradient: 'from-emerald-600 via-teal-700 to-slate-900',
+          isCustom: true,
+          audioUrl: url,
+        });
+
+        const probe = new Audio(url);
+        probe.addEventListener('loadedmetadata', () => {
+          if (Number.isFinite(probe.duration) && probe.duration > 0) {
+            setOpmTracks((prev) =>
+              prev.map((item) =>
+                item.id === trackId ? { ...item, durationSec: Math.round(probe.duration) } : item
+              )
+            );
+          }
+        });
+      });
+
+      if (added.length === 0) {
+        showNotice('Please select a valid audio file (MP3, WAV, M4A, OGG).');
+        return;
+      }
+
+      setOpmTracks((prev) => [...added, ...prev]);
+      const firstAdded = added[0];
+      const audioEl = opmAudioRef.current;
+      if (audioEl) {
+        audioEl.src = firstAdded.audioUrl || '';
+        audioEl.currentTime = 0;
+        audioEl.volume = isMusicMuted ? 0 : musicVolume;
+        setCurrentMusicTrackId(firstAdded.id);
+        setMusicCurrentTime(0);
+        void audioEl.play().then(() => setIsMusicPlaying(true)).catch(() => setIsMusicPlaying(false));
+      }
+    },
+    [currentUser?.name, isMusicMuted, musicVolume]
+  );
+
+  const handleRemoveCustomOpmTrack = useCallback(
+    (trackId: string) => {
+      const target = opmTracks.find((t) => t.id === trackId);
+      if (target?.isCustom && target.audioUrl) {
+        URL.revokeObjectURL(target.audioUrl);
+      }
+      setOpmTracks((prev) => {
+        const next = prev.filter((t) => t.id !== trackId);
+        if (currentMusicTrackId === trackId) {
+          if (opmAudioRef.current) {
+            opmAudioRef.current.pause();
+            opmAudioRef.current.removeAttribute('src');
+          }
+          setIsMusicPlaying(false);
+          setMusicCurrentTime(0);
+          setCurrentMusicTrackId(next[0]?.id || null);
+        }
+        return next;
+      });
+    },
+    [currentMusicTrackId, opmTracks]
+  );
+
+  useEffect(() => {
+    if (isInVideoCall && isMusicPlaying && opmAudioRef.current) {
+      opmAudioRef.current.pause();
+      setIsMusicPlaying(false);
+    }
+  }, [isInVideoCall, isMusicPlaying]);
 
   // Automatically record analytical views for visible Newsfeed posts once per session per post
   const visibleFeedPostIdsKey =
-    activeTab === 'feed' && feedCategoryFilter !== 'people'
+    activeTab === 'feed' && feedCategoryFilter !== 'people' && feedCategoryFilter !== 'music'
       ? categoryFilteredPosts.map((p) => p.id).join(',')
       : '';
   useEffect(() => {
@@ -5829,9 +7009,13 @@ export default function App() {
         onChange={handleProfileAvatarSelect}
         className="hidden"
       />
-      {/* INCOMING LIVE VIDEO CALL BANNER (WITH CALLER PROFILE ICON) */}
+      {/* INCOMING LIVE VIDEO CALL BANNER (1-on-1 & GROUP VIDEO CALL) */}
       {incomingCall && !isInVideoCall && (() => {
         const callerAvatar = getUserAvatar({ id: incomingCall.fromUserId, name: incomingCall.fromUserName });
+        const isIncomingGroup = incomingCall.callMode === 'group';
+        const callTitle = isIncomingGroup
+          ? incomingCall.groupName || getRoomDisplayName(incomingCall.roomId, chatGroups)
+          : incomingCall.fromUserName;
         return (
         <div
           onClick={() => {
@@ -5853,11 +7037,16 @@ export default function App() {
               </div>
               <div className="min-w-0">
                 <div className="text-[10px] uppercase tracking-wider font-bold text-emerald-300 flex items-center gap-1">
-                  <Video className="w-3 h-3" /> Incoming Video Call
+                  {isIncomingGroup ? <Users className="w-3 h-3" /> : <Video className="w-3 h-3" />}
+                  {isIncomingGroup ? 'Incoming Group Video Call' : 'Incoming Video Call'}
                 </div>
-                <div className="text-sm font-black truncate">{incomingCall.fromUserName}</div>
+                <div className="text-sm font-black truncate">{callTitle}</div>
                 <div className="text-[10px] text-emerald-200/80 truncate">
-                  {callRingtoneBlocked ? 'Tap banner to play ringtone' : 'Tap Accept to join live video'}
+                  {callRingtoneBlocked
+                    ? 'Tap banner to play ringtone'
+                    : isIncomingGroup
+                    ? `Started by ${incomingCall.fromUserName} · Tap Join`
+                    : 'Tap Accept to join live video'}
                 </div>
               </div>
             </div>
@@ -5865,16 +7054,16 @@ export default function App() {
               <button
                 type="button"
                 onClick={declineIncomingCall}
-                className="px-3 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold flex items-center gap-1 shadow"
+                className="min-h-[40px] px-3 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold flex items-center gap-1 shadow"
               >
                 <PhoneOff className="w-4 h-4" /> Decline
               </button>
               <button
                 type="button"
                 onClick={acceptIncomingCall}
-                className="px-3.5 py-2 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 text-xs font-black flex items-center gap-1 shadow"
+                className="min-h-[40px] px-3.5 py-2 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 text-xs font-black flex items-center gap-1 shadow"
               >
-                <PhoneCall className="w-4 h-4" /> Accept
+                <PhoneCall className="w-4 h-4" /> {isIncomingGroup ? 'Join Call' : 'Accept'}
               </button>
             </div>
           </div>
@@ -5935,58 +7124,20 @@ export default function App() {
           );
         })()}
 
-      {/* REAL LIVE WEBRTC VIDEO CALL MODAL */}
+      {/* REAL LIVE WEBRTC VIDEO CALL MODAL (1-on-1 & MULTI-PARTICIPANT GROUP CALL) */}
       {isInVideoCall && (
         <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col items-center justify-center p-3 sm:p-5">
-          <div className="relative w-full max-w-4xl h-[74dvh] bg-slate-900 rounded-3xl overflow-hidden border border-emerald-500/40 flex items-center justify-center shadow-2xl">
-            {/* Remote Peer Live Video */}
-            <video
-              ref={remoteVideoRef}
-              autoPlay
-              playsInline
-              className={`w-full h-full object-cover ${hasRemoteStream ? 'block' : 'hidden'}`}
+          <div className="relative w-full max-w-5xl flex-1 min-h-0 max-h-[76dvh] bg-slate-900 rounded-3xl overflow-hidden border border-emerald-500/40 flex items-center justify-center shadow-2xl">
+            <GroupVideoCallGrid
+              peers={remotePeers}
+              isGroupCall={isGroupCallMode}
+              callTitle={callPartnerName || getRoomDisplayName(activeChat, chatGroups)}
+              callStatus={callStatus}
+              callError={callError}
+              callPeerOfflineHint={callPeerOfflineHint}
+              defaultAvatar={DEFAULT_AVATAR}
+              onRetry={() => startVideoCall(callRoomIdRef.current || activeChat)}
             />
-
-            {/* Waiting / Calling / Error Overlay when remote video isn't connected yet */}
-            {!hasRemoteStream && (
-              <div className="absolute inset-0 bg-gradient-to-b from-emerald-950/90 via-slate-950/95 to-slate-950 flex flex-col items-center justify-center p-6 text-center space-y-3">
-                <div className="w-20 h-20 rounded-full bg-emerald-500/20 border-2 border-emerald-400 flex items-center justify-center text-emerald-300 shadow-lg">
-                  {callStatus === 'error' ? (
-                    <VideoOff className="w-8 h-8 text-red-400" />
-                  ) : (
-                    <Video className="w-8 h-8 animate-pulse" />
-                  )}
-                </div>
-                <div className="text-lg font-black text-white">{callPartnerName || activeChat}</div>
-                {callStatus === 'error' ? (
-                  <div className="space-y-3 max-w-sm">
-                    <p className="text-xs text-red-300 font-medium">{callError}</p>
-                    <button
-                      type="button"
-                      onClick={() => startVideoCall(callPartnerName || activeChat)}
-                      className="px-4 py-2 rounded-xl bg-emerald-400 text-slate-950 text-xs font-black hover:bg-emerald-300 transition"
-                    >
-                      Retry Camera & Call
-                    </button>
-                  </div>
-                ) : (
-                  <div className="space-y-1 max-w-sm">
-                    <div className="text-xs font-bold text-emerald-300">
-                      {callStatus === 'connected'
-                        ? 'Connected (Audio Live)'
-                        : callStatus === 'ringing'
-                        ? `Connecting video & audio with ${callPartnerName || activeChat}...`
-                        : callPeerOfflineHint
-                        ? `Camera live — waiting for ${callPartnerName || activeChat} to open Choy Chat...`
-                        : `Calling ${callPartnerName || activeChat}...`}
-                    </div>
-                    <p className="text-[11px] text-slate-400">
-                      Your live camera & microphone are active. When {callPartnerName || activeChat} accepts on their device, their video appears here.
-                    </p>
-                  </div>
-                )}
-              </div>
-            )}
 
             {/* Top Call Header, Network Signal Strength & Prominent Duration Timer HUD */}
             <div className="absolute top-3 left-3 right-3 sm:top-4 sm:left-4 sm:right-4 flex flex-wrap items-start justify-between gap-2.5 pointer-events-none z-10">
@@ -6001,9 +7152,14 @@ export default function App() {
                         : 'bg-amber-400 motion-safe:animate-pulse'
                     }`}
                   />
-                  <span className="truncate max-w-[140px] sm:max-w-[220px]">{callPartnerName || activeChat}</span>
+                  {isGroupCallMode && <Users className="w-4 h-4 text-emerald-300 shrink-0" />}
+                  <span className="truncate max-w-[140px] sm:max-w-[220px]">
+                    {callPartnerName || getRoomDisplayName(activeChat, chatGroups)}
+                  </span>
                   <span className="text-[11px] font-medium text-slate-300 shrink-0">
-                    {callStatus === 'connected'
+                    {isGroupCallMode
+                      ? `${remotePeers.length + 1} in call`
+                      : callStatus === 'connected'
                       ? 'Connected'
                       : callStatus === 'error'
                       ? 'Error'
@@ -6027,64 +7183,117 @@ export default function App() {
               />
             </div>
 
-            {/* Local Self Camera Live Preview (PiP) */}
-            <div className="absolute bottom-4 right-4 w-28 h-40 sm:w-40 sm:h-28 bg-slate-950 rounded-2xl overflow-hidden border-2 border-emerald-400/80 shadow-xl flex items-center justify-center">
+            {/* Local Self Camera / Shared Screen Live Preview (PiP) */}
+            <div className="absolute bottom-4 right-4 w-28 h-40 sm:w-44 sm:h-28 bg-slate-950 rounded-2xl overflow-hidden border-2 border-emerald-400/80 shadow-xl flex items-center justify-center">
               <video
                 ref={localVideoRef}
                 autoPlay
                 muted
                 playsInline
-                className={`w-full h-full object-cover ${cameraFacing === 'user' ? 'scale-x-[-1]' : ''} ${
-                  isVideoMuted ? 'hidden' : 'block'
-                }`}
+                className={`w-full h-full ${isScreenSharing ? 'object-contain' : 'object-cover'} ${
+                  !isScreenSharing && cameraFacing === 'user' ? 'scale-x-[-1]' : ''
+                } ${isVideoMuted && !isScreenSharing ? 'hidden' : 'block'}`}
               />
-              {isVideoMuted && (
+              {isVideoMuted && !isScreenSharing && (
                 <div className="flex flex-col items-center gap-1 text-[10px] text-slate-300 p-2 text-center">
                   <VideoOff className="w-5 h-5 text-red-400" />
                   <span>Camera Off</span>
                 </div>
               )}
-              <span className="absolute bottom-1 left-1.5 px-1.5 py-0.5 rounded bg-slate-950/75 text-[9px] font-bold text-emerald-200">
-                You
+              <span className="absolute bottom-1 left-1.5 px-1.5 py-0.5 rounded bg-slate-950/80 text-[9px] font-bold text-emerald-200 max-w-[calc(100%-12px)] truncate">
+                {isScreenSharing
+                  ? 'Your Screen'
+                  : callBgPreset !== 'none'
+                  ? `You · ${
+                      callBgPreset === 'custom'
+                        ? 'Custom BG'
+                        : VIDEO_BACKGROUND_OPTIONS.find((o) => o.id === callBgPreset)?.label || 'Effect'
+                    }`
+                  : 'You'}
               </span>
             </div>
           </div>
 
+          <VideoBackgroundPicker
+            isOpen={isBgPickerOpen && !isScreenSharing}
+            activePreset={callBgPreset}
+            customImageUrl={callBgCustomImageUrl}
+            isApplying={isApplyingCallBg}
+            onSelectPreset={(preset, url) => void applyVideoBackground(preset, url)}
+            onClose={() => setIsBgPickerOpen(false)}
+          />
+
           {/* Live Call Controls */}
-          <div className="flex items-center gap-3 sm:gap-4 mt-5">
+          <div className="flex flex-wrap items-center justify-center gap-2.5 sm:gap-3.5 mt-3 sm:mt-4 px-2 shrink-0">
             <button
               type="button"
               onClick={toggleCallAudio}
-              className={`p-3.5 sm:p-4 rounded-full transition shadow-lg ${
+              className={`min-h-[48px] min-w-[48px] p-3.5 sm:p-4 rounded-full transition shadow-lg ${
                 isAudioMuted ? 'bg-red-500 text-white' : 'bg-slate-800 hover:bg-slate-700 text-white'
               }`}
               title={isAudioMuted ? 'Unmute Microphone' : 'Mute Microphone'}
+              aria-label={isAudioMuted ? 'Unmute Microphone' : 'Mute Microphone'}
             >
               {isAudioMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
             </button>
             <button
               type="button"
               onClick={toggleCallVideo}
-              className={`p-3.5 sm:p-4 rounded-full transition shadow-lg ${
-                isVideoMuted ? 'bg-red-500 text-white' : 'bg-slate-800 hover:bg-slate-700 text-white'
+              disabled={isScreenSharing}
+              className={`min-h-[48px] min-w-[48px] p-3.5 sm:p-4 rounded-full transition shadow-lg disabled:opacity-50 ${
+                isVideoMuted && !isScreenSharing ? 'bg-red-500 text-white' : 'bg-slate-800 hover:bg-slate-700 text-white'
               }`}
-              title={isVideoMuted ? 'Turn Camera On' : 'Turn Camera Off'}
+              title={isScreenSharing ? 'Stop screen sharing to toggle camera' : isVideoMuted ? 'Turn Camera On' : 'Turn Camera Off'}
+              aria-label={isVideoMuted ? 'Turn Camera On' : 'Turn Camera Off'}
             >
-              {isVideoMuted ? <VideoOff className="w-5 h-5" /> : <Camera className="w-5 h-5" />}
+              {isVideoMuted && !isScreenSharing ? <VideoOff className="w-5 h-5" /> : <Camera className="w-5 h-5" />}
             </button>
             <button
               type="button"
               onClick={flipCallCamera}
-              className="p-3.5 sm:p-4 rounded-full bg-slate-800 hover:bg-slate-700 text-white transition shadow-lg"
-              title="Switch Front / Back Camera"
+              disabled={isScreenSharing}
+              className="min-h-[48px] min-w-[48px] p-3.5 sm:p-4 rounded-full bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white transition shadow-lg"
+              title={isScreenSharing ? 'Stop screen sharing before switching camera' : 'Switch Front / Back Camera'}
+              aria-label="Switch Front / Back Camera"
             >
               <RefreshCw className="w-5 h-5" />
             </button>
             <button
               type="button"
+              onClick={() => setIsBgPickerOpen((prev) => !prev)}
+              disabled={isScreenSharing}
+              className={`min-h-[48px] px-4 py-3.5 rounded-full inline-flex items-center gap-2 text-xs font-bold whitespace-nowrap transition shadow-lg disabled:opacity-50 ${
+                callBgPreset !== 'none' || isBgPickerOpen
+                  ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
+                  : 'bg-slate-800 hover:bg-slate-700 text-white'
+              }`}
+              title={isScreenSharing ? 'Stop screen sharing to adjust camera background' : 'Blur or Select Camera Background'}
+              aria-label="Background Effects"
+              aria-expanded={isBgPickerOpen && !isScreenSharing}
+            >
+              <Layers className="w-5 h-5 shrink-0" />
+              <span>Background</span>
+            </button>
+            <button
+              type="button"
+              onClick={toggleScreenShare}
+              className={`min-h-[48px] px-4 py-3.5 rounded-full inline-flex items-center gap-2 text-xs font-bold whitespace-nowrap transition shadow-lg ${
+                isScreenSharing
+                  ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
+                  : 'bg-slate-800 hover:bg-slate-700 text-white'
+              }`}
+              title={isScreenSharing ? 'Stop Sharing Screen' : 'Share Screen (Window or Tab)'}
+              aria-label={isScreenSharing ? 'Stop Sharing Screen' : 'Share Screen'}
+            >
+              {isScreenSharing ? <ScreenShareOff className="w-5 h-5 shrink-0" /> : <ScreenShare className="w-5 h-5 shrink-0" />}
+              <span>{isScreenSharing ? 'Stop Sharing' : 'Share Screen'}</span>
+            </button>
+            <button
+              type="button"
               onClick={() => endVideoCall(true)}
-              className="p-4 rounded-full bg-red-600 text-white hover:bg-red-700 shadow-lg transition"
+              className="min-h-[48px] min-w-[48px] p-4 rounded-full bg-red-600 text-white hover:bg-red-700 shadow-lg transition"
               title="End Call"
+              aria-label="End Call"
             >
               <PhoneOff className="w-6 h-6" />
             </button>
@@ -6691,6 +7900,26 @@ export default function App() {
         )}
 
         <div className="flex-1 overflow-y-auto overscroll-y-contain touch-pan-y [-webkit-overflow-scrolling:touch] p-4 pb-28 md:p-6 md:pb-6 min-w-0">
+          {/* Hidden Audio Element backing Newsfeed OPM Music Player */}
+          <audio
+            ref={opmAudioRef}
+            className="hidden"
+            onTimeUpdate={(e) => setMusicCurrentTime(e.currentTarget.currentTime)}
+            onLoadedMetadata={(e) => {
+              if (Number.isFinite(e.currentTarget.duration) && e.currentTarget.duration > 0) {
+                setMusicDuration(e.currentTarget.duration);
+              }
+            }}
+            onEnded={() => {
+              if (isMusicRepeatOne && opmAudioRef.current) {
+                opmAudioRef.current.currentTime = 0;
+                void opmAudioRef.current.play().catch(() => setIsMusicPlaying(false));
+                return;
+              }
+              handleNextOpmTrack();
+            }}
+          />
+
           {/* FEED */}
           {activeTab === 'feed' && (
             <div className="max-w-2xl mx-auto space-y-4">
@@ -6981,8 +8210,8 @@ export default function App() {
                 </form>
               </div>
 
-              {/* Newsfeed Category Buttons: All, Image, Video, People */}
-              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-1.5 shadow-sm grid grid-cols-4 gap-1.5">
+              {/* Newsfeed Category Buttons: All, Image, Video, Music, People */}
+              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-1.5 shadow-sm flex items-center gap-1.5 overflow-x-auto sm:grid sm:grid-cols-5">
                 {[
                   {
                     id: 'all' as const,
@@ -6999,8 +8228,14 @@ export default function App() {
                   {
                     id: 'video' as const,
                     label: 'Video',
-                    count: videoFeedPosts.length,
+                    count: videoFeedPosts.length + ONE_PIECE_LATEST_30_EPISODES.length,
                     icon: <Video className="w-3.5 h-3.5 shrink-0" />,
+                  },
+                  {
+                    id: 'music' as const,
+                    label: 'Music',
+                    count: opmTracks.length,
+                    icon: <Music className="w-3.5 h-3.5 shrink-0" />,
                   },
                   {
                     id: 'people' as const,
@@ -7015,7 +8250,7 @@ export default function App() {
                       key={cat.id}
                       type="button"
                       onClick={() => setFeedCategoryFilter(cat.id)}
-                      className={`flex items-center justify-center gap-1.5 px-2 py-2 rounded-xl text-xs font-extrabold transition ${
+                      className={`min-h-[44px] flex items-center justify-center gap-1.5 px-3 sm:px-2 py-2 rounded-xl text-xs font-extrabold whitespace-nowrap shrink-0 transition ${
                         isActive
                           ? theme.feedTabActive + ' shadow-sm'
                           : 'text-emerald-800 dark:text-emerald-200 bg-emerald-50/90 dark:bg-emerald-950/70 hover:bg-emerald-100 dark:hover:bg-emerald-800/80'
@@ -7037,8 +8272,81 @@ export default function App() {
                 })}
               </div>
 
-              {/* Public Newsfeed Posts or People Directory */}
-              {feedCategoryFilter === 'people' ? (
+              {/* Persistent Compact Now Playing Bar when listening while viewing feed posts */}
+              {feedCategoryFilter !== 'music' && isMusicPlaying && currentMusicTrack && (
+                <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl px-3.5 py-2.5 shadow-sm flex items-center justify-between gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setFeedCategoryFilter('music')}
+                    className="flex items-center gap-2.5 min-w-0 flex-1 text-left"
+                  >
+                    <div
+                      className={`w-9 h-9 rounded-xl bg-gradient-to-br ${currentMusicTrack.coverGradient} flex items-center justify-center text-white shrink-0`}
+                    >
+                      <Disc3 className="w-5 h-5 motion-safe:animate-spin" style={{ animationDuration: '5s' }} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs font-extrabold text-emerald-950 dark:text-white truncate">
+                        {currentMusicTrack.title}
+                      </p>
+                      <p className="text-[11px] text-emerald-800/80 dark:text-emerald-200/80 truncate">
+                        {currentMusicTrack.artist} · OPM Playing
+                      </p>
+                    </div>
+                  </button>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={toggleOpmPlayPause}
+                      aria-label={isMusicPlaying ? 'Pause music' : 'Play music'}
+                      className="min-h-[40px] min-w-[40px] rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 flex items-center justify-center transition"
+                    >
+                      {isMusicPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleNextOpmTrack}
+                      aria-label="Next OPM song"
+                      className="min-h-[40px] min-w-[40px] rounded-xl bg-emerald-100 dark:bg-emerald-950 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-200 dark:hover:bg-emerald-800 flex items-center justify-center transition"
+                    >
+                      <SkipForward className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFeedCategoryFilter('music')}
+                      className="min-h-[40px] px-3 rounded-xl border border-emerald-300 dark:border-emerald-700 text-xs font-bold text-emerald-900 dark:text-emerald-100 hover:bg-emerald-100 dark:hover:bg-emerald-800 whitespace-nowrap transition"
+                    >
+                      Open Music
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Public Newsfeed Posts, OPM Music Player, or People Directory */}
+              {feedCategoryFilter === 'music' ? (
+                <NewsfeedMusicPlayer
+                  tracks={opmTracks}
+                  currentTrackId={currentMusicTrackId}
+                  isPlaying={isMusicPlaying}
+                  currentTime={musicCurrentTime}
+                  duration={musicDuration}
+                  isShuffle={isMusicShuffle}
+                  isRepeatOne={isMusicRepeatOne}
+                  isMuted={isMusicMuted}
+                  volume={musicVolume}
+                  onSelectTrack={startOpmTrack}
+                  onTogglePlay={toggleOpmPlayPause}
+                  onPrevTrack={handlePrevOpmTrack}
+                  onNextTrack={handleNextOpmTrack}
+                  onSeek={handleSeekOpm}
+                  onToggleShuffle={() => setIsMusicShuffle((p) => !p)}
+                  onToggleRepeatOne={() => setIsMusicRepeatOne((p) => !p)}
+                  onToggleMute={handleToggleOpmMute}
+                  onVolumeChange={handleOpmVolumeChange}
+                  onUploadSongs={handleUploadOpmSongs}
+                  onRemoveCustomTrack={handleRemoveCustomOpmTrack}
+                />
+              ) : feedCategoryFilter === 'people' ? (
                 <div className="space-y-3">
                   {feedPeopleList.length === 0 ? (
                     <div className="bg-emerald-50/80 dark:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-800 rounded-2xl p-8 text-center text-xs text-emerald-700 dark:text-emerald-300">
@@ -7154,14 +8462,20 @@ export default function App() {
                 </div>
               ) : (
                 <div className="space-y-3">
+                  {feedCategoryFilter === 'video' && <OnePieceEpisodesPanel />}
+
                   {categoryFilteredPosts.length === 0 ? (
-                    <div className="bg-emerald-50/80 dark:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-800 rounded-2xl p-8 text-center text-xs text-emerald-700 dark:text-emerald-300">
-                      {feedCategoryFilter === 'image'
-                        ? 'No image posts yet. Upload a photo above to share it here!'
-                        : feedCategoryFilter === 'video'
-                        ? 'No video posts yet. Upload a video above to share it here!'
-                        : 'No posts yet. Publish your first update above to sync across all devices!'}
-                    </div>
+                    feedCategoryFilter === 'video' ? (
+                      <div className="bg-white/70 dark:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-800 rounded-2xl px-4 py-3 text-center text-xs text-emerald-700 dark:text-emerald-300">
+                        No community video posts yet. Upload a video above to share with members!
+                      </div>
+                    ) : (
+                      <div className="bg-emerald-50/80 dark:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-800 rounded-2xl p-8 text-center text-xs text-emerald-700 dark:text-emerald-300">
+                        {feedCategoryFilter === 'image'
+                          ? 'No image posts yet. Upload a photo above to share it here!'
+                          : 'No posts yet. Publish your first update above to sync across all devices!'}
+                      </div>
+                    )
                   ) : (
                     categoryFilteredPosts.map((p) => (
                     <div key={p.id} className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 space-y-3">
@@ -8038,15 +9352,25 @@ export default function App() {
               }`}>
                 <div className="flex items-center justify-between gap-2">
                   <div className={`text-xs font-bold uppercase ${theme.sidebarMutedText}`}>Chats</div>
-                  {msgSearchQuery.trim() && (
+                  <div className="flex items-center gap-1.5">
+                    {msgSearchQuery.trim() && (
+                      <button
+                        type="button"
+                        onClick={() => setMsgSearchQuery('')}
+                        className="md:hidden text-[10px] font-bold text-emerald-700 dark:text-emerald-300 hover:underline"
+                      >
+                        Clear search
+                      </button>
+                    )}
                     <button
                       type="button"
-                      onClick={() => setMsgSearchQuery('')}
-                      className="md:hidden text-[10px] font-bold text-emerald-700 dark:text-emerald-300 hover:underline"
+                      onClick={() => setIsCreateGroupModalOpen(true)}
+                      className="min-h-[32px] px-2.5 py-1 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-slate-950 text-[11px] font-black inline-flex items-center gap-1 shadow-xs transition"
+                      title="Create New Group Chat"
                     >
-                      Clear search
+                      <Plus className="w-3.5 h-3.5" /> New Group
                     </button>
-                  )}
+                  </div>
                 </div>
                 <div className="relative md:hidden">
                   <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-emerald-700 dark:text-emerald-300 pointer-events-none" />
@@ -8077,7 +9401,7 @@ export default function App() {
                       const q = msgSearchQuery.trim();
                       const hits = messages
                         .filter((m) => !blockedUsers.includes(m.sender))
-                        .filter((m) => messageMatchesFullText(m, q, currentUser?.name || ''))
+                        .filter((m) => messageMatchesFullText(m, q, currentUser?.name || '', chatGroups))
                         .slice()
                         .sort((a, b) => b.createdAtMs - a.createdAtMs);
                       if (hits.length === 0) {
@@ -8093,7 +9417,7 @@ export default function App() {
                             {hits.length} match{hits.length === 1 ? '' : 'es'} across all chats
                           </div>
                           {hits.map((m) => {
-                            const roomLabel = getMessageRoomLabel(m, currentUser?.name || '');
+                            const roomLabel = getMessageRoomLabel(m, currentUser?.name || '', chatGroups);
                             const bodyText = m.text || m.transcript || (m.mediaType !== 'text' ? `[${m.mediaType}]` : '');
                             return (
                               <button
@@ -8144,16 +9468,24 @@ export default function App() {
                   ) : (
                     filteredChatRooms.map((room) => {
                       const isActive = activeChat === room;
+                      const customGroup = chatGroups.find((g) => g.id === room);
                       const isVipGroup = room.trim().toLowerCase() === 'vip group';
+                      const isRoomGroup = isVipGroup || Boolean(customGroup);
+                      const displayRoomName = customGroup ? customGroup.name : room;
+                      const activeRoomGroupCall = isRoomGroup
+                        ? activeGroupCalls.find((c) => c.roomId === room)
+                        : undefined;
                       const isRoomOnline =
-                        isVipGroup ||
+                        isRoomGroup ||
                         onlineUsers.includes(room.trim().toLowerCase());
-                      const roomAvatar = isVipGroup ? '' : getUserAvatar({ name: room });
+                      const roomAvatar = isRoomGroup ? '' : getUserAvatar({ name: room });
                       const latestMsg = getLatestMessageForRoom(room);
                       const snippet = latestMsg
                         ? (latestMsg.text || (latestMsg.mediaUrl ? `[Media]` : ''))
+                        : customGroup
+                        ? `${customGroup.memberIds.length} members`
                         : 'No messages yet';
-                      const shortSnippet = snippet.length > 15 ? snippet.slice(0, 15) + '...' : snippet;
+                      const shortSnippet = snippet.length > 22 ? snippet.slice(0, 22) + '...' : snippet;
                       const isUnread = latestMsg ? seenRoomMap[room] !== latestMsg.id : false;
 
                       return (
@@ -8170,7 +9502,7 @@ export default function App() {
                           }`}
                         >
                           <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                            {!isVipGroup && (
+                            {!isRoomGroup && (
                               <div className="relative shrink-0">
                                 <img
                                   src={roomAvatar}
@@ -8184,9 +9516,12 @@ export default function App() {
                                 />
                               </div>
                             )}
-                            {isVipGroup && (
-                              <div className="w-9 h-9 rounded-lg bg-emerald-200 dark:bg-emerald-800 border border-emerald-400/50 flex items-center justify-center shrink-0 text-emerald-800 dark:text-emerald-200 font-bold">
-                                👥
+                            {isRoomGroup && (
+                              <div className="relative w-9 h-9 rounded-lg bg-emerald-200 dark:bg-emerald-800 border border-emerald-400/50 flex items-center justify-center shrink-0 text-emerald-800 dark:text-emerald-200 font-bold">
+                                <Users className="w-4 h-4" />
+                                {activeRoomGroupCall && (
+                                  <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-white dark:border-emerald-950 animate-ping" />
+                                )}
                               </div>
                             )}
                             <div className="min-w-0 flex-1">
@@ -8200,11 +9535,15 @@ export default function App() {
                                       : 'font-bold text-emerald-950 dark:text-white'
                                   }`}
                                 >
-                                  {room}
+                                  {displayRoomName}
                                 </span>
-                                {isUnread && !isActive && (
+                                {activeRoomGroupCall ? (
+                                  <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-emerald-400 text-slate-950 shrink-0">
+                                    Live Call
+                                  </span>
+                                ) : isUnread && !isActive ? (
                                   <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0 animate-ping"></span>
-                                )}
+                                ) : null}
                               </div>
                               <div
                                 className={`text-[10px] truncate ${
@@ -8215,7 +9554,7 @@ export default function App() {
                                     : 'text-emerald-700 dark:text-emerald-300'
                                 }`}
                               >
-                                {shortSnippet}
+                                {customGroup ? `${customGroup.memberIds.length} members · ${shortSnippet}` : shortSnippet}
                               </div>
                             </div>
                           </div>
@@ -8237,6 +9576,14 @@ export default function App() {
                 } ${activeChatMobileView ? 'flex' : 'hidden md:flex'}`}
               >
                 {/* Responsive Swipeable Chat Header */}
+                {(() => {
+                  const activeCustomGroup = chatGroups.find((g) => g.id === activeChat);
+                  const isActiveGroup = activeChat === 'VIP Group' || Boolean(activeCustomGroup);
+                  const activeRoomLabel = activeCustomGroup ? activeCustomGroup.name : activeChat;
+                  const runningGroupCall = isActiveGroup
+                    ? activeGroupCalls.find((c) => c.roomId === activeChat)
+                    : undefined;
+                  return (
                 <div
                   className={`p-3 border-b space-y-2 text-xs font-bold shrink-0 transition-colors ${
                     msgBgMode === 'black'
@@ -8257,18 +9604,56 @@ export default function App() {
                       >
                         <ArrowLeft className="w-4 h-4" />
                       </button>
-                      {activeChat === 'VIP Group' ? (
-                        <span
-                          className={`text-sm font-black truncate ${
+                      {activeCustomGroup ? (
+                        <button
+                          type="button"
+                          onClick={() => setGroupMembersModalId(activeCustomGroup.id)}
+                          className={`group flex items-center gap-2 min-w-0 text-left rounded-lg px-1.5 py-1 -ml-1 transition ${
                             msgBgMode === 'black'
-                              ? 'text-white'
+                              ? 'hover:bg-neutral-800'
                               : msgBgMode === 'white'
-                              ? 'text-black'
-                              : theme.sidebarTitleText
+                              ? 'hover:bg-slate-100'
+                              : theme.chatHeaderSubtleHover
                           }`}
+                          title="Manage group members"
                         >
-                          {activeChat}
-                        </span>
+                          <div className="w-7 h-7 rounded-lg bg-emerald-400/25 border border-emerald-400/50 flex items-center justify-center shrink-0">
+                            <Users className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-300" />
+                          </div>
+                          <div className="min-w-0">
+                            <div
+                              className={`text-sm font-black truncate group-hover:underline ${
+                                msgBgMode === 'black'
+                                  ? 'text-white'
+                                  : msgBgMode === 'white'
+                                  ? 'text-black'
+                                  : theme.sidebarTitleText
+                              }`}
+                            >
+                              {activeCustomGroup.name}
+                            </div>
+                            <div className="text-[10px] font-semibold opacity-75">
+                              Group · {activeCustomGroup.memberIds.length} members
+                            </div>
+                          </div>
+                        </button>
+                      ) : activeChat === 'VIP Group' ? (
+                        <div className="min-w-0">
+                          <span
+                            className={`text-sm font-black truncate block ${
+                              msgBgMode === 'black'
+                                ? 'text-white'
+                                : msgBgMode === 'white'
+                                ? 'text-black'
+                                : theme.sidebarTitleText
+                            }`}
+                          >
+                            {activeChat}
+                          </span>
+                          <span className="text-[10px] font-semibold opacity-75">
+                            Group · {visibleUsersList.length} members
+                          </span>
+                        </div>
                       ) : (
                         <button
                           type="button"
@@ -8304,23 +9689,34 @@ export default function App() {
                       )}
                     </div>
                     <div className="flex items-center gap-1.5 overflow-x-auto touch-pan-x overscroll-x-contain [-webkit-overflow-scrolling:touch] max-w-[68%] sm:max-w-none pb-0.5">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const targetUser = activeChat === 'VIP Group' ? 'Choy Admin' : activeChat;
-                          handleToggleBlockUser(targetUser);
-                        }}
-                        className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold shrink-0 whitespace-nowrap ${
-                          blockedUsers.includes(activeChat === 'VIP Group' ? 'Choy Admin' : activeChat)
-                            ? 'bg-red-600 text-white'
-                            : 'bg-red-50 dark:bg-red-950 text-red-700 dark:text-red-300 border border-red-300 dark:border-red-700'
-                        }`}
-                        title="Block / Unblock User"
-                      >
-                        {blockedUsers.includes(activeChat === 'VIP Group' ? 'Choy Admin' : activeChat)
-                          ? 'Unblock'
-                          : 'Block'}
-                      </button>
+                      {activeCustomGroup ? (
+                        <button
+                          type="button"
+                          onClick={() => setGroupMembersModalId(activeCustomGroup.id)}
+                          className={`px-2.5 py-1.5 border rounded-lg flex items-center gap-1 shadow shrink-0 whitespace-nowrap text-[11px] transition ${theme.chatSecondaryBtn}`}
+                          title="View or manage group members"
+                        >
+                          <Users className="w-3.5 h-3.5" /> Members ({activeCustomGroup.memberIds.length})
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const targetUser = activeChat === 'VIP Group' ? 'Choy Admin' : activeChat;
+                            handleToggleBlockUser(targetUser);
+                          }}
+                          className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold shrink-0 whitespace-nowrap ${
+                            blockedUsers.includes(activeChat === 'VIP Group' ? 'Choy Admin' : activeChat)
+                              ? 'bg-red-600 text-white'
+                              : 'bg-red-50 dark:bg-red-950 text-red-700 dark:text-red-300 border border-red-300 dark:border-red-700'
+                          }`}
+                          title="Block / Unblock User"
+                        >
+                          {blockedUsers.includes(activeChat === 'VIP Group' ? 'Choy Admin' : activeChat)
+                            ? 'Unblock'
+                            : 'Block'}
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => {
@@ -8374,13 +9770,39 @@ export default function App() {
                       </div>
                       <button
                         type="button"
-                        onClick={() => startVideoCall(activeChat)}
+                        onClick={() => {
+                          if (runningGroupCall && !isInVideoCall) {
+                            void joinGroupVideoCall(runningGroupCall.callId, runningGroupCall.roomId, activeRoomLabel);
+                          } else {
+                            void startVideoCall(activeChat);
+                          }
+                        }}
                         className={`px-2.5 py-1.5 rounded-lg flex items-center gap-1 shadow shrink-0 whitespace-nowrap text-[11px] transition ${theme.chatAccentBtn}`}
                       >
-                        <PhoneCall className="w-3.5 h-3.5" /> Call
+                        {isActiveGroup ? <Video className="w-3.5 h-3.5" /> : <PhoneCall className="w-3.5 h-3.5" />}
+                        {runningGroupCall ? 'Join Call' : isActiveGroup ? 'Group Call' : 'Call'}
                       </button>
                     </div>
                   </div>
+                  {runningGroupCall && !isInVideoCall && (
+                    <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-emerald-500/15 border border-emerald-400/50 text-[11px]">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping shrink-0" />
+                        <span className="font-bold truncate">
+                          Group video call active ({runningGroupCall.participantCount} in call: {runningGroupCall.participantNames.join(', ')})
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void joinGroupVideoCall(runningGroupCall.callId, runningGroupCall.roomId, activeRoomLabel)
+                        }
+                        className="px-3 py-1 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-black shrink-0"
+                      >
+                        Join Video
+                      </button>
+                    </div>
+                  )}
                   <div className="space-y-1.5 w-full">
                     <div className="flex flex-wrap items-center gap-1.5 w-full">
                       <div className="relative flex-1 min-w-[180px]">
@@ -8390,7 +9812,7 @@ export default function App() {
                           placeholder={
                             msgSearchScope === 'all'
                               ? 'Search all chat history (messages, transcripts, senders)...'
-                              : `Search messages in ${activeChat}...`
+                              : `Search messages in ${activeRoomLabel}...`
                           }
                           value={msgSearchQuery}
                           onChange={(e) => setMsgSearchQuery(e.target.value)}
@@ -8496,13 +9918,13 @@ export default function App() {
                         .filter((m) =>
                           msgSearchScope === 'all' ? true : messageBelongsToRoom(m, activeChat, currentUser?.name || '')
                         )
-                        .filter((m) => messageMatchesFullText(m, q, currentUser?.name || '')).length;
+                        .filter((m) => messageMatchesFullText(m, q, currentUser?.name || '', chatGroups)).length;
                       return (
                         <div className={`flex items-center justify-between gap-2 px-1 text-[10px] font-normal ${theme.sidebarMutedText}`}>
                           <span>
                             Found <span className={`font-bold ${theme.sidebarTitleText}`}>{matchCount}</span> match
                             {matchCount === 1 ? '' : 'es'}{' '}
-                            {msgSearchScope === 'all' ? 'across all chat history (newest first)' : `in ${activeChat}`}
+                            {msgSearchScope === 'all' ? 'across all chat history (newest first)' : `in ${activeRoomLabel}`}
                           </span>
                           <button
                             type="button"
@@ -8516,6 +9938,8 @@ export default function App() {
                     })()}
                   </div>
                 </div>
+                  );
+                })()}
 
                 <div
                   className={`flex-1 overflow-y-auto overscroll-y-auto touch-pan-y [-webkit-overflow-scrolling:touch] p-3 space-y-3 min-h-[240px] max-h-[55dvh] md:max-h-none transition-colors ${
@@ -8535,7 +9959,7 @@ export default function App() {
                         isCrossRoomSearch ? true : messageBelongsToRoom(m, activeChat, currentUser?.name || '')
                       )
                       .filter((m) =>
-                        !trimmedMsgQuery || messageMatchesFullText(m, trimmedMsgQuery, currentUser?.name || '')
+                        !trimmedMsgQuery || messageMatchesFullText(m, trimmedMsgQuery, currentUser?.name || '', chatGroups)
                       );
                     const displayedMsgs = isCrossRoomSearch
                       ? [...filteredMsgs].sort((a, b) => b.createdAtMs - a.createdAtMs)
@@ -8546,7 +9970,7 @@ export default function App() {
                         <div className="py-10 px-4 text-center space-y-2.5">
                           <div className="text-xs font-bold text-emerald-950 dark:text-white">
                             No messages matched "{trimmedMsgQuery}"
-                            {msgSearchScope === 'room' ? ` in ${activeChat}` : ' across all chat history'}
+                            {msgSearchScope === 'room' ? ` in ${getRoomDisplayName(activeChat, chatGroups)}` : ' across all chat history'}
                           </div>
                           <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
                             Full-text search checks message text, voice transcripts, sender names, and chat rooms.
@@ -8574,7 +9998,7 @@ export default function App() {
                     }
 
                     return displayedMsgs.map((m) => {
-                      const roomLabel = getMessageRoomLabel(m, currentUser?.name || '');
+                      const roomLabel = getMessageRoomLabel(m, currentUser?.name || '', chatGroups);
                       const isJumpHighlighted = highlightedMsgId === m.id;
                       return (
                       <div
@@ -12443,9 +13867,13 @@ export default function App() {
       {/* FORWARD MESSAGE DIALOG */}
       {forwardingMessage && (() => {
         const q = forwardSearch.trim().toLowerCase();
-        const forwardTargets = chatRoomsList.filter((room) =>
-          q ? room.toLowerCase().includes(q) : true
-        );
+        const forwardTargets = chatRoomsList.filter((room) => {
+          if (!q) return true;
+          return (
+            getRoomDisplayName(room, chatGroups).toLowerCase().includes(q) ||
+            room.toLowerCase().includes(q)
+          );
+        });
         return (
           <div
             className="fixed inset-0 z-[70] bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4"
@@ -12526,7 +13954,7 @@ export default function App() {
                     type="text"
                     value={forwardSearch}
                     onChange={(e) => setForwardSearch(e.target.value)}
-                    placeholder="Search user or room..."
+                    placeholder="Search user or group..."
                     className="w-full pl-8 pr-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-900/70 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:outline-none focus:border-emerald-500"
                   />
                 </div>
@@ -12540,19 +13968,21 @@ export default function App() {
                   </div>
                 ) : (
                   forwardTargets.map((room) => {
-                    const isVip = room.trim().toLowerCase() === 'vip group';
-                    const targetAvatar = isVip ? '' : getUserAvatar({ name: room });
+                    const customGroup = chatGroups.find((g) => g.id === room);
+                    const isGroup = room.trim().toLowerCase() === 'vip group' || Boolean(customGroup);
+                    const displayLabel = customGroup ? customGroup.name : room;
+                    const targetAvatar = isGroup ? '' : getUserAvatar({ name: room });
                     const isSent = forwardedTargets.includes(room);
                     const isSendingThis = forwardingTarget === room;
                     const isRoomOnline =
-                      isVip || onlineUsers.includes(room.trim().toLowerCase());
+                      isGroup || onlineUsers.includes(room.trim().toLowerCase());
                     return (
                       <div
                         key={room}
                         className="p-2.5 rounded-xl bg-emerald-50/70 dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-800 flex items-center justify-between gap-2"
                       >
                         <div className="flex items-center gap-2.5 min-w-0">
-                          {isVip ? (
+                          {isGroup ? (
                             <div className="w-8 h-8 rounded-lg bg-emerald-200 dark:bg-emerald-800 border border-emerald-400/50 flex items-center justify-center shrink-0 text-emerald-800 dark:text-emerald-200">
                               <Users className="w-4 h-4" />
                             </div>
@@ -12574,10 +14004,16 @@ export default function App() {
                           )}
                           <div className="min-w-0">
                             <div className="text-xs font-bold text-emerald-950 dark:text-white truncate">
-                              {room}
+                              {displayLabel}
                             </div>
                             <div className="text-[10px] text-emerald-700 dark:text-emerald-300">
-                              {isVip ? 'Group Chat Room' : isRoomOnline ? 'Online' : 'Direct Message'}
+                              {customGroup
+                                ? `Group · ${customGroup.memberIds.length} members`
+                                : isGroup
+                                ? 'Group Chat Room'
+                                : isRoomOnline
+                                ? 'Online'
+                                : 'Direct Message'}
                             </div>
                           </div>
                         </div>
@@ -12626,6 +14062,39 @@ export default function App() {
           onClose={() => setZoomedImage(null)}
         />
       )}
+
+      <CreateGroupModal
+        isOpen={isCreateGroupModalOpen}
+        onClose={() => setIsCreateGroupModalOpen(false)}
+        candidates={visibleUsersList}
+        currentUserId={currentUser?.id || ''}
+        onlineUsers={onlineUsers}
+        defaultAvatar={DEFAULT_AVATAR}
+        onCreateGroup={handleCreateGroupChat}
+      />
+
+      <GroupMembersModal
+        group={chatGroups.find((g) => g.id === groupMembersModalId) || null}
+        onClose={() => setGroupMembersModalId(null)}
+        candidates={visibleUsersList}
+        currentUserId={currentUser?.id || ''}
+        isAdmin={isAdmin}
+        onlineUsers={onlineUsers}
+        defaultAvatar={DEFAULT_AVATAR}
+        onAddMembers={handleAddGroupMembers}
+        onRemoveMember={handleRemoveGroupMember}
+        onRenameGroup={handleRenameGroupChat}
+        onChangeGroupAdmin={handleChangeGroupAdmin}
+        onDeleteGroup={handleDeleteGroupChat}
+        onStartGroupCall={(groupId) => {
+          const running = activeGroupCalls.find((c) => c.roomId === groupId);
+          if (running && !isInVideoCall) {
+            void joinGroupVideoCall(running.callId, running.roomId, getRoomDisplayName(groupId, chatGroups));
+          } else {
+            void startVideoCall(groupId);
+          }
+        }}
+      />
 
       {/* FLOATING CHAT HEAD BUBBLE POPUP (DRAGGABLE) */}
       {chatHeadBubbleEnabled && activeChatHeadMessage && (

@@ -45,6 +45,11 @@ import {
   ResponsiveContainer,
   CartesianGrid,
 } from 'recharts';
+import {
+  GitHubRepoCharts,
+  type RepoCommitHistoryPoint,
+  type RepoContributorStat,
+} from './GitHubRepoCharts';
 
 interface GitHubIntelligenceProps {
   authToken: string | null;
@@ -86,6 +91,7 @@ interface FolderSummary {
 interface ExtensionSummary {
   ext: string;
   count: number;
+  totalBytes?: number;
 }
 
 interface TreeEntry {
@@ -163,7 +169,9 @@ interface IntelligencePayload {
     tree: TreeEntry[];
   };
   commits: CommitItem[];
+  commitHistory?: RepoCommitHistoryPoint[];
   contributors: ContributorSummary[];
+  repoContributors?: RepoContributorStat[];
   readme: ReadmeDocument | null;
   authenticatedWithToken: boolean;
 }
@@ -778,7 +786,7 @@ export const GitHubIntelligence: React.FC<GitHubIntelligenceProps> = ({ authToke
           repoUrl: trimmedUrl,
           token: token.trim() || undefined,
           branch: branchOverride || undefined,
-          commitLimit: RECENT_COMMIT_LIMIT,
+          commitLimit: 30,
         }),
       });
 
@@ -1719,6 +1727,31 @@ export const GitHubIntelligence: React.FC<GitHubIntelligenceProps> = ({ authToke
 
       {/* SUB-TAB 4: INSIGHTS & TRENDS (RECHARTS) */}
       {activeIntelSubTab === 'insights' && (
+        <div className="space-y-6">
+          {data && (
+            <GitHubRepoCharts
+              repoFullName={data.repo.fullName}
+              branch={data.repo.selectedBranch}
+              totalFiles={data.structure.totalFiles}
+              totalBytes={data.structure.totalBytes}
+              commits={data.commits}
+              commitHistory={data.commitHistory}
+              contributors={data.contributors}
+              repoContributors={data.repoContributors}
+              topLevelFolders={data.structure.topLevelFolders}
+              extensions={data.structure.extensions}
+              languages={data.languages}
+              onSelectFolder={(folderName) => {
+                setActiveIntelSubTab('inspector');
+                setActiveFolderFilter((prev) => (prev === folderName ? null : folderName));
+                if (folderName !== '(root)') {
+                  setExpandedFolders((prev) => new Set(prev).add(folderName));
+                }
+                setMobilePanel('files');
+              }}
+            />
+          )}
+
         <section className="bg-white dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-800/80 rounded-2xl p-5 sm:p-6 space-y-6 shadow-xs">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div className="space-y-1">
@@ -1808,6 +1841,7 @@ export const GitHubIntelligence: React.FC<GitHubIntelligenceProps> = ({ authToke
             </div>
           )}
         </section>
+        </div>
       )}
 
       {/* SUB-TAB 1: INSPECTOR & REVIEW */}
@@ -2033,6 +2067,30 @@ export const GitHubIntelligence: React.FC<GitHubIntelligenceProps> = ({ authToke
               </div>
             )}
           </section>
+
+          {/* Commit History & File Contribution Recharts Visualizations */}
+          <GitHubRepoCharts
+            repoFullName={data.repo.fullName}
+            branch={data.repo.selectedBranch}
+            totalFiles={data.structure.totalFiles}
+            totalBytes={data.structure.totalBytes}
+            commits={data.commits}
+            commitHistory={data.commitHistory}
+            contributors={data.contributors}
+            repoContributors={data.repoContributors}
+            topLevelFolders={data.structure.topLevelFolders}
+            extensions={data.structure.extensions}
+            languages={data.languages}
+            onSelectFolder={(folderName) => {
+              const nextFilter = activeFolderFilter === folderName ? null : folderName;
+              setActiveFolderFilter(nextFilter);
+              if (nextFilter && nextFilter !== '(root)') {
+                setExpandedFolders((prev) => new Set(prev).add(nextFilter));
+              }
+              setMobilePanel('files');
+              fileBrowserRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }}
+          />
 
           {/* Mobile Segmented Panel Switcher */}
           <div className="grid grid-cols-5 lg:hidden gap-1 p-1 bg-white dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 rounded-xl">

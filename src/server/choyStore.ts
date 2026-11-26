@@ -125,6 +125,18 @@ export interface StoredMessage {
   createdAt: string;
 }
 
+export interface StoredChatGroup {
+  id: string;
+  name: string;
+  memberIds: string[];
+  createdById: string;
+  createdByName: string;
+  adminId?: string;
+  adminName?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface StoredLedgerRow {
   id: string;
   name: string;
@@ -465,6 +477,7 @@ export class ChoyStore {
   private memStudioNotes: StoredStudioNoteFile[] = [];
   private memEnvVault: StoredEnvVaultEntry[] = [];
   private memAnnouncements: StoredAnnouncement[] = [];
+  private memChatGroups: StoredChatGroup[] = [];
   private memSeeded = false;
   private persistInFlight: Promise<void> | null = null;
   private persistQueued = false;
@@ -541,6 +554,7 @@ export class ChoyStore {
       if (Array.isArray(data.studioNotes)) this.memStudioNotes = data.studioNotes as StoredStudioNoteFile[];
       if (Array.isArray(data.envVault)) this.memEnvVault = data.envVault as StoredEnvVaultEntry[];
       if (Array.isArray(data.announcements)) this.memAnnouncements = data.announcements as StoredAnnouncement[];
+      if (Array.isArray(data.chatGroups)) this.memChatGroups = data.chatGroups as StoredChatGroup[];
       this.memSeeded = true;
       console.log(
         `[ChoyStore] Loaded persistent local store (${this.memUsers.length} users, ${this.memPosts.length} posts, ${this.memMessages.length} messages).`
@@ -587,6 +601,7 @@ export class ChoyStore {
           studioNotes: this.memStudioNotes,
           envVault: this.memEnvVault,
           announcements: this.memAnnouncements,
+          chatGroups: this.memChatGroups,
         };
         const tmpPath = `${LOCAL_DATA_FILE}.tmp.${process.pid}`;
         await fs.promises.writeFile(tmpPath, JSON.stringify(payload, null, 2), 'utf8');
@@ -897,6 +912,19 @@ export class ChoyStore {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      CREATE TABLE IF NOT EXISTS app_chat_groups (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        member_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+        created_by_id TEXT NOT NULL,
+        created_by_name TEXT NOT NULL,
+        admin_id TEXT,
+        admin_name TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      ALTER TABLE app_chat_groups ADD COLUMN IF NOT EXISTS admin_id TEXT;
+      ALTER TABLE app_chat_groups ADD COLUMN IF NOT EXISTS admin_name TEXT;
     `);
   }
 
@@ -1778,6 +1806,222 @@ export class ChoyStore {
     return true;
   }
 
+  // ---- CHAT GROUPS ----
+  private mapChatGroupRow(r: Record<string, unknown>): StoredChatGroup {
+    const createdById = String(r.created_by_id || '');
+    const createdByName = String(r.created_by_name || 'Member');
+    const adminId = r.admin_id ? String(r.admin_id) : createdById;
+    const adminName = r.admin_name ? String(r.admin_name) : createdByName;
+    return {
+      id: String(r.id),
+      name: String(r.name),
+      memberIds: Array.isArray(r.member_ids) ? r.member_ids.map(String) : [],
+      createdById,
+      createdByName,
+      adminId,
+      adminName,
+      createdAt: new Date(String(r.created_at)).toISOString(),
+      updatedAt: new Date(String(r.updated_at)).toISOString(),
+    };
+  }
+
+  public async listChatGroups(): Promise<StoredChatGroup[]> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT * FROM app_chat_groups ORDER BY updated_at DESC, created_at DESC');
+      return res.rows.map((r) => this.mapChatGroupRow(r));
+    }
+    return [...this.memChatGroups]
+      .map((g) => ({
+        ...g,
+        adminId: g.adminId || g.createdById,
+        adminName: g.adminName || g.createdByName,
+        memberIds: [...(g.memberIds || [])],
+      }))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  public async listChatGroupsForUser(userId: string, isAdminUser: boolean): Promise<StoredChatGroup[]> {
+    const groups = await this.listChatGroups();
+    if (isAdminUser) return groups;
+    return groups.filter(
+      (g) => g.createdById === userId || (g.adminId || g.createdById) === userId || g.memberIds.includes(userId)
+    );
+  }
+
+  public async getChatGroupById(groupId: string): Promise<StoredChatGroup | null> {
+    await this.ready();
+    const cleanId = groupId.trim();
+    if (!cleanId) return null;
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT * FROM app_chat_groups WHERE id = $1 LIMIT 1', [cleanId]);
+      if (!res.rowCount) return null;
+      return this.mapChatGroupRow(res.rows[0]);
+    }
+    const found = this.memChatGroups.find((g) => g.id === cleanId);
+    return found
+      ? {
+          ...found,
+          adminId: found.adminId || found.createdById,
+          adminName: found.adminName || found.createdByName,
+          memberIds: [...(found.memberIds || [])],
+        }
+      : null;
+  }
+
+  public async createChatGroup(input: {
+    name: string;
+    memberIds: string[];
+    createdById: string;
+    createdByName: string;
+  }): Promise<StoredChatGroup> {
+    await this.ready();
+    const cleanName = input.name.trim().slice(0, 60);
+    const cleanCreatorName = input.createdByName.trim().slice(0, 80) || 'Member';
+    const uniqueMembers = Array.from(
+      new Set([input.createdById, ...input.memberIds.map((id) => id.trim()).filter(Boolean)])
+    );
+    const now = new Date().toISOString();
+    const group: StoredChatGroup = {
+      id: 'grp_' + crypto.randomUUID().replace(/-/g, '').slice(0, 12),
+      name: cleanName,
+      memberIds: uniqueMembers,
+      createdById: input.createdById,
+      createdByName: cleanCreatorName,
+      adminId: input.createdById,
+      adminName: cleanCreatorName,
+      createdAt: now,
+      updatedAt: now,
+    };
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_chat_groups (id, name, member_ids, created_by_id, created_by_name, admin_id, admin_name, created_at, updated_at)
+         VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8::timestamptz, $9::timestamptz)`,
+        [
+          group.id,
+          group.name,
+          JSON.stringify(group.memberIds),
+          group.createdById,
+          group.createdByName,
+          group.adminId,
+          group.adminName,
+          group.createdAt,
+          group.updatedAt,
+        ]
+      );
+    } else {
+      this.memChatGroups.unshift(group);
+      await this.persistMemory();
+    }
+    return group;
+  }
+
+  public async updateChatGroupMembers(groupId: string, memberIds: string[]): Promise<StoredChatGroup | null> {
+    await this.ready();
+    const cleanId = groupId.trim();
+    const uniqueMembers = Array.from(new Set(memberIds.map((id) => id.trim()).filter(Boolean)));
+    const now = new Date().toISOString();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query(
+        `UPDATE app_chat_groups
+         SET member_ids = $2::jsonb, updated_at = $3::timestamptz
+         WHERE id = $1
+         RETURNING *`,
+        [cleanId, JSON.stringify(uniqueMembers), now]
+      );
+      if (!res.rowCount) return null;
+      return this.mapChatGroupRow(res.rows[0]);
+    }
+    const idx = this.memChatGroups.findIndex((g) => g.id === cleanId);
+    if (idx < 0) return null;
+    this.memChatGroups[idx] = {
+      ...this.memChatGroups[idx],
+      memberIds: uniqueMembers,
+      updatedAt: now,
+    };
+    await this.persistMemory();
+    return {
+      ...this.memChatGroups[idx],
+      adminId: this.memChatGroups[idx].adminId || this.memChatGroups[idx].createdById,
+      adminName: this.memChatGroups[idx].adminName || this.memChatGroups[idx].createdByName,
+      memberIds: [...uniqueMembers],
+    };
+  }
+
+  public async updateChatGroupDetails(
+    groupId: string,
+    patch: { name?: string; adminId?: string; adminName?: string }
+  ): Promise<StoredChatGroup | null> {
+    await this.ready();
+    const cleanId = groupId.trim();
+    if (!cleanId) return null;
+    const cleanName = typeof patch.name === 'string' ? patch.name.trim().slice(0, 60) : undefined;
+    const cleanAdminId = typeof patch.adminId === 'string' ? patch.adminId.trim().slice(0, 128) : undefined;
+    const cleanAdminName = typeof patch.adminName === 'string' ? patch.adminName.trim().slice(0, 80) : undefined;
+    const now = new Date().toISOString();
+
+    if (this.usePostgres && this.pool) {
+      const sets: string[] = [];
+      const values: unknown[] = [cleanId];
+      if (cleanName) {
+        values.push(cleanName);
+        sets.push(`name = $${values.length}`);
+      }
+      if (cleanAdminId) {
+        values.push(cleanAdminId);
+        sets.push(`admin_id = $${values.length}`);
+      }
+      if (cleanAdminName) {
+        values.push(cleanAdminName);
+        sets.push(`admin_name = $${values.length}`);
+      }
+      if (sets.length === 0) {
+        return this.getChatGroupById(cleanId);
+      }
+      values.push(now);
+      sets.push(`updated_at = $${values.length}::timestamptz`);
+      const res = await this.pool.query(
+        `UPDATE app_chat_groups SET ${sets.join(', ')} WHERE id = $1 RETURNING *`,
+        values
+      );
+      if (!res.rowCount) return null;
+      return this.mapChatGroupRow(res.rows[0]);
+    }
+
+    const idx = this.memChatGroups.findIndex((g) => g.id === cleanId);
+    if (idx < 0) return null;
+    const prev = this.memChatGroups[idx];
+    const next: StoredChatGroup = {
+      ...prev,
+      name: cleanName || prev.name,
+      adminId: cleanAdminId || prev.adminId || prev.createdById,
+      adminName: cleanAdminName || prev.adminName || prev.createdByName,
+      updatedAt: now,
+    };
+    this.memChatGroups[idx] = next;
+    await this.persistMemory();
+    return { ...next, memberIds: [...(next.memberIds || [])] };
+  }
+
+  public async deleteChatGroup(groupId: string): Promise<boolean> {
+    await this.ready();
+    const cleanId = groupId.trim();
+    if (!cleanId) return false;
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('DELETE FROM app_chat_groups WHERE id = $1', [cleanId]);
+      await this.pool.query('DELETE FROM app_messages WHERE room_id = $1', [cleanId]);
+      return Boolean(res.rowCount && res.rowCount > 0);
+    }
+    const before = this.memChatGroups.length;
+    this.memChatGroups = this.memChatGroups.filter((g) => g.id !== cleanId);
+    if (this.memChatGroups.length < before) {
+      this.memMessages = this.memMessages.filter((m) => m.roomId !== cleanId);
+      await this.persistMemory();
+      return true;
+    }
+    return false;
+  }
+
   // ---- LEDGER & LEADERBOARD ----
   public async listLedger(): Promise<StoredLedgerRow[]> {
     await this.ready();
@@ -2196,6 +2440,34 @@ export class ChoyStore {
       if (isGroup) return true;
       return s.userName.trim().toLowerCase() === normalized;
     });
+  }
+
+  public async listPushSubscriptionsForUserIds(
+    userIds: string[],
+    excludeUserId: string
+  ): Promise<StoredPushSubscription[]> {
+    await this.ready();
+    const cleanIds = Array.from(new Set(userIds.map((id) => id.trim()).filter((id) => id && id !== excludeUserId)));
+    if (cleanIds.length === 0) return [];
+
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query(
+        `SELECT endpoint, user_id, user_name, p256dh, auth, updated_at
+         FROM app_push_subscriptions
+         WHERE user_id <> $1 AND user_id = ANY($2::text[])`,
+        [excludeUserId, cleanIds]
+      );
+      return res.rows.map((r) => ({
+        endpoint: String(r.endpoint),
+        userId: String(r.user_id),
+        userName: String(r.user_name),
+        keys: { p256dh: String(r.p256dh), auth: String(r.auth) },
+        updatedAt: new Date(String(r.updated_at)).toISOString(),
+      }));
+    }
+
+    const idSet = new Set(cleanIds);
+    return this.memPushSubs.filter((s) => s.userId !== excludeUserId && idSet.has(s.userId));
   }
 
   private appendLocationTrail(userId: string, lat: number, lng: number, ts: string): void {
@@ -2840,6 +3112,7 @@ export class ChoyStore {
     ledger: StoredLedgerRow[];
     knowledge: StoredKnowledgeQA[];
     announcements: StoredAnnouncement[];
+    chatGroups: StoredChatGroup[];
   }> {
     await this.ready();
     let users: StoredUser[];
@@ -2854,12 +3127,13 @@ export class ChoyStore {
       }));
     }
 
-    const [settings, newsfeedConfig, ledger, knowledge, announcements] = await Promise.all([
+    const [settings, newsfeedConfig, ledger, knowledge, announcements, chatGroups] = await Promise.all([
       this.getSettings(),
       this.getNewsfeedConfig(),
       this.listLedger(),
       this.listKnowledge(),
       this.listAnnouncements(),
+      this.listChatGroups(),
     ]);
 
     return {
@@ -2870,6 +3144,7 @@ export class ChoyStore {
       ledger,
       knowledge,
       announcements,
+      chatGroups,
     };
   }
 
@@ -2880,6 +3155,7 @@ export class ChoyStore {
     ledger?: Array<Partial<StoredLedgerRow>>;
     knowledge?: Array<Partial<StoredKnowledgeQA>>;
     announcements?: Array<Partial<StoredAnnouncement>>;
+    chatGroups?: Array<Partial<StoredChatGroup>>;
   }): Promise<{
     restoredUsersCount: number;
     totalUsersCount: number;
@@ -3121,7 +3397,63 @@ export class ChoyStore {
       }
     }
 
-    if (!this.usePostgres && (restoredUsersCount > 0 || restoredLedgerCount > 0 || restoredKnowledgeCount > 0 || restoredAnnouncementsCount > 0)) {
+    const incomingGroups = Array.isArray(input.chatGroups) ? input.chatGroups : [];
+    let restoredGroupsCount = 0;
+    for (const rawGrp of incomingGroups) {
+      if (!rawGrp || typeof rawGrp !== 'object') continue;
+      const id = typeof rawGrp.id === 'string' ? rawGrp.id.trim().slice(0, 128) : '';
+      const name = typeof rawGrp.name === 'string' ? rawGrp.name.trim().slice(0, 60) : '';
+      if (!id || !name) continue;
+      const memberIds = Array.isArray(rawGrp.memberIds)
+        ? Array.from(new Set(rawGrp.memberIds.map(String).map((s) => s.trim()).filter(Boolean)))
+        : [];
+      const createdById = typeof rawGrp.createdById === 'string' ? rawGrp.createdById.trim().slice(0, 128) : 'system';
+      const createdByName = typeof rawGrp.createdByName === 'string' ? rawGrp.createdByName.trim().slice(0, 80) : 'Member';
+      const adminId =
+        typeof rawGrp.adminId === 'string' && rawGrp.adminId.trim()
+          ? rawGrp.adminId.trim().slice(0, 128)
+          : createdById;
+      const adminName =
+        typeof rawGrp.adminName === 'string' && rawGrp.adminName.trim()
+          ? rawGrp.adminName.trim().slice(0, 80)
+          : createdByName;
+      const createdAt = typeof rawGrp.createdAt === 'string' ? rawGrp.createdAt : new Date().toISOString();
+      const updatedAt = typeof rawGrp.updatedAt === 'string' ? rawGrp.updatedAt : createdAt;
+
+      if (this.usePostgres && this.pool) {
+        const existsRes = await this.pool.query('SELECT id FROM app_chat_groups WHERE id = $1 LIMIT 1', [id]);
+        if (!existsRes.rowCount) {
+          await this.pool.query(
+            `INSERT INTO app_chat_groups (id, name, member_ids, created_by_id, created_by_name, admin_id, admin_name, created_at, updated_at)
+             VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8::timestamptz, $9::timestamptz)`,
+            [id, name, JSON.stringify(memberIds), createdById, createdByName, adminId, adminName, createdAt, updatedAt]
+          );
+          restoredGroupsCount += 1;
+        }
+      } else if (!this.memChatGroups.some((g) => g.id === id)) {
+        this.memChatGroups.push({
+          id,
+          name,
+          memberIds,
+          createdById,
+          createdByName,
+          adminId,
+          adminName,
+          createdAt,
+          updatedAt,
+        });
+        restoredGroupsCount += 1;
+      }
+    }
+
+    if (
+      !this.usePostgres &&
+      (restoredUsersCount > 0 ||
+        restoredLedgerCount > 0 ||
+        restoredKnowledgeCount > 0 ||
+        restoredAnnouncementsCount > 0 ||
+        restoredGroupsCount > 0)
+    ) {
       await this.persistMemory();
     }
 

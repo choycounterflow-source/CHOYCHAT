@@ -30,6 +30,7 @@ import {
   type StoredUser,
   type NewsfeedChannel,
   type StoredAnnouncement,
+  type StoredChatGroup,
 } from './src/server/choyStore.ts';
 import {
   getSupabaseStorageStatus,
@@ -169,11 +170,15 @@ async function sendWebPushToTarget(
   targetName: string,
   excludeUserId: string,
   payload: Record<string, unknown>,
-  urgency: 'normal' | 'high' = 'normal'
+  urgency: 'normal' | 'high' = 'normal',
+  targetUserIds?: string[]
 ): Promise<number> {
   try {
     await ensureWebPushConfigured();
-    const subs = await store.listPushSubscriptionsForTarget(targetName, excludeUserId);
+    const subs =
+      Array.isArray(targetUserIds) && targetUserIds.length > 0
+        ? await store.listPushSubscriptionsForUserIds(targetUserIds, excludeUserId)
+        : await store.listPushSubscriptionsForTarget(targetName, excludeUserId);
     if (subs.length === 0) return 0;
 
     const body = JSON.stringify(payload);
@@ -214,6 +219,8 @@ interface QueuedRtcSignal {
   seq: number;
   signalId: string;
   targetNameLower: string;
+  targetUserId?: string;
+  targetMemberIds?: string[];
   senderUserId: string;
   createdAtMs: number;
   payload: Record<string, unknown>;
@@ -221,6 +228,47 @@ interface QueuedRtcSignal {
 
 const rtcSignalQueue: QueuedRtcSignal[] = [];
 let rtcSignalSeq = 0;
+
+interface ActiveGroupCallRoom {
+  callId: string;
+  roomId: string;
+  groupName: string;
+  hostUserId: string;
+  hostUserName: string;
+  startedAtMs: number;
+  participants: Map<string, { userId: string; userName: string; lastSeenMs: number }>;
+}
+
+const activeGroupCallsMap = new Map<string, ActiveGroupCallRoom>();
+
+function pruneActiveGroupCalls(now = Date.now()) {
+  const maxParticipantIdleMs = 2 * 60 * 60 * 1000; // 2h safety cap
+  for (const [roomKey, roomCall] of activeGroupCallsMap.entries()) {
+    for (const [uid, p] of roomCall.participants.entries()) {
+      if (now - p.lastSeenMs > maxParticipantIdleMs) {
+        roomCall.participants.delete(uid);
+      }
+    }
+    if (roomCall.participants.size === 0 || now - roomCall.startedAtMs > 6 * 60 * 60 * 1000) {
+      activeGroupCallsMap.delete(roomKey);
+    }
+  }
+}
+
+function getActiveGroupCallsSnapshot(now = Date.now()) {
+  pruneActiveGroupCalls(now);
+  return Array.from(activeGroupCallsMap.values()).map((c) => ({
+    callId: c.callId,
+    roomId: c.roomId,
+    groupName: c.groupName,
+    hostUserId: c.hostUserId,
+    hostUserName: c.hostUserName,
+    startedAtMs: c.startedAtMs,
+    participantIds: Array.from(c.participants.keys()),
+    participantNames: Array.from(c.participants.values()).map((p) => p.userName),
+    participantCount: c.participants.size,
+  }));
+}
 
 function pruneRtcQueue(now = Date.now()) {
   const cutoff = now - 90_000;
@@ -281,7 +329,7 @@ function scheduleR2VaultAutoBackup(reason: string) {
   }, 2500);
 }
 
-const R2_VAULT_AUTO_TOPICS = new Set(['users', 'settings', 'ledger', 'knowledge', 'announcements', 'newsfeed_config']);
+const R2_VAULT_AUTO_TOPICS = new Set(['users', 'settings', 'ledger', 'knowledge', 'announcements', 'newsfeed_config', 'groups']);
 
 function broadcastSync(topic: string) {
   const payload = `event: sync\ndata: ${JSON.stringify({ topic, ts: Date.now() })}\n\n`;
@@ -312,7 +360,11 @@ function broadcastGpsToAdmins(userId: string) {
 function sendRtcSignal(
   targetName: string,
   senderUserId: string,
-  eventPayload: Record<string, unknown>
+  eventPayload: Record<string, unknown>,
+  options?: {
+    targetUserId?: string;
+    targetMemberIds?: string[];
+  }
 ): { delivered: number; targetOnline: boolean; signalId: string; seq: number } {
   const now = Date.now();
   pruneRtcQueue(now);
@@ -326,12 +378,20 @@ function sendRtcSignal(
   };
 
   const normalizedTarget = targetName.trim().toLowerCase();
-  const isGroup = normalizedTarget === 'vip group' || normalizedTarget === '';
+  const targetUserId = options?.targetUserId?.trim() || undefined;
+  const targetMemberIds =
+    Array.isArray(options?.targetMemberIds) && options.targetMemberIds.length > 0
+      ? Array.from(new Set(options.targetMemberIds.map((id) => id.trim()).filter(Boolean)))
+      : undefined;
+  const targetMemberIdSet = targetMemberIds ? new Set(targetMemberIds) : null;
+  const isBroadcastAll = !targetUserId && !targetMemberIdSet && (normalizedTarget === 'vip group' || normalizedTarget === '');
 
   rtcSignalQueue.push({
     seq,
     signalId,
-    targetNameLower: isGroup ? 'vip group' : normalizedTarget,
+    targetNameLower: isBroadcastAll ? 'vip group' : normalizedTarget,
+    targetUserId,
+    targetMemberIds,
     senderUserId,
     createdAtMs: now,
     payload: enrichedPayload,
@@ -342,7 +402,14 @@ function sendRtcSignal(
 
   for (const client of sseClients) {
     if (client.userId === senderUserId) continue;
-    const isMatch = isGroup || client.userName.trim().toLowerCase() === normalizedTarget;
+    let isMatch = false;
+    if (targetUserId) {
+      isMatch = client.userId === targetUserId;
+    } else if (targetMemberIdSet) {
+      isMatch = targetMemberIdSet.has(client.userId);
+    } else {
+      isMatch = isBroadcastAll || client.userName.trim().toLowerCase() === normalizedTarget;
+    }
     if (!isMatch) continue;
     try {
       client.res.write(payload);
@@ -354,7 +421,7 @@ function sendRtcSignal(
 
   let targetOnline = delivered > 0;
   if (!targetOnline) {
-    if (isGroup) {
+    if (isBroadcastAll || targetMemberIdSet) {
       for (const [, lastSeen] of userLastSeenMap.entries()) {
         if (now - lastSeen <= 15_000) {
           targetOnline = true;
@@ -1198,6 +1265,12 @@ app.get('/api/choy/rtc/poll', requireAuth, (req: AuthedRequest, res: Response) =
     if (item.seq <= since) return false;
     if (since === 0 && item.createdAtMs < minFreshTs) return false;
     if (item.senderUserId === user.id) return false;
+    if (item.targetUserId) {
+      return item.targetUserId === user.id;
+    }
+    if (item.targetMemberIds && item.targetMemberIds.length > 0) {
+      return item.targetMemberIds.includes(user.id);
+    }
     return (
       item.targetNameLower === 'vip group' ||
       item.targetNameLower === '' ||
@@ -1590,21 +1663,64 @@ app.post('/api/choy/rtc/signal', requireAuth, async (req: AuthedRequest, res: Re
     const user = req.choyUser!;
     touchUserPresence(user.name);
     const type = typeof req.body?.type === 'string' ? req.body.type.trim() : '';
-    if (!['offer', 'answer', 'ice', 'hangup', 'decline'].includes(type)) {
+    const allowedTypes = [
+      'offer',
+      'answer',
+      'ice',
+      'hangup',
+      'decline',
+      'group_invite',
+      'group_join',
+      'group_here',
+      'group_leave',
+    ];
+    if (!allowedTypes.includes(type)) {
       return res.status(400).json({ error: 'Invalid signaling event type' });
     }
     const callId = typeof req.body?.callId === 'string' ? req.body.callId.trim().slice(0, 80) : '';
     const roomId = typeof req.body?.roomId === 'string' ? req.body.roomId.trim().slice(0, 80) : 'VIP Group';
+    const targetUserId =
+      typeof req.body?.targetUserId === 'string' && req.body.targetUserId.trim()
+        ? req.body.targetUserId.trim().slice(0, 128)
+        : undefined;
     const targetName =
       typeof req.body?.targetName === 'string' && req.body.targetName.trim()
         ? req.body.targetName.trim().slice(0, 80)
         : roomId;
+    const callMode: 'direct' | 'group' =
+      req.body?.callMode === 'group' ||
+      type.startsWith('group_') ||
+      roomId.trim().toLowerCase() === 'vip group' ||
+      roomId.startsWith('grp_')
+        ? 'group'
+        : 'direct';
 
     if (!callId) {
       return res.status(400).json({ error: 'callId is required' });
     }
 
-    if (type === 'offer' && user.role !== 'admin') {
+    let customGroup: StoredChatGroup | null = null;
+    if (roomId.startsWith('grp_')) {
+      customGroup = await store.getChatGroupById(roomId);
+      if (!customGroup) {
+        return res.status(404).json({ error: 'Group chat not found' });
+      }
+      const isMember =
+        user.role === 'admin' ||
+        customGroup.createdById === user.id ||
+        (customGroup.adminId || customGroup.createdById) === user.id ||
+        customGroup.memberIds.includes(user.id);
+      if (!isMember) {
+        return res.status(403).json({ error: 'You are not a member of this group.' });
+      }
+    }
+
+    const resolvedGroupName =
+      typeof req.body?.groupName === 'string' && req.body.groupName.trim()
+        ? req.body.groupName.trim().slice(0, 80)
+        : customGroup?.name || (roomId.trim().toLowerCase() === 'vip group' ? 'VIP Group' : targetName);
+
+    if (type === 'offer' && !targetUserId && user.role !== 'admin' && !customGroup) {
       const targetLower = targetName.toLowerCase();
       if (targetLower !== 'vip group' && targetLower !== 'choy admin') {
         const allUsers = await store.listUsers(false);
@@ -1615,20 +1731,76 @@ app.post('/api/choy/rtc/signal', requireAuth, async (req: AuthedRequest, res: Re
       }
     }
 
-    const result = sendRtcSignal(targetName, user.id, {
-      type,
-      callId,
-      roomId,
+    // Track active group calls on server so late joiners see a Join Call banner
+    const now = Date.now();
+    if (callMode === 'group') {
+      const roomKey = roomId.trim();
+      if (type === 'group_invite' || type === 'group_join' || type === 'group_here') {
+        let entry = activeGroupCallsMap.get(roomKey);
+        if (!entry || entry.callId !== callId) {
+          if (type === 'group_invite' || !entry) {
+            entry = {
+              callId,
+              roomId: roomKey,
+              groupName: resolvedGroupName,
+              hostUserId: user.id,
+              hostUserName: user.name,
+              startedAtMs: now,
+              participants: new Map(),
+            };
+            activeGroupCallsMap.set(roomKey, entry);
+          }
+        }
+        if (entry && entry.callId === callId) {
+          entry.participants.set(user.id, { userId: user.id, userName: user.name, lastSeenMs: now });
+          if (type === 'group_invite' || type === 'group_join') {
+            broadcastSync('calls');
+          }
+        }
+      } else if (type === 'group_leave' || type === 'hangup') {
+        const entry = activeGroupCallsMap.get(roomKey);
+        if (entry && entry.callId === callId) {
+          entry.participants.delete(user.id);
+          if (entry.participants.size === 0) {
+            activeGroupCallsMap.delete(roomKey);
+          }
+          broadcastSync('calls');
+        }
+      }
+    }
+
+    const groupMemberIds =
+      customGroup && !targetUserId
+        ? Array.from(
+            new Set([...customGroup.memberIds, customGroup.createdById, customGroup.adminId || customGroup.createdById])
+          )
+        : undefined;
+
+    const result = sendRtcSignal(
       targetName,
-      fromUserId: user.id,
-      fromUserName: user.name,
-      sdp: req.body?.sdp ?? undefined,
-      candidate: req.body?.candidate ?? undefined,
-      ts: Date.now(),
-    });
+      user.id,
+      {
+        type,
+        callId,
+        roomId,
+        callMode,
+        groupName: callMode === 'group' ? resolvedGroupName : undefined,
+        targetUserId,
+        targetName,
+        fromUserId: user.id,
+        fromUserName: user.name,
+        sdp: req.body?.sdp ?? undefined,
+        candidate: req.body?.candidate ?? undefined,
+        ts: now,
+      },
+      {
+        targetUserId,
+        targetMemberIds: groupMemberIds,
+      }
+    );
 
     // Wake closed/backgrounded devices on mobile data with Caller Profile Icon alert
-    if (type === 'offer') {
+    if (type === 'offer' && callMode === 'direct') {
       void sendWebPushToTarget(
         targetName,
         user.id,
@@ -1648,7 +1820,30 @@ app.post('/api/choy/rtc/signal', requireAuth, async (req: AuthedRequest, res: Re
         },
         'high'
       );
-    } else if (type === 'hangup' || type === 'decline') {
+    } else if (type === 'group_invite') {
+      void sendWebPushToTarget(
+        customGroup ? '' : 'VIP Group',
+        user.id,
+        {
+          kind: 'call',
+          title: `Group Video Call · ${resolvedGroupName}`,
+          body: `${user.name} started a group video call in ${resolvedGroupName}. Tap Answer to join!`,
+          icon: getSafePushIcon(user.avatar),
+          badge: '/pwa-192x192.png',
+          tag: `choy-call-${callId}`,
+          callId,
+          roomId,
+          groupName: resolvedGroupName,
+          callMode: 'group',
+          callerName: user.name,
+          url: `/?incomingCall=${encodeURIComponent(callId)}&caller=${encodeURIComponent(
+            user.name
+          )}&room=${encodeURIComponent(roomId)}&callMode=group`,
+        },
+        'high',
+        groupMemberIds
+      );
+    } else if (type === 'hangup' || type === 'decline' || (type === 'group_leave' && !activeGroupCallsMap.has(roomId.trim()))) {
       void sendWebPushToTarget(
         targetName,
         user.id,
@@ -1657,7 +1852,8 @@ app.post('/api/choy/rtc/signal', requireAuth, async (req: AuthedRequest, res: Re
           callId,
           callerName: user.name,
         },
-        'high'
+        'high',
+        groupMemberIds
       );
     }
 
@@ -1672,7 +1868,7 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
     const user = req.choyUser!;
     touchUserPresence(user.name);
     const isAdmin = user.role === 'admin';
-    const [posts, allMessages, allUsers, knowledge, leaderboard, emojiLinks, newsfeedConfig, allAnnouncements] = await Promise.all([
+    const [posts, allMessages, allUsers, knowledge, leaderboard, emojiLinks, newsfeedConfig, allAnnouncements, rawChatGroups] = await Promise.all([
       store.listPosts(),
       store.listMessages(),
       store.listUsers(isAdmin),
@@ -1681,6 +1877,7 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
       store.listEmojiLinks(),
       store.getNewsfeedConfig(),
       store.listAnnouncements(),
+      store.listChatGroupsForUser(user.id, isAdmin),
     ]);
     const activeEmojiLink = emojiLinks.find((l) => l.pinnedToAppIcon) || emojiLinks[0] || null;
 
@@ -1689,11 +1886,24 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
       : allUsers.filter((candidate) => canViewerSeeUser(user, candidate));
     const visibleUserIds = new Set(visibleUsers.map((u) => u.id));
     const visibleUserNamesLower = new Set(visibleUsers.map((u) => u.name.trim().toLowerCase()));
+    const allUsersById = new Map(allUsers.map((u) => [u.id, u]));
+
+    const chatGroups = rawChatGroups.map((g) => ({
+      ...g,
+      members: g.memberIds
+        .map((id) => allUsersById.get(id))
+        .filter((u): u is NonNullable<typeof u> => Boolean(u))
+        .map((u) => ({ id: u.id, name: u.name, avatar: u.avatar })),
+    }));
+    const memberGroupIdSet = new Set(chatGroups.map((g) => g.id));
 
     const myNameLower = user.name.trim().toLowerCase();
     const messages = isAdmin
       ? allMessages
       : allMessages.filter((m) => {
+          if (memberGroupIdSet.has(m.roomId)) {
+            return true;
+          }
           const roomLower = m.roomId.trim().toLowerCase();
           const senderLower = m.senderName.trim().toLowerCase();
           const isSenderVisible =
@@ -1721,6 +1931,10 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
       ? allAnnouncements
       : allAnnouncements.filter((a) => canViewerSeeAnnouncement(user, a));
 
+    const activeGroupCalls = getActiveGroupCallsSnapshot().filter(
+      (c) => isAdmin || c.roomId.toLowerCase() === 'vip group' || memberGroupIdSet.has(c.roomId)
+    );
+
     let ledger = undefined;
     let settings = undefined;
     if (isAdmin) {
@@ -1745,6 +1959,8 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
       messages: messages.map((m) =>
         m.mediaUrl ? { ...m, mediaUrl: rewriteBrokenR2MediaUrl(m.mediaUrl) } : m
       ),
+      chatGroups,
+      activeGroupCalls,
       users: visibleUsers,
       knowledge,
       leaderboard,
@@ -1893,6 +2109,227 @@ app.post('/api/choy/posts/:id/share', requireAuth, async (req: AuthedRequest, re
   }
 });
 
+app.post('/api/choy/groups', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const rawName = typeof req.body?.name === 'string' ? req.body.name.replace(/[\x00-\x1f\x7f]/g, '').trim() : '';
+    if (rawName.length < 2 || rawName.length > 60) {
+      return res.status(400).json({ error: 'Group name must be between 2 and 60 characters.' });
+    }
+    const rawMemberIds = Array.isArray(req.body?.memberIds) ? req.body.memberIds.map(String) : [];
+    const allUsers = await store.listUsers(true);
+    const allUsersById = new Map(allUsers.map((u) => [u.id, u]));
+
+    const validMemberIds = new Set<string>([user.id]);
+    for (const id of rawMemberIds) {
+      const candidate = allUsersById.get(id.trim());
+      if (!candidate) continue;
+      if (user.role !== 'admin' && !canViewerSeeUser(user, candidate)) continue;
+      validMemberIds.add(candidate.id);
+    }
+
+    if (validMemberIds.size < 2) {
+      return res.status(400).json({ error: 'Please select at least 1 other member for the group chat.' });
+    }
+
+    const group = await store.createChatGroup({
+      name: rawName,
+      memberIds: Array.from(validMemberIds),
+      createdById: user.id,
+      createdByName: user.name,
+    });
+
+    await store.createMessage({
+      senderId: 'system',
+      senderName: 'Choy System',
+      roomId: group.id,
+      text: `${user.name} created group "${group.name}" with ${group.memberIds.length} members.`,
+      mediaType: 'text',
+    });
+
+    broadcastSync('groups');
+    broadcastSync('messages');
+
+    const members = group.memberIds
+      .map((id) => allUsersById.get(id))
+      .filter((u): u is NonNullable<typeof u> => Boolean(u))
+      .map((u) => ({ id: u.id, name: u.name, avatar: u.avatar }));
+
+    return res.status(201).json({ group: { ...group, members } });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to create group chat' });
+  }
+});
+
+app.patch('/api/choy/groups/:id', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const groupId = String(req.params.id || '').trim();
+    const existing = await store.getChatGroupById(groupId);
+    if (!existing) {
+      return res.status(404).json({ error: 'Group chat not found' });
+    }
+    const currentAdminId = existing.adminId || existing.createdById;
+    const canManage = user.role === 'admin' || currentAdminId === user.id;
+    if (!canManage) {
+      return res.status(403).json({ error: 'Only the group admin can update group settings.' });
+    }
+
+    const hasNameUpdate = req.body?.name !== undefined;
+    const hasAdminUpdate = req.body?.adminId !== undefined;
+    if (!hasNameUpdate && !hasAdminUpdate) {
+      return res.status(400).json({ error: 'No group changes were provided.' });
+    }
+
+    const patch: { name?: string; adminId?: string; adminName?: string } = {};
+    if (hasNameUpdate) {
+      const rawName = typeof req.body.name === 'string' ? req.body.name.replace(/[\x00-\x1f\x7f]/g, '').trim() : '';
+      if (rawName.length < 2 || rawName.length > 60) {
+        return res.status(400).json({ error: 'Group name must be between 2 and 60 characters.' });
+      }
+      patch.name = rawName;
+    }
+
+    const allUsers = await store.listUsers(true);
+    const allUsersById = new Map(allUsers.map((u) => [u.id, u]));
+
+    if (hasAdminUpdate) {
+      const nextAdminId = typeof req.body.adminId === 'string' ? req.body.adminId.trim() : '';
+      if (!nextAdminId || !existing.memberIds.includes(nextAdminId)) {
+        return res.status(400).json({ error: 'Selected admin must be a current member of this group.' });
+      }
+      const targetAdmin = allUsersById.get(nextAdminId);
+      if (!targetAdmin || (user.role !== 'admin' && !canViewerSeeUser(user, targetAdmin))) {
+        return res.status(404).json({ error: 'Selected member account was not found.' });
+      }
+      patch.adminId = targetAdmin.id;
+      patch.adminName = targetAdmin.name;
+    }
+
+    const updated = await store.updateChatGroupDetails(groupId, patch);
+    if (!updated) {
+      return res.status(404).json({ error: 'Group chat not found' });
+    }
+
+    const notices: string[] = [];
+    if (patch.name && updated.name !== existing.name) {
+      notices.push(`${user.name} renamed the group to "${updated.name}".`);
+      const activeCall = activeGroupCallsMap.get(groupId);
+      if (activeCall) {
+        activeCall.groupName = updated.name;
+        broadcastSync('calls');
+      }
+    }
+    if (patch.adminId && updated.adminId !== currentAdminId) {
+      notices.push(`${user.name} transferred group admin to ${updated.adminName || 'a member'}.`);
+    }
+
+    for (const notice of notices) {
+      await store.createMessage({
+        senderId: 'system',
+        senderName: 'Choy System',
+        roomId: updated.id,
+        text: notice,
+        mediaType: 'text',
+      });
+    }
+
+    broadcastSync('groups');
+    if (notices.length > 0) {
+      broadcastSync('messages');
+    }
+
+    const members = updated.memberIds
+      .map((id) => allUsersById.get(id))
+      .filter((u): u is NonNullable<typeof u> => Boolean(u))
+      .map((u) => ({ id: u.id, name: u.name, avatar: u.avatar }));
+
+    return res.json({ group: { ...updated, members } });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update group' });
+  }
+});
+
+app.patch('/api/choy/groups/:id/members', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const groupId = String(req.params.id || '').trim();
+    const existing = await store.getChatGroupById(groupId);
+    if (!existing) {
+      return res.status(404).json({ error: 'Group chat not found' });
+    }
+    const groupAdminId = existing.adminId || existing.createdById;
+    const isCreatorOrAdmin = user.role === 'admin' || groupAdminId === user.id;
+    const isCurrentMember = existing.memberIds.includes(user.id);
+    if (!isCreatorOrAdmin && !isCurrentMember) {
+      return res.status(403).json({ error: 'Not authorized to update this group.' });
+    }
+
+    const addMemberIds = Array.isArray(req.body?.addMemberIds) ? req.body.addMemberIds.map(String) : [];
+    const removeMemberId = typeof req.body?.removeMemberId === 'string' ? req.body.removeMemberId.trim() : '';
+
+    const allUsers = await store.listUsers(true);
+    const allUsersById = new Map(allUsers.map((u) => [u.id, u]));
+
+    const nextSet = new Set(existing.memberIds);
+    if (addMemberIds.length > 0) {
+      for (const id of addMemberIds) {
+        const candidate = allUsersById.get(id.trim());
+        if (!candidate) continue;
+        if (user.role !== 'admin' && !canViewerSeeUser(user, candidate)) continue;
+        nextSet.add(candidate.id);
+      }
+    }
+    if (removeMemberId) {
+      if (removeMemberId !== user.id && !isCreatorOrAdmin) {
+        return res.status(403).json({ error: 'Only the group admin can remove other members.' });
+      }
+      if (removeMemberId === groupAdminId && existing.memberIds.length > 1) {
+        return res.status(400).json({ error: 'Transfer group admin to another member before removing or leaving.' });
+      }
+      nextSet.delete(removeMemberId);
+    }
+
+    const updated = await store.updateChatGroupMembers(groupId, Array.from(nextSet));
+    if (!updated) {
+      return res.status(404).json({ error: 'Group chat not found' });
+    }
+    broadcastSync('groups');
+    const members = updated.memberIds
+      .map((id) => allUsersById.get(id))
+      .filter((u): u is NonNullable<typeof u> => Boolean(u))
+      .map((u) => ({ id: u.id, name: u.name, avatar: u.avatar }));
+    return res.json({ group: { ...updated, members } });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update group members' });
+  }
+});
+
+app.delete('/api/choy/groups/:id', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const groupId = String(req.params.id || '').trim();
+    const existing = await store.getChatGroupById(groupId);
+    if (!existing) {
+      return res.status(404).json({ error: 'Group chat not found' });
+    }
+    const groupAdminId = existing.adminId || existing.createdById;
+    if (user.role !== 'admin' && groupAdminId !== user.id) {
+      return res.status(403).json({ error: 'Only the group admin can delete this group.' });
+    }
+    const deleted = await store.deleteChatGroup(groupId);
+    if (!deleted) {
+      return res.status(404).json({ error: 'Group chat not found' });
+    }
+    activeGroupCallsMap.delete(groupId);
+    broadcastSync('groups');
+    broadcastSync('messages');
+    return res.json({ ok: true, deletedId: groupId });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to delete group chat' });
+  }
+});
+
 app.post('/api/choy/messages', requireAuth, async (req: AuthedRequest, res: Response) => {
   try {
     const user = req.choyUser!;
@@ -1901,9 +2338,25 @@ app.post('/api/choy/messages', requireAuth, async (req: AuthedRequest, res: Resp
       return res.status(400).json({ error: 'Invalid chat room' });
     }
 
+    let resolvedGroup: StoredChatGroup | null = null;
     let resolvedRoomId = (ALLOWED_CHAT_ROOMS as readonly string[]).find(
       (r) => r.toLowerCase() === rawRoomId.toLowerCase()
     );
+    if (!resolvedRoomId && rawRoomId.startsWith('grp_')) {
+      const group = await store.getChatGroupById(rawRoomId);
+      if (group) {
+        const isMember =
+          user.role === 'admin' ||
+          group.createdById === user.id ||
+          (group.adminId || group.createdById) === user.id ||
+          group.memberIds.includes(user.id);
+        if (!isMember) {
+          return res.status(403).json({ error: 'You are not a member of this group chat.' });
+        }
+        resolvedGroup = group;
+        resolvedRoomId = group.id;
+      }
+    }
     if (!resolvedRoomId) {
       const allUsers = await store.listUsers(true);
       const matchedUser = allUsers.find((u) => u.name.trim().toLowerCase() === rawRoomId.toLowerCase());
@@ -1940,8 +2393,9 @@ app.post('/api/choy/messages', requireAuth, async (req: AuthedRequest, res: Resp
     broadcastSync('messages');
 
     // Dispatch background Web Push Notification (delivers on home screen even when app is closed)
-    const isGroupRoom = resolvedRoomId.trim().toLowerCase() === 'vip group';
-    const openRoom = isGroupRoom ? 'VIP Group' : user.name;
+    const isVipGroupRoom = resolvedRoomId.trim().toLowerCase() === 'vip group';
+    const openRoom = resolvedGroup ? resolvedGroup.id : isVipGroupRoom ? 'VIP Group' : user.name;
+    const roomTitleLabel = resolvedGroup ? resolvedGroup.name : 'VIP Group';
     const previewBody =
       text ||
       (mediaType === 'image'
@@ -1956,7 +2410,7 @@ app.post('/api/choy/messages', requireAuth, async (req: AuthedRequest, res: Resp
       user.id,
       {
         kind: 'message',
-        title: isGroupRoom ? `${user.name} · VIP Group` : user.name,
+        title: resolvedGroup || isVipGroupRoom ? `${user.name} · ${roomTitleLabel}` : user.name,
         body: previewBody.slice(0, 180),
         icon: getSafePushIcon(user.avatar),
         badge: '/pwa-192x192.png',
@@ -1964,7 +2418,8 @@ app.post('/api/choy/messages', requireAuth, async (req: AuthedRequest, res: Resp
         roomId: openRoom,
         url: `/?openChat=${encodeURIComponent(openRoom)}`,
       },
-      'normal'
+      'normal',
+      resolvedGroup ? resolvedGroup.memberIds : undefined
     );
 
     return res.status(201).json(msg);
@@ -3270,7 +3725,7 @@ app.post('/api/github/intelligence', requireAuth, async (req: AuthedRequest, res
     const requestedBranch = typeof req.body?.branch === 'string' ? req.body.branch.trim() : '';
     const rawCommitLimit = Number(req.body?.commitLimit);
     const commitLimit =
-      Number.isInteger(rawCommitLimit) && rawCommitLimit >= 1 && rawCommitLimit <= 20 ? rawCommitLimit : 5;
+      Number.isInteger(rawCommitLimit) && rawCommitLimit >= 1 && rawCommitLimit <= 50 ? rawCommitLimit : 30;
 
     const parsedRepo = parseGitHubRepoInput(repoUrl);
     if (!parsedRepo) {
@@ -3320,12 +3775,13 @@ app.post('/api/github/intelligence', requireAuth, async (req: AuthedRequest, res
     const defaultBranch = typeof repoJson.default_branch === 'string' ? repoJson.default_branch : 'main';
     const targetBranch = requestedBranch || parsedRepo.branchFromUrl || defaultBranch;
 
-    const [branchesRes, langsRes, treeRes, commitsRes, readmeRes] = await Promise.all([
+    const [branchesRes, langsRes, treeRes, commitsRes, readmeRes, repoContributorsRes] = await Promise.all([
       fetch(`${baseApi}/branches?per_page=25`, { headers: ghHeaders }),
       fetch(`${baseApi}/languages`, { headers: ghHeaders }),
       fetch(`${baseApi}/git/trees/${encodeURIComponent(targetBranch)}?recursive=1`, { headers: ghHeaders }),
       fetch(`${baseApi}/commits?sha=${encodeURIComponent(targetBranch)}&per_page=${commitLimit}`, { headers: ghHeaders }),
       fetch(`${baseApi}/readme?ref=${encodeURIComponent(targetBranch)}`, { headers: ghHeaders }),
+      fetch(`${baseApi}/contributors?per_page=15`, { headers: ghHeaders }),
     ]);
 
     const branchesRaw: any = branchesRes.ok ? await branchesRes.json().catch(() => []) : [];
@@ -3333,6 +3789,7 @@ app.post('/api/github/intelligence', requireAuth, async (req: AuthedRequest, res
     const treeRaw: any = treeRes.ok ? await treeRes.json().catch(() => ({ tree: [] })) : { tree: [] };
     const commitsRaw: any = commitsRes.ok ? await commitsRes.json().catch(() => []) : [];
     const readmeRaw: any = readmeRes.ok ? await readmeRes.json().catch(() => null) : null;
+    const repoContributorsRaw: any = repoContributorsRes.ok ? await repoContributorsRes.json().catch(() => []) : [];
 
     let readme: {
       name: string;
@@ -3388,7 +3845,7 @@ app.post('/api/github/intelligence', requireAuth, async (req: AuthedRequest, res
     let totalDirectories = 0;
     let totalBytes = 0;
     const folderMap = new Map<string, { fileCount: number; totalBytes: number }>();
-    const extMap = new Map<string, number>();
+    const extMap = new Map<string, { count: number; totalBytes: number }>();
     const keyManifestNames = new Set([
       'package.json',
       'tsconfig.json',
@@ -3436,7 +3893,10 @@ app.post('/api/github/intelligence', requireAuth, async (req: AuthedRequest, res
         const baseName = itemPath.slice(itemPath.lastIndexOf('/') + 1);
         const dotIdx = baseName.lastIndexOf('.');
         const ext = dotIdx > 0 ? baseName.slice(dotIdx).toLowerCase() : '(no ext)';
-        extMap.set(ext, (extMap.get(ext) || 0) + 1);
+        const existingExt = extMap.get(ext) || { count: 0, totalBytes: 0 };
+        existingExt.count += 1;
+        existingExt.totalBytes += size;
+        extMap.set(ext, existingExt);
 
         if (keyManifestNames.has(itemPath.toLowerCase()) || (!itemPath.includes('/') && keyManifestNames.has(baseName.toLowerCase()))) {
           keyFiles.push(itemPath);
@@ -3449,7 +3909,7 @@ app.post('/api/github/intelligence', requireAuth, async (req: AuthedRequest, res
       .sort((a, b) => b.fileCount - a.fileCount);
 
     const extensions = Array.from(extMap.entries())
-      .map(([ext, count]) => ({ ext, count }))
+      .map(([ext, info]) => ({ ext, count: info.count, totalBytes: info.totalBytes }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 10);
 
@@ -3502,6 +3962,41 @@ app.post('/api/github/intelligence', requireAuth, async (req: AuthedRequest, res
 
     const contributors = Array.from(contributorMap.values()).sort((a, b) => b.commitCount - a.commitCount);
 
+    // Group commits chronologically by day for repository commit history charting
+    const dailyCommitMap = new Map<string, { date: string; commits: number; authors: Set<string> }>();
+    for (const commit of commits) {
+      if (!commit.date) continue;
+      const parsedDate = new Date(commit.date);
+      if (Number.isNaN(parsedDate.getTime())) continue;
+      const dayKey = parsedDate.toISOString().slice(0, 10);
+      const bucket = dailyCommitMap.get(dayKey) || { date: dayKey, commits: 0, authors: new Set<string>() };
+      bucket.commits += 1;
+      bucket.authors.add(commit.authorLogin || commit.authorName);
+      dailyCommitMap.set(dayKey, bucket);
+    }
+    const commitHistory = Array.from(dailyCommitMap.values())
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map((entry) => {
+        const parsed = new Date(`${entry.date}T00:00:00Z`);
+        const label = parsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+        return {
+          date: entry.date,
+          label,
+          commits: entry.commits,
+          uniqueAuthors: entry.authors.size,
+        };
+      });
+
+    const repoContributors = (Array.isArray(repoContributorsRaw) ? repoContributorsRaw : [])
+      .filter((c: any) => c && typeof c?.login === 'string' && typeof c?.contributions === 'number')
+      .slice(0, 12)
+      .map((c: any) => ({
+        login: String(c.login),
+        avatar: safeGitHubExternalUrl(c.avatar_url),
+        contributions: Number(c.contributions) || 0,
+        htmlUrl: safeGitHubExternalUrl(c.html_url),
+      }));
+
     return res.json({
       repo: {
         name: String(repoJson.name || parsedRepo.repo),
@@ -3536,7 +4031,9 @@ app.post('/api/github/intelligence', requireAuth, async (req: AuthedRequest, res
         tree,
       },
       commits,
+      commitHistory,
       contributors,
+      repoContributors,
       readme,
       authenticatedWithToken: Boolean(effectiveToken),
     });
