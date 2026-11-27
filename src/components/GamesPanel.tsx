@@ -203,7 +203,55 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
   // Spinner State
   const [spinResult, setSpinResult] = useState<string | null>(null);
   const [spinning, setSpinning] = useState<boolean>(false);
-  const [score, setScore] = useState<number>(500);
+  const [score, setScore] = useState<number>(() => {
+    const saved = localStorage.getItem(`choy_user_coins_${currentUser.id}`);
+    return saved ? Number(saved) : 500;
+  });
+
+  React.useEffect(() => {
+    localStorage.setItem(`choy_user_coins_${currentUser.id}`, String(score));
+  }, [score, currentUser.id]);
+
+  // Real Betting Ledger State
+  const [realBets, setRealBets] = useState<Array<{
+    id: string;
+    userId: string;
+    userName: string;
+    gameType: 'swertres' | 'nba';
+    gameId: string;
+    gameTitle: string;
+    selection: string;
+    stake: number;
+    odds: number;
+    potentialWin: number;
+    status: 'Pending' | 'Won' | 'Lost';
+    createdAt: string;
+  }>>(() => {
+    const saved = localStorage.getItem('choy_real_bets');
+    if (saved) {
+      try { return JSON.parse(saved); } catch { return []; }
+    }
+    return [
+      {
+        id: 'swt-102',
+        userId: currentUser.id,
+        userName: currentUser.name || 'User',
+        gameType: 'swertres',
+        gameId: '5:00 PM',
+        gameTitle: 'Swertres 5:00 PM Draw',
+        selection: '7-4-2',
+        stake: 10,
+        odds: 400,
+        potentialWin: 4000,
+        status: 'Pending',
+        createdAt: 'Today, 2:10 PM',
+      }
+    ];
+  });
+
+  React.useEffect(() => {
+    localStorage.setItem('choy_real_bets', JSON.stringify(realBets));
+  }, [realBets]);
 
   // Reflex State
   const [reflexState, setReflexState] = useState<'idle' | 'wait' | 'ready' | 'result'>('idle');
@@ -364,7 +412,7 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
     }
   };
 
-  // Swertres Bet Logic
+  // Swertres Real Bet Logic
   const handlePlaceSwertres = (e: React.FormEvent) => {
     e.preventDefault();
     if (betAmount <= 0) return;
@@ -386,11 +434,28 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
       createdAt: 'Just now',
     };
     setTickets((prev) => [newTicket, ...prev]);
-    setNotice(`Successfully placed Swertres bet ${combination} for ₱${potentialWin.toLocaleString()} potential win!`);
+
+    const newRealBet = {
+      id: `swt-real-${Date.now()}`,
+      userId: currentUser.id,
+      userName: currentUser.name || 'User',
+      gameType: 'swertres' as const,
+      gameId: selectedDraw,
+      gameTitle: `Swertres ${selectedDraw} Draw`,
+      selection: combination,
+      stake: betAmount,
+      odds: 400,
+      potentialWin,
+      status: 'Pending' as const,
+      createdAt: 'Just now',
+    };
+    setRealBets((prev) => [newRealBet, ...prev]);
+
+    setNotice(`Successfully placed real Swertres bet ${combination} for ₱${potentialWin.toLocaleString()} potential win!`);
     setTimeout(() => setNotice(null), 5000);
   };
 
-  // NBA Topup Logic
+  // NBA Team Betting & Topup Logic
   const handleTeamTopup = (e: React.FormEvent) => {
     e.preventDefault();
     if (score < topupAmount) {
@@ -414,7 +479,24 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
       user: currentUser.name || 'Choy User',
     };
     setTransactions((prev) => [newTx, ...prev]);
-    setNotice(`Successfully supported ${teamFullName} with ${topupAmount} Choy Coins!`);
+
+    const newRealBet = {
+      id: `nba-real-${Date.now()}`,
+      userId: currentUser.id,
+      userName: currentUser.name || 'User',
+      gameType: 'nba' as const,
+      gameId: selectedTeam.id,
+      gameTitle: `NBA Match Bet: ${teamFullName}`,
+      selection: teamFullName,
+      stake: topupAmount,
+      odds: 2.5,
+      potentialWin: topupAmount * 2.5,
+      status: 'Pending' as const,
+      createdAt: 'Just now',
+    };
+    setRealBets((prev) => [newRealBet, ...prev]);
+
+    setNotice(`Successfully placed real NBA bet on ${teamFullName} with ${topupAmount} Choy Coins!`);
     setTimeout(() => setNotice(null), 5000);
   };
 

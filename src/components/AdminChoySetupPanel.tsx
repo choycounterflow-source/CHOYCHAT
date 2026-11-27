@@ -135,7 +135,7 @@ export const DEFAULT_CLIENT_CHOY_PROGRAMS_CONFIG: ChoyProgramsConfig = {
   updatedAt: '',
 };
 
-export type AdminChoySetupTab = 'feature_toggles' | 'choy_pro' | 'choy_promo' | 'choy_wallet';
+export type AdminChoySetupTab = 'feature_toggles' | 'choy_pro' | 'choy_promo' | 'choy_wallet' | 'betting_monitor';
 
 interface AdminChoySetupPanelProps {
   config: ChoyProgramsConfig;
@@ -618,6 +618,28 @@ export const AdminChoySetupPanel: React.FC<AdminChoySetupPanelProps> = ({
             <div className="text-xs font-black">Choy Wallet</div>
             <div className={`text-[11px] truncate ${subTab === 'choy_wallet' ? 'text-indigo-100' : 'text-emerald-700 dark:text-emerald-300'}`}>
               ₱1 = {draft.choyWallet.conversionRate} CHOY · Top-Up Tool
+            </div>
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setSubTab('betting_monitor');
+            setErrorMsg(null);
+            setNotice(null);
+          }}
+          className={`p-3.5 rounded-2xl border text-left flex items-center gap-3 transition ${
+            subTab === 'betting_monitor'
+              ? 'bg-indigo-600 text-white border-indigo-500 shadow-sm'
+              : 'bg-white dark:bg-emerald-900/60 border-emerald-200 dark:border-emerald-700/60 text-emerald-950 dark:text-white hover:border-indigo-400'
+          }`}
+        >
+          <Trophy className={`w-5 h-5 shrink-0 ${subTab === 'betting_monitor' ? 'text-amber-300' : 'text-amber-500'}`} />
+          <div className="min-w-0">
+            <div className="text-xs font-black">Betting & Winner Monitor</div>
+            <div className={`text-[11px] truncate ${subTab === 'betting_monitor' ? 'text-indigo-100' : 'text-emerald-700 dark:text-emerald-300'}`}>
+              Monitor bets & declare winners
             </div>
           </div>
         </button>
@@ -1346,6 +1368,160 @@ export const AdminChoySetupPanel: React.FC<AdminChoySetupPanelProps> = ({
           </form>
         </div>
       )}
+
+      {/* TAB 4: BETTING & WINNER MONITOR */}
+      {subTab === 'betting_monitor' && (() => {
+        const [bets, setBets] = React.useState<Array<{
+          id: string;
+          userId: string;
+          userName: string;
+          gameType: 'swertres' | 'nba';
+          gameId: string;
+          gameTitle: string;
+          selection: string;
+          stake: number;
+          odds: number;
+          potentialWin: number;
+          status: 'Pending' | 'Won' | 'Lost';
+          createdAt: string;
+        }>>(() => {
+          const saved = localStorage.getItem('choy_real_bets');
+          if (saved) {
+            try { return JSON.parse(saved); } catch { return []; }
+          }
+          return [];
+        });
+
+        const [declareGameId, setDeclareGameId] = React.useState('5:00 PM');
+        const [winningSelection, setWinningSelection] = React.useState('7-4-2');
+
+        const handleDeclare = (gameType: 'swertres' | 'nba', gameId: string, winningVal: string) => {
+          const updated = bets.map((bet) => {
+            if (bet.gameType === gameType && bet.gameId === gameId && bet.status === 'Pending') {
+              const isWin = bet.selection.trim().toLowerCase() === winningVal.trim().toLowerCase();
+              const nextStatus = isWin ? 'Won' : 'Lost';
+              if (isWin) {
+                const userCoinsKey = `choy_user_coins_${bet.userId}`;
+                const currentCoins = Number(localStorage.getItem(userCoinsKey) || '500');
+                localStorage.setItem(userCoinsKey, String(currentCoins + bet.potentialWin));
+              }
+              return { ...bet, status: nextStatus as 'Won' | 'Lost' };
+            }
+            return bet;
+          });
+          setBets(updated);
+          localStorage.setItem('choy_real_bets', JSON.stringify(updated));
+          alert(`Successfully declared winner "${winningVal}" for ${gameId}! Winnings distributed to winning users.`);
+        };
+
+        return (
+          <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/60 rounded-2xl p-5 shadow-xs space-y-6">
+            <div className="flex items-center justify-between border-b border-emerald-200 dark:border-emerald-800 pb-3">
+              <div>
+                <h3 className="text-sm font-black text-emerald-950 dark:text-white flex items-center gap-2">
+                  <Trophy className="w-4 h-4 text-amber-500" />
+                  <span>Admin Real Betting &amp; Winner Monitor</span>
+                </h3>
+                <p className="text-xs text-emerald-700 dark:text-emerald-300 mt-0.5">
+                  Monitor all active player bets and declare official game winners to automatically payout user wallets.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const saved = localStorage.getItem('choy_real_bets');
+                  if (saved) {
+                    try { setBets(JSON.parse(saved)); } catch {}
+                  }
+                }}
+                className="px-3 py-1.5 rounded-xl bg-emerald-100 dark:bg-emerald-800 text-emerald-900 dark:text-emerald-100 text-xs font-bold flex items-center gap-1.5"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                Refresh Bets
+              </button>
+            </div>
+
+            {/* Declare Winner Form */}
+            <div className="p-4 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 space-y-3">
+              <h4 className="text-xs font-black uppercase text-emerald-900 dark:text-emerald-200">Declare Draw / Match Winner</h4>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-300 mb-1">Game / Draw ID</label>
+                  <input
+                    type="text"
+                    value={declareGameId}
+                    onChange={(e) => setDeclareGameId(e.target.value)}
+                    placeholder="e.g. 5:00 PM or lal"
+                    className="w-full p-2.5 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs font-bold text-emerald-950 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-300 mb-1">Winning Combination / Team</label>
+                  <input
+                    type="text"
+                    value={winningSelection}
+                    onChange={(e) => setWinningSelection(e.target.value)}
+                    placeholder="e.g. 7-4-2 or Los Angeles Lakers"
+                    className="w-full p-2.5 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs font-bold text-emerald-950 dark:text-white"
+                  />
+                </div>
+                <div className="flex items-end">
+                  <button
+                    type="button"
+                    onClick={() => handleDeclare('swertres', declareGameId, winningSelection)}
+                    className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs shadow transition"
+                  >
+                    Declare Winner &amp; Pay Out
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* All Bets Table */}
+            <div className="space-y-3">
+              <h4 className="text-xs font-black uppercase text-emerald-900 dark:text-emerald-200">All Placed Bets Ledger ({bets.length})</h4>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300">
+                      <th className="py-2 px-3">User</th>
+                      <th className="py-2 px-3">Game / Draw</th>
+                      <th className="py-2 px-3">Selection</th>
+                      <th className="py-2 px-3">Stake</th>
+                      <th className="py-2 px-3">Potential Win</th>
+                      <th className="py-2 px-3">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-emerald-100 dark:divide-emerald-900/50">
+                    {bets.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="py-6 text-center text-emerald-600 dark:text-emerald-400">No bets placed yet.</td>
+                      </tr>
+                    ) : (
+                      bets.map((b) => (
+                        <tr key={b.id} className="text-emerald-950 dark:text-white">
+                          <td className="py-2.5 px-3 font-bold">{b.userName}</td>
+                          <td className="py-2.5 px-3 font-semibold">{b.gameTitle}</td>
+                          <td className="py-2.5 px-3 font-mono font-bold text-amber-600 dark:text-amber-400">{b.selection}</td>
+                          <td className="py-2.5 px-3">₱{b.stake}</td>
+                          <td className="py-2.5 px-3 font-extrabold text-emerald-600 dark:text-emerald-400">₱{b.potentialWin.toLocaleString()}</td>
+                          <td className="py-2.5 px-3">
+                            <span className={`px-2.5 py-1 rounded-full font-bold text-[10px] ${
+                              b.status === 'Won' ? 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/20' : b.status === 'Pending' ? 'bg-amber-500/10 text-amber-600 border border-amber-500/20' : 'bg-rose-500/10 text-rose-600 border border-rose-500/20'
+                            }`}>
+                              {b.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

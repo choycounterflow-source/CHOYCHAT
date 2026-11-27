@@ -1449,106 +1449,19 @@ export const PublicLandingPortal: React.FC<PublicLandingPortalProps> = ({
                   </button>
                 </form>
               ) : (
-                <>
-                  <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAuthMode('login');
-                        setLoginError('');
-                      }}
-                      className={`py-2 rounded-lg font-semibold flex items-center justify-center gap-1.5 transition ${
-                        authMode === 'login'
-                          ? 'bg-[#0D4F2B] text-white shadow-xs'
-                          : 'text-slate-600 dark:text-slate-300'
-                      }`}
-                    >
-                      <LogIn className="w-3.5 h-3.5" />
-                      <span>Sign In</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAuthMode('register');
-                        setLoginError('');
-                      }}
-                      className={`py-2 rounded-lg font-semibold flex items-center justify-center gap-1.5 transition ${
-                        authMode === 'register'
-                          ? 'bg-[#0D4F2B] text-white shadow-xs'
-                          : 'text-slate-600 dark:text-slate-300'
-                      }`}
-                    >
-                      <UserPlus className="w-3.5 h-3.5" />
-                      <span>Register</span>
-                    </button>
+                <div className="space-y-4">
+                  <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-900 dark:text-emerald-200">
+                    <span className="font-bold">Sign in by creating your account!</span> All profile information, real names, and verification details can be filled up inside your Profile section anytime.
                   </div>
 
-                  {authMode === 'register' ? (
-                    <CustomerRegistrationForm
-                      appName="Choy Chat"
-                      submitting={authSubmitting}
-                      errorMsg={loginError}
-                      onSubmit={onCustomerRegisterSubmit}
-                      onOpenPrivacyPolicy={() => navigateTo('privacy')}
-                    />
-                  ) : (
-                    <form onSubmit={onLoginSubmit} className="space-y-4">
-                      {loginError && (
-                        <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-700 text-xs font-medium text-rose-800 dark:text-rose-200">
-                          {loginError}
-                        </div>
-                      )}
-                      <div>
-                        <label htmlFor="login-phone" className="block text-xs font-semibold text-slate-800 dark:text-slate-200 mb-1">
-                          Cellphone Number
-                        </label>
-                        <input
-                          id="login-phone"
-                          type="tel"
-                          inputMode="tel"
-                          autoComplete="tel"
-                          required
-                          placeholder="09XX XXX XXXX"
-                          value={authPhone}
-                          onChange={(e) => setAuthPhone(e.target.value)}
-                          className="w-full px-3.5 py-2.5 bg-[#FAF9F6] dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                        />
-                      </div>
-                      <div>
-                        <label htmlFor="login-pin" className="block text-xs font-semibold text-slate-800 dark:text-slate-200 mb-1">
-                          Account PIN
-                        </label>
-                        <div className="relative">
-                          <input
-                            id="login-pin"
-                            type={showAuthPin ? 'text' : 'password'}
-                            required
-                            minLength={4}
-                            placeholder="Enter your PIN"
-                            value={authPin}
-                            onChange={(e) => setAuthPin(e.target.value)}
-                            className="w-full px-3.5 py-2.5 pr-10 bg-[#FAF9F6] dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowAuthPin((v) => !v)}
-                            aria-label={showAuthPin ? 'Hide PIN' : 'Show PIN'}
-                            className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-500"
-                          >
-                            {showAuthPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                          </button>
-                        </div>
-                      </div>
-                      <button
-                        type="submit"
-                        disabled={authSubmitting}
-                        className="w-full py-3 rounded-xl bg-[#0D4F2B] hover:bg-[#0A3E22] dark:bg-emerald-600 dark:hover:bg-emerald-500 text-white font-bold text-sm transition disabled:opacity-60"
-                      >
-                        {authSubmitting ? 'Signing in...' : 'Sign In'}
-                      </button>
-                    </form>
-                  )}
-                </>
+                  <CustomerRegistrationForm
+                    appName="Choy Chat"
+                    submitting={authSubmitting}
+                    errorMsg={loginError}
+                    onSubmit={onCustomerRegisterSubmit}
+                    onOpenPrivacyPolicy={() => navigateTo('privacy')}
+                  />
+                </div>
               )}
 
               <div className="pt-4 border-t border-slate-200 dark:border-slate-800">
