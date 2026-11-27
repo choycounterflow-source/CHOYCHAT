@@ -1869,7 +1869,7 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
     const user = req.choyUser!;
     touchUserPresence(user.name);
     const isAdmin = user.role === 'admin';
-    const [posts, allMessages, allUsers, knowledge, leaderboard, emojiLinks, newsfeedConfig, allAnnouncements, rawChatGroups, userDashboard, userDashboardMeta] = await Promise.all([
+    const [posts, allMessages, allUsers, knowledge, leaderboard, emojiLinks, newsfeedConfig, allAnnouncements, rawChatGroups, userDashboard, userDashboardMeta, choyProgramsConfig] = await Promise.all([
       store.listPosts(),
       store.listMessages(),
       store.listUsers(isAdmin),
@@ -1881,6 +1881,7 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
       store.listChatGroupsForUser(user.id, isAdmin),
       store.getUserDashboard(user.id),
       store.listUserDashboardMeta(),
+      store.getChoyProgramsConfig(),
     ]);
     const activeEmojiLink = emojiLinks.find((l) => l.pinnedToAppIcon) || emojiLinks[0] || null;
 
@@ -1970,6 +1971,7 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
       emojiLinks,
       activeEmojiLink,
       newsfeedConfig,
+      choyProgramsConfig,
       announcements: visibleAnnouncements,
       onlineUsers: getOnlineUserNames(),
       userDashboard,
@@ -2544,6 +2546,10 @@ app.post('/api/choy/user-dashboard/action', requireAuth, async (req: AuthedReque
         }
         dash.walletBalance = Math.round((dash.walletBalance - amount) * 100) / 100;
       } else {
+        const programsCfg = await store.getChoyProgramsConfig();
+        if (!programsCfg.choyWallet.allowTransfers && user.role !== 'admin') {
+          return res.status(403).json({ error: 'CHOY Coin transfers are currently paused by Admin.' });
+        }
         if (dash.choyWalletBalance < amount) {
           return res.status(400).json({ error: 'Insufficient Choy Wallet balance.' });
         }
@@ -2580,14 +2586,25 @@ app.post('/api/choy/user-dashboard/action', requireAuth, async (req: AuthedReque
     }
 
     if (action === 'choy_wallet_convert') {
+      const programsCfg = await store.getChoyProgramsConfig();
+      if (!programsCfg.choyWallet.allowConvert && user.role !== 'admin') {
+        return res.status(403).json({ error: 'Wallet-to-CHOY conversion is currently paused by Admin.' });
+      }
       const phpAmount = Math.round(Number(req.body?.amount) * 100) / 100;
       if (!Number.isFinite(phpAmount) || phpAmount <= 0) {
         return res.status(400).json({ error: 'Enter a valid Wallet amount to convert.' });
       }
+      if (phpAmount < programsCfg.choyWallet.minConvertPhp) {
+        return res.status(400).json({ error: `Minimum conversion amount is ₱${programsCfg.choyWallet.minConvertPhp}.` });
+      }
+      if (phpAmount > programsCfg.choyWallet.maxConvertPhp) {
+        return res.status(400).json({ error: `Maximum conversion amount is ₱${programsCfg.choyWallet.maxConvertPhp}.` });
+      }
       if (dash.walletBalance < phpAmount) {
         return res.status(400).json({ error: 'Insufficient Cash Wallet balance.' });
       }
-      const choyCoins = Math.round(phpAmount * 2 * 100) / 100;
+      const rate = programsCfg.choyWallet.conversionRate;
+      const choyCoins = Math.round(phpAmount * rate * 100) / 100;
       dash.walletBalance = Math.round((dash.walletBalance - phpAmount) * 100) / 100;
       dash.choyWalletBalance = Math.round((dash.choyWalletBalance + choyCoins) * 100) / 100;
       dash.transactions = [
@@ -2596,7 +2613,7 @@ app.post('/api/choy/user-dashboard/action', requireAuth, async (req: AuthedReque
           walletType: 'choy_wallet' as const,
           kind: 'convert' as const,
           amount: choyCoins,
-          note: `Converted ₱${phpAmount.toFixed(2)} → +${choyCoins} CHOY`,
+          note: `Converted ₱${phpAmount.toFixed(2)} → +${choyCoins} CHOY (Rate ₱1=${rate})`,
           createdAt: now,
         },
         {
@@ -2613,16 +2630,62 @@ app.post('/api/choy/user-dashboard/action', requireAuth, async (req: AuthedReque
       return res.json({ ok: true, userDashboard: saved });
     }
 
+    const resolvePromoDiscount = (
+      promos: Array<{
+        code: string;
+        discountType: 'percent' | 'fixed';
+        discountValue: number;
+        appliesTo: 'all' | 'marketplace' | 'subscription';
+        minSpend: number;
+        active: boolean;
+        expiresAt?: string;
+      }>,
+      rawCode: unknown,
+      scope: 'marketplace' | 'subscription',
+      baseAmount: number
+    ): { code?: string; discount: number; finalAmount: number; error?: string } => {
+      const code = typeof rawCode === 'string' ? rawCode.trim().toUpperCase() : '';
+      if (!code) return { discount: 0, finalAmount: baseAmount };
+      const promo = promos.find((p) => p.code.toUpperCase() === code && p.active);
+      if (!promo) return { discount: 0, finalAmount: baseAmount, error: `Promo code "${code}" is invalid or inactive.` };
+      if (promo.appliesTo !== 'all' && promo.appliesTo !== scope) {
+        return { discount: 0, finalAmount: baseAmount, error: `Promo code "${code}" does not apply to ${scope}.` };
+      }
+      if (promo.expiresAt) {
+        const expMs = Date.parse(promo.expiresAt);
+        if (Number.isFinite(expMs) && expMs < Date.now()) {
+          return { discount: 0, finalAmount: baseAmount, error: `Promo code "${code}" has expired.` };
+        }
+      }
+      if (baseAmount < promo.minSpend) {
+        return { discount: 0, finalAmount: baseAmount, error: `Promo "${code}" requires minimum spend of ${promo.minSpend}.` };
+      }
+      const rawDiscount =
+        promo.discountType === 'percent'
+          ? (baseAmount * promo.discountValue) / 100
+          : promo.discountValue;
+      const discount = Math.min(baseAmount, Math.max(0, Math.round(rawDiscount * 100) / 100));
+      const finalAmount = Math.max(0, Math.round((baseAmount - discount) * 100) / 100);
+      return { code: promo.code, discount, finalAmount };
+    };
+
     if (action === 'activate_choy_pro') {
+      const programsCfg = await store.getChoyProgramsConfig();
+      if (!programsCfg.choyPro.enabled && user.role !== 'admin') {
+        return res.status(403).json({ error: 'Choy Pro upgrades are currently paused by Admin.' });
+      }
       const paymentMethod: 'wallet' | 'choy_wallet' =
         req.body?.paymentMethod === 'choy_wallet' ? 'choy_wallet' : 'wallet';
       if (dash.choyProActive) {
         return res.json({ ok: true, userDashboard: dash });
       }
       if (paymentMethod === 'wallet') {
-        const fee = 199;
+        const baseFee = programsCfg.choyPro.monthlyPhp;
+        const promoRes = resolvePromoDiscount(programsCfg.promos, req.body?.promoCode, 'subscription', baseFee);
+        if (promoRes.error) return res.status(400).json({ error: promoRes.error });
+        const fee = promoRes.finalAmount;
         if (dash.walletBalance < fee) {
-          return res.status(400).json({ error: 'Need ₱199 in Cash Wallet (or pay with 250 CHOY).' });
+          return res.status(400).json({ error: `Need ₱${fee.toFixed(2)} in Cash Wallet (or pay with ${programsCfg.choyPro.monthlyChoy} CHOY).` });
         }
         dash.walletBalance = Math.round((dash.walletBalance - fee) * 100) / 100;
         dash.transactions = prependTx(dash.transactions, {
@@ -2630,13 +2693,18 @@ app.post('/api/choy/user-dashboard/action', requireAuth, async (req: AuthedReque
           walletType: 'wallet',
           kind: 'choy_pro',
           amount: -fee,
-          note: 'Activated Choy Pro Membership',
+          note: promoRes.code
+            ? `Activated Choy Pro Membership (Promo ${promoRes.code}: -₱${promoRes.discount.toFixed(2)})`
+            : 'Activated Choy Pro Membership',
           createdAt: now,
         });
       } else {
-        const fee = 250;
+        const baseFee = programsCfg.choyPro.monthlyChoy;
+        const promoRes = resolvePromoDiscount(programsCfg.promos, req.body?.promoCode, 'subscription', baseFee);
+        if (promoRes.error) return res.status(400).json({ error: promoRes.error });
+        const fee = promoRes.finalAmount;
         if (dash.choyWalletBalance < fee) {
-          return res.status(400).json({ error: 'Need 250 CHOY in Choy Wallet (or pay ₱199 via Wallet).' });
+          return res.status(400).json({ error: `Need ${fee} CHOY in Choy Wallet (or pay ₱${programsCfg.choyPro.monthlyPhp} via Wallet).` });
         }
         dash.choyWalletBalance = Math.round((dash.choyWalletBalance - fee) * 100) / 100;
         dash.transactions = prependTx(dash.transactions, {
@@ -2644,7 +2712,9 @@ app.post('/api/choy/user-dashboard/action', requireAuth, async (req: AuthedReque
           walletType: 'choy_wallet',
           kind: 'choy_pro',
           amount: -fee,
-          note: 'Activated Choy Pro with CHOY Coins',
+          note: promoRes.code
+            ? `Activated Choy Pro with CHOY Coins (Promo ${promoRes.code}: -${promoRes.discount} CHOY)`
+            : 'Activated Choy Pro with CHOY Coins',
           createdAt: now,
         });
       }
@@ -2673,6 +2743,7 @@ app.post('/api/choy/user-dashboard/action', requireAuth, async (req: AuthedReque
         const saved = await store.saveUserDashboard(dash);
         return res.json({ ok: true, userDashboard: saved });
       }
+      const programsCfg = await store.getChoyProgramsConfig();
       type SubPlan = 'free' | 'choy_pro_monthly' | 'choy_pro_annual' | 'vip_supporter';
       const rawPlan = req.body?.plan;
       const plan: SubPlan =
@@ -2681,41 +2752,54 @@ app.post('/api/choy/user-dashboard/action', requireAuth, async (req: AuthedReque
         rawPlan === 'vip_supporter'
           ? rawPlan
           : 'free';
+      if (plan !== 'free' && !programsCfg.choyPro.enabled && user.role !== 'admin') {
+        return res.status(403).json({ error: 'Paid subscriptions are currently paused by Admin.' });
+      }
       const paymentMethod: 'wallet' | 'choy_wallet' =
         req.body?.paymentMethod === 'choy_wallet' ? 'choy_wallet' : 'wallet';
       const planTable: Record<SubPlan, { php: number; choy: number; days: number; label: string }> = {
         free: { php: 0, choy: 0, days: 0, label: 'Free Starter Plan' },
-        choy_pro_monthly: { php: 199, choy: 250, days: 30, label: 'Choy Pro Monthly' },
-        choy_pro_annual: { php: 1499, choy: 1800, days: 365, label: 'Choy Pro Annual' },
-        vip_supporter: { php: 499, choy: 600, days: 30, label: 'VIP Supporter Pass' },
+        choy_pro_monthly: { php: programsCfg.choyPro.monthlyPhp, choy: programsCfg.choyPro.monthlyChoy, days: 30, label: 'Choy Pro Monthly' },
+        choy_pro_annual: { php: programsCfg.choyPro.annualPhp, choy: programsCfg.choyPro.annualChoy, days: 365, label: 'Choy Pro Annual' },
+        vip_supporter: { php: programsCfg.choyPro.vipPhp, choy: programsCfg.choyPro.vipChoy, days: 30, label: 'VIP Supporter Pass' },
       };
       const planMeta = planTable[plan];
 
       if (plan !== 'free') {
         if (paymentMethod === 'wallet') {
-          if (dash.walletBalance < planMeta.php) {
-            return res.status(400).json({ error: `Need ₱${planMeta.php} in Cash Wallet for ${planMeta.label}.` });
+          const promoRes = resolvePromoDiscount(programsCfg.promos, req.body?.promoCode, 'subscription', planMeta.php);
+          if (promoRes.error) return res.status(400).json({ error: promoRes.error });
+          const chargePhp = promoRes.finalAmount;
+          if (dash.walletBalance < chargePhp) {
+            return res.status(400).json({ error: `Need ₱${chargePhp.toFixed(2)} in Cash Wallet for ${planMeta.label}.` });
           }
-          dash.walletBalance = Math.round((dash.walletBalance - planMeta.php) * 100) / 100;
+          dash.walletBalance = Math.round((dash.walletBalance - chargePhp) * 100) / 100;
           dash.transactions = prependTx(dash.transactions, {
             id: makeTxId(),
             walletType: 'wallet',
             kind: 'subscription',
-            amount: -planMeta.php,
-            note: `Subscribed: ${planMeta.label}`,
+            amount: -chargePhp,
+            note: promoRes.code
+              ? `Subscribed: ${planMeta.label} (Promo ${promoRes.code}: -₱${promoRes.discount.toFixed(2)})`
+              : `Subscribed: ${planMeta.label}`,
             createdAt: now,
           });
         } else {
-          if (dash.choyWalletBalance < planMeta.choy) {
-            return res.status(400).json({ error: `Need ${planMeta.choy} CHOY in Choy Wallet for ${planMeta.label}.` });
+          const promoRes = resolvePromoDiscount(programsCfg.promos, req.body?.promoCode, 'subscription', planMeta.choy);
+          if (promoRes.error) return res.status(400).json({ error: promoRes.error });
+          const chargeChoy = promoRes.finalAmount;
+          if (dash.choyWalletBalance < chargeChoy) {
+            return res.status(400).json({ error: `Need ${chargeChoy} CHOY in Choy Wallet for ${planMeta.label}.` });
           }
-          dash.choyWalletBalance = Math.round((dash.choyWalletBalance - planMeta.choy) * 100) / 100;
+          dash.choyWalletBalance = Math.round((dash.choyWalletBalance - chargeChoy) * 100) / 100;
           dash.transactions = prependTx(dash.transactions, {
             id: makeTxId(),
             walletType: 'choy_wallet',
             kind: 'subscription',
-            amount: -planMeta.choy,
-            note: `Subscribed: ${planMeta.label}`,
+            amount: -chargeChoy,
+            note: promoRes.code
+              ? `Subscribed: ${planMeta.label} (Promo ${promoRes.code}: -${promoRes.discount} CHOY)`
+              : `Subscribed: ${planMeta.label}`,
             createdAt: now,
           });
         }
@@ -2754,6 +2838,86 @@ app.post('/api/choy/user-dashboard/action', requireAuth, async (req: AuthedReque
     return res.status(400).json({ error: 'Unknown dashboard action.' });
   } catch (err: unknown) {
     return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update user dashboard' });
+  }
+});
+
+app.get('/api/choy/programs-config', requireAuth, async (_req: AuthedRequest, res: Response) => {
+  try {
+    const config = await store.getChoyProgramsConfig();
+    return res.json({ ok: true, choyProgramsConfig: config });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load Choy Programs setup.' });
+  }
+});
+
+app.put('/api/choy/programs-config', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const saved = await store.saveChoyProgramsConfig(req.body || {});
+    broadcastSync('settings');
+    return res.json({ ok: true, choyProgramsConfig: saved });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save Choy Programs setup.' });
+  }
+});
+
+app.post('/api/choy/admin/wallet-topup', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const adminUser = req.choyUser!;
+    const targetUserId = typeof req.body?.targetUserId === 'string' ? req.body.targetUserId.trim() : '';
+    const walletType: 'wallet' | 'choy_wallet' = req.body?.walletType === 'wallet' ? 'wallet' : 'choy_wallet';
+    const mode: 'credit' | 'debit' = req.body?.mode === 'debit' ? 'debit' : 'credit';
+    const amount = Math.round(Number(req.body?.amount) * 100) / 100;
+    const note = typeof req.body?.note === 'string' ? req.body.note.trim().slice(0, 140) : '';
+
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'Please select a member.' });
+    }
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 1000000) {
+      return res.status(400).json({ error: 'Enter a valid amount between 1 and 1,000,000.' });
+    }
+
+    const allUsers = await store.listUsers(true);
+    const targetUser = allUsers.find((u) => u.id === targetUserId);
+    if (!targetUser) {
+      return res.status(404).json({ error: 'Member not found.' });
+    }
+
+    const targetDash = await store.getUserDashboard(targetUser.id);
+    const delta = mode === 'debit' ? -amount : amount;
+    if (walletType === 'wallet') {
+      if (targetDash.walletBalance + delta < 0) {
+        return res.status(400).json({ error: `Cannot debit ₱${amount.toFixed(2)} — member only has ₱${targetDash.walletBalance.toFixed(2)}.` });
+      }
+      targetDash.walletBalance = Math.round((targetDash.walletBalance + delta) * 100) / 100;
+    } else {
+      if (targetDash.choyWalletBalance + delta < 0) {
+        return res.status(400).json({ error: `Cannot debit ${amount} CHOY — member only has ${targetDash.choyWalletBalance} CHOY.` });
+      }
+      targetDash.choyWalletBalance = Math.round((targetDash.choyWalletBalance + delta) * 100) / 100;
+    }
+
+    const now = new Date().toISOString();
+    const tx: WalletTxItem = {
+      id: `tx_adm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      walletType,
+      kind: mode === 'debit' ? 'withdraw' : 'topup',
+      amount: delta,
+      note: note || (mode === 'debit' ? `Admin adjustment by ${adminUser.name}` : `Admin verified top-up by ${adminUser.name}`),
+      counterparty: adminUser.name,
+      createdAt: now,
+    };
+    targetDash.transactions = [tx, ...targetDash.transactions].slice(0, 60);
+    const savedTarget = await store.saveUserDashboard(targetDash);
+    broadcastSync('users');
+
+    return res.json({
+      ok: true,
+      targetUserName: targetUser.name,
+      targetDashboard: savedTarget,
+      ...(targetUser.id === adminUser.id ? { userDashboard: savedTarget } : {}),
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to adjust member wallet.' });
   }
 });
 
@@ -5400,7 +5564,32 @@ app.post('/api/marketplace/checkout', requireAuth, async (req: AuthedRequest, re
 
     const deliveryDistanceKm = Math.max(1, Number(req.body?.deliveryDistanceKm) || 2);
     const deliveryFee = calcMarketplaceDeliveryFee(deliveryDistanceKm);
-    const totalCost = Math.round((subtotalCost + deliveryFee) * 100) / 100;
+    let promoDiscount = 0;
+    let appliedPromoCode = '';
+    const rawPromo = typeof req.body?.promoCode === 'string' ? req.body.promoCode.trim().toUpperCase() : '';
+    if (rawPromo) {
+      const programsCfg = await store.getChoyProgramsConfig();
+      const promo = programsCfg.promos.find((p) => p.code.toUpperCase() === rawPromo && p.active);
+      if (!promo) {
+        return res.status(400).json({ error: `Promo code "${rawPromo}" is invalid or inactive.` });
+      }
+      if (promo.appliesTo !== 'all' && promo.appliesTo !== 'marketplace') {
+        return res.status(400).json({ error: `Promo code "${rawPromo}" does not apply to Marketplace orders.` });
+      }
+      if (promo.expiresAt) {
+        const expMs = Date.parse(promo.expiresAt);
+        if (Number.isFinite(expMs) && expMs < Date.now()) {
+          return res.status(400).json({ error: `Promo code "${rawPromo}" has expired.` });
+        }
+      }
+      if (subtotalCost < promo.minSpend) {
+        return res.status(400).json({ error: `Promo "${rawPromo}" requires a minimum items subtotal of ₱${promo.minSpend}.` });
+      }
+      const rawDisc = promo.discountType === 'percent' ? (subtotalCost * promo.discountValue) / 100 : promo.discountValue;
+      promoDiscount = Math.min(subtotalCost, Math.max(0, Math.round(rawDisc * 100) / 100));
+      appliedPromoCode = promo.code;
+    }
+    const totalCost = Math.max(0, Math.round((subtotalCost - promoDiscount + deliveryFee) * 100) / 100);
 
     const dash = await store.getUserDashboard(user.id);
     const makeTxId = () => `tx_order_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
@@ -5416,7 +5605,7 @@ app.post('/api/marketplace/checkout', requireAuth, async (req: AuthedRequest, re
         walletType: 'wallet',
         kind: 'topup',
         amount: -totalCost,
-        note: `Checkout ${orderItems.length} item(s) + ₱${deliveryFee} delivery (${deliveryDistanceKm}km)`,
+        note: `Checkout ${orderItems.length} item(s) + ₱${deliveryFee} delivery (${deliveryDistanceKm}km)${appliedPromoCode ? ` · Promo ${appliedPromoCode} (-₱${promoDiscount.toFixed(2)})` : ''}`,
         createdAt: now,
       });
     } else {
@@ -5429,7 +5618,7 @@ app.post('/api/marketplace/checkout', requireAuth, async (req: AuthedRequest, re
         walletType: 'choy_wallet',
         kind: 'reward',
         amount: -totalCost,
-        note: `Checkout ${orderItems.length} item(s) + ₱${deliveryFee} delivery with CHOY Coins`,
+        note: `Checkout ${orderItems.length} item(s) + ₱${deliveryFee} delivery with CHOY Coins${appliedPromoCode ? ` · Promo ${appliedPromoCode} (-${promoDiscount.toFixed(2)})` : ''}`,
         createdAt: now,
       });
     }
@@ -5514,7 +5703,31 @@ app.post('/api/marketplace/items', requireAuth, async (req: AuthedRequest, res: 
 
       const deliveryDistanceKm = Math.max(1, Number(req.body?.deliveryDistanceKm) || 2);
       const deliveryFee = calcMarketplaceDeliveryFee(deliveryDistanceKm);
-      const totalCost = Math.round((targetItem.price * quantity + deliveryFee) * 100) / 100;
+      const itemSubtotal = Math.round(targetItem.price * quantity * 100) / 100;
+      let promoDiscount = 0;
+      const rawPromo = typeof req.body?.promoCode === 'string' ? req.body.promoCode.trim().toUpperCase() : '';
+      if (rawPromo) {
+        const programsCfg = await store.getChoyProgramsConfig();
+        const promo = programsCfg.promos.find((p) => p.code.toUpperCase() === rawPromo && p.active);
+        if (!promo) {
+          return res.status(400).json({ error: `Promo code "${rawPromo}" is invalid or inactive.` });
+        }
+        if (promo.appliesTo !== 'all' && promo.appliesTo !== 'marketplace') {
+          return res.status(400).json({ error: `Promo code "${rawPromo}" does not apply to Marketplace orders.` });
+        }
+        if (promo.expiresAt) {
+          const expMs = Date.parse(promo.expiresAt);
+          if (Number.isFinite(expMs) && expMs < Date.now()) {
+            return res.status(400).json({ error: `Promo code "${rawPromo}" has expired.` });
+          }
+        }
+        if (itemSubtotal < promo.minSpend) {
+          return res.status(400).json({ error: `Promo "${rawPromo}" requires a minimum subtotal of ₱${promo.minSpend}.` });
+        }
+        const rawDisc = promo.discountType === 'percent' ? (itemSubtotal * promo.discountValue) / 100 : promo.discountValue;
+        promoDiscount = Math.min(itemSubtotal, Math.max(0, Math.round(rawDisc * 100) / 100));
+      }
+      const totalCost = Math.max(0, Math.round((itemSubtotal - promoDiscount + deliveryFee) * 100) / 100);
       const dash = await store.getUserDashboard(user.id);
 
       const makeTxId = () => `tx_buy_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;

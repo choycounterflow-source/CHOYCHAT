@@ -229,6 +229,43 @@ export interface StoredNewsfeedConfig {
   feedCTitle: string;
 }
 
+export interface ChoyPromoItem {
+  id: string;
+  code: string;
+  title: string;
+  description: string;
+  discountType: 'percent' | 'fixed';
+  discountValue: number;
+  appliesTo: 'all' | 'marketplace' | 'subscription';
+  minSpend: number;
+  active: boolean;
+  expiresAt?: string;
+}
+
+export interface StoredChoyProgramsConfig {
+  choyPro: {
+    enabled: boolean;
+    monthlyPhp: number;
+    monthlyChoy: number;
+    annualPhp: number;
+    annualChoy: number;
+    vipPhp: number;
+    vipChoy: number;
+    tagline: string;
+    perks: string[];
+  };
+  choyWallet: {
+    conversionRate: number;
+    minConvertPhp: number;
+    maxConvertPhp: number;
+    allowConvert: boolean;
+    allowTransfers: boolean;
+    topUpInstructions: string;
+  };
+  promos: ChoyPromoItem[];
+  updatedAt: string;
+}
+
 export interface WalletTxItem {
   id: string;
   walletType: 'wallet' | 'choy_wallet';
@@ -418,6 +455,116 @@ const DEFAULT_NEWSFEED_CONFIG: StoredNewsfeedConfig = {
   feedBTitle: 'Newsfeed B',
   feedCTitle: 'Newsfeed C',
 };
+export const DEFAULT_CHOY_PROGRAMS_CONFIG: StoredChoyProgramsConfig = {
+  choyPro: {
+    enabled: true,
+    monthlyPhp: 199,
+    monthlyChoy: 250,
+    annualPhp: 1499,
+    annualChoy: 1800,
+    vipPhp: 499,
+    vipChoy: 600,
+    tagline: 'Unlock Pro member badge, priority features & exclusive Choy perks',
+    perks: [
+      'Verified Choy Pro Crown Badge beside your Created Name (Public Show)',
+      'Priority Choy AI Assistant & GitHub Intelligence access',
+      'HD Video Calls with Custom Video Backgrounds & Screen Share',
+      'Priority Groupchat & Newsfeed Spotlight highlights',
+      'Exclusive Choy Promo discounts in Food Store & Marketplace',
+    ],
+  },
+  choyWallet: {
+    conversionRate: 2,
+    minConvertPhp: 10,
+    maxConvertPhp: 50000,
+    allowConvert: true,
+    allowTransfers: true,
+    topUpInstructions: 'Top up your Cash Wallet or message Admin for verified CHOY Coin top-ups.',
+  },
+  promos: [],
+  updatedAt: new Date(0).toISOString(),
+};
+
+function sanitizeChoyProgramsConfig(raw: unknown): StoredChoyProgramsConfig {
+  const input = (raw && typeof raw === 'object' ? raw : {}) as Partial<StoredChoyProgramsConfig>;
+  const rawPro = (input.choyPro && typeof input.choyPro === 'object' ? input.choyPro : {}) as Partial<StoredChoyProgramsConfig['choyPro']>;
+  const rawWallet = (input.choyWallet && typeof input.choyWallet === 'object' ? input.choyWallet : {}) as Partial<StoredChoyProgramsConfig['choyWallet']>;
+
+  const perksList = Array.isArray(rawPro.perks)
+    ? rawPro.perks
+        .map((p) => (typeof p === 'string' ? p.trim().slice(0, 160) : ''))
+        .filter(Boolean)
+        .slice(0, 12)
+    : DEFAULT_CHOY_PROGRAMS_CONFIG.choyPro.perks;
+
+  const rawPromos = Array.isArray(input.promos) ? input.promos : [];
+  const promos: ChoyPromoItem[] = [];
+  const seenCodes = new Set<string>();
+  for (const item of rawPromos.slice(0, 40)) {
+    if (!item || typeof item !== 'object') continue;
+    const p = item as Partial<ChoyPromoItem>;
+    const code = typeof p.code === 'string' ? p.code.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 24) : '';
+    if (!code || seenCodes.has(code)) continue;
+    seenCodes.add(code);
+    const discountType = p.discountType === 'fixed' ? 'fixed' : 'percent';
+    const maxVal = discountType === 'percent' ? 95 : 100000;
+    const discountValue = clampNum(p.discountValue, 1, maxVal);
+    const appliesTo =
+      p.appliesTo === 'marketplace' || p.appliesTo === 'subscription' ? p.appliesTo : 'all';
+    const expiresAt =
+      typeof p.expiresAt === 'string' && p.expiresAt.trim()
+        ? p.expiresAt.trim().slice(0, 32)
+        : undefined;
+    promos.push({
+      id: typeof p.id === 'string' && p.id.trim() ? p.id.trim().slice(0, 48) : `promo_${code.toLowerCase()}`,
+      code,
+      title: typeof p.title === 'string' && p.title.trim() ? p.title.trim().slice(0, 80) : code,
+      description: typeof p.description === 'string' ? p.description.trim().slice(0, 200) : '',
+      discountType,
+      discountValue,
+      appliesTo,
+      minSpend: clampNum(p.minSpend, 0, 1000000),
+      active: p.active !== false,
+      expiresAt,
+    });
+  }
+
+  const minConvertPhp = clampNum(rawWallet.minConvertPhp ?? DEFAULT_CHOY_PROGRAMS_CONFIG.choyWallet.minConvertPhp, 1, 100000);
+  const maxConvertPhp = Math.max(
+    minConvertPhp,
+    clampNum(rawWallet.maxConvertPhp ?? DEFAULT_CHOY_PROGRAMS_CONFIG.choyWallet.maxConvertPhp, 1, 1000000)
+  );
+
+  return {
+    choyPro: {
+      enabled: rawPro.enabled !== false,
+      monthlyPhp: clampNum(rawPro.monthlyPhp ?? DEFAULT_CHOY_PROGRAMS_CONFIG.choyPro.monthlyPhp, 1, 100000),
+      monthlyChoy: clampNum(rawPro.monthlyChoy ?? DEFAULT_CHOY_PROGRAMS_CONFIG.choyPro.monthlyChoy, 1, 1000000),
+      annualPhp: clampNum(rawPro.annualPhp ?? DEFAULT_CHOY_PROGRAMS_CONFIG.choyPro.annualPhp, 1, 500000),
+      annualChoy: clampNum(rawPro.annualChoy ?? DEFAULT_CHOY_PROGRAMS_CONFIG.choyPro.annualChoy, 1, 5000000),
+      vipPhp: clampNum(rawPro.vipPhp ?? DEFAULT_CHOY_PROGRAMS_CONFIG.choyPro.vipPhp, 1, 500000),
+      vipChoy: clampNum(rawPro.vipChoy ?? DEFAULT_CHOY_PROGRAMS_CONFIG.choyPro.vipChoy, 1, 5000000),
+      tagline:
+        typeof rawPro.tagline === 'string' && rawPro.tagline.trim()
+          ? rawPro.tagline.trim().slice(0, 160)
+          : DEFAULT_CHOY_PROGRAMS_CONFIG.choyPro.tagline,
+      perks: perksList.length > 0 ? perksList : DEFAULT_CHOY_PROGRAMS_CONFIG.choyPro.perks,
+    },
+    choyWallet: {
+      conversionRate: clampNum(rawWallet.conversionRate ?? DEFAULT_CHOY_PROGRAMS_CONFIG.choyWallet.conversionRate, 0.1, 1000),
+      minConvertPhp,
+      maxConvertPhp,
+      allowConvert: rawWallet.allowConvert !== false,
+      allowTransfers: rawWallet.allowTransfers !== false,
+      topUpInstructions:
+        typeof rawWallet.topUpInstructions === 'string' && rawWallet.topUpInstructions.trim()
+          ? rawWallet.topUpInstructions.trim().slice(0, 300)
+          : DEFAULT_CHOY_PROGRAMS_CONFIG.choyWallet.topUpInstructions,
+    },
+    promos,
+    updatedAt: typeof input.updatedAt === 'string' ? input.updatedAt : new Date().toISOString(),
+  };
+}
 const DEFAULT_SETTINGS: StoredPricesSettings = {
   fiveH: 50,
   bulig: 100,
@@ -624,6 +771,7 @@ export class ChoyStore {
   private memKnowledge: StoredKnowledgeQA[] = [];
   private memSettings: StoredPricesSettings = { ...DEFAULT_SETTINGS };
   private memNewsfeedConfig: StoredNewsfeedConfig = { ...DEFAULT_NEWSFEED_CONFIG };
+  private memChoyProgramsConfig: StoredChoyProgramsConfig = sanitizeChoyProgramsConfig(DEFAULT_CHOY_PROGRAMS_CONFIG);
   private memPushSubs: StoredPushSubscription[] = [];
   private memVapidKeys: VapidKeyPair | null = null;
   private memLocations: Array<{
@@ -822,6 +970,9 @@ export class ChoyStore {
           ...(data.newsfeedConfig as Partial<StoredNewsfeedConfig>),
         };
       }
+      if (data.choyProgramsConfig && typeof data.choyProgramsConfig === 'object') {
+        this.memChoyProgramsConfig = sanitizeChoyProgramsConfig(data.choyProgramsConfig);
+      }
       if (Array.isArray(data.pushSubs)) this.memPushSubs = data.pushSubs as StoredPushSubscription[];
       if (data.vapidKeys && typeof data.vapidKeys === 'object') {
         this.memVapidKeys = data.vapidKeys as VapidKeyPair;
@@ -882,6 +1033,7 @@ export class ChoyStore {
           knowledge: this.memKnowledge,
           settings: this.memSettings,
           newsfeedConfig: this.memNewsfeedConfig,
+          choyProgramsConfig: this.memChoyProgramsConfig,
           pushSubs: this.memPushSubs,
           vapidKeys: this.memVapidKeys,
           locations: this.memLocations,
@@ -2642,6 +2794,43 @@ export class ChoyStore {
       await this.persistMemory();
     }
     return clean;
+  }
+
+  public async getChoyProgramsConfig(): Promise<StoredChoyProgramsConfig> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT data FROM app_settings WHERE id = $1 LIMIT 1', ['choy_programs_config']);
+      if (res.rowCount && res.rows[0]?.data) {
+        return sanitizeChoyProgramsConfig(res.rows[0].data);
+      }
+      return sanitizeChoyProgramsConfig(DEFAULT_CHOY_PROGRAMS_CONFIG);
+    }
+    return sanitizeChoyProgramsConfig(this.memChoyProgramsConfig);
+  }
+
+  public async saveChoyProgramsConfig(next: Partial<StoredChoyProgramsConfig>): Promise<StoredChoyProgramsConfig> {
+    await this.ready();
+    const current = await this.getChoyProgramsConfig();
+    const merged: StoredChoyProgramsConfig = sanitizeChoyProgramsConfig({
+      ...current,
+      ...next,
+      choyPro: { ...current.choyPro, ...(next.choyPro || {}) },
+      choyWallet: { ...current.choyWallet, ...(next.choyWallet || {}) },
+      promos: Array.isArray(next.promos) ? next.promos : current.promos,
+      updatedAt: new Date().toISOString(),
+    });
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_settings (id, data, updated_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        ['choy_programs_config', JSON.stringify(merged)]
+      );
+    } else {
+      this.memChoyProgramsConfig = merged;
+      await this.persistMemory();
+    }
+    return merged;
   }
 
   // ---- WEB PUSH VAPID KEYS & SUBSCRIPTIONS ----

@@ -48,6 +48,7 @@ import {
   Truck,
   MapPin,
   Phone,
+  Settings2,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -59,6 +60,11 @@ import {
   CartesianGrid,
 } from 'recharts';
 import type { ChatGroupItem, ActiveGroupCallItem } from './GroupChatModals';
+import {
+  DEFAULT_CLIENT_CHOY_PROGRAMS_CONFIG,
+  type AdminChoySetupTab,
+  type ChoyProgramsConfig,
+} from './AdminChoySetupPanel';
 
 export interface UserWalletTx {
   id: string;
@@ -171,6 +177,8 @@ interface UserDashboardSectionProps {
   onJoinOrStartGroupCall: (groupId: string) => void;
   onOpenPrivacyModal?: () => void;
   onDashboardUpdated?: (next: UserDashboardData) => void;
+  choyProgramsConfig?: ChoyProgramsConfig;
+  onOpenAdminChoySetup?: (tab: AdminChoySetupTab) => void;
 }
 
 export function buildAdminProfileCopyText(
@@ -293,6 +301,8 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
   onOpenGroupMembers,
   onJoinOrStartGroupCall,
   onDashboardUpdated,
+  choyProgramsConfig,
+  onOpenAdminChoySetup,
 }) => {
   const [nameInput, setNameInput] = useState(currentUser.name);
   const [nameSaving, setNameSaving] = useState(false);
@@ -334,6 +344,12 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
   const [uploadingItemImage, setUploadingItemImage] = React.useState(false);
   const [checkoutError, setCheckoutError] = React.useState<string | null>(null);
   const [updatingOrderId, setUpdatingOrderId] = React.useState<string | null>(null);
+  const [promoCodeInput, setPromoCodeInput] = React.useState('');
+
+  const programsCfg = choyProgramsConfig || DEFAULT_CLIENT_CHOY_PROGRAMS_CONFIG;
+  const activePromos = programsCfg.promos.filter((p) => p.active);
+  const subscriptionPromos = activePromos.filter((p) => p.appliesTo === 'all' || p.appliesTo === 'subscription');
+  const marketplacePromos = activePromos.filter((p) => p.appliesTo === 'all' || p.appliesTo === 'marketplace');
 
   const deliveryFee = deliveryDistanceKm <= 2 ? 25 : deliveryDistanceKm <= 5 ? 40 : deliveryDistanceKm <= 8 ? 65 : 90;
   const deliveryDistanceLabel =
@@ -402,6 +418,7 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
           customerPhone: customerPhone.trim(),
           deliveryAddress: deliveryAddress.trim(),
           deliveryNotes: deliveryNotes.trim(),
+          promoCode: promoCodeInput.trim() || undefined,
         }),
       });
       const data = await res.json();
@@ -602,6 +619,7 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
           customerPhone: customerPhone.trim(),
           deliveryAddress: deliveryAddress.trim(),
           deliveryNotes: deliveryNotes.trim(),
+          promoCode: promoCodeInput.trim() || undefined,
         }),
       });
       const data = await res.json();
@@ -843,6 +861,16 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                 {copiedSummary ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                 <span>{copiedSummary ? 'Admin Copy Copied!' : 'Profile (Admin Copy)'}</span>
               </button>
+              {currentUser.role === 'admin' && onOpenAdminChoySetup && (
+                <button
+                  type="button"
+                  onClick={() => onOpenAdminChoySetup('choy_pro')}
+                  className="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-black inline-flex items-center gap-1.5 shadow-xs transition"
+                >
+                  <Settings2 className="w-3.5 h-3.5" />
+                  <span>Admin Set Up</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => onNavigate('feed')}
@@ -853,6 +881,41 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
               </button>
             </div>
           </div>
+
+          {currentUser.role === 'admin' && onOpenAdminChoySetup && (
+            <div className="p-3 rounded-xl bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-700/70 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs font-black text-indigo-950 dark:text-indigo-100">
+                <Settings2 className="w-4 h-4 text-indigo-600 dark:text-indigo-300" />
+                <span>Admin Quick Set Up:</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => onOpenAdminChoySetup('choy_pro')}
+                  className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-black inline-flex items-center gap-1.5 transition"
+                >
+                  <Crown className="w-3.5 h-3.5 text-amber-300" />
+                  <span>Choy Pro Subscription</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onOpenAdminChoySetup('choy_promo')}
+                  className="px-3 py-1.5 rounded-xl bg-orange-500 hover:bg-orange-400 text-slate-950 text-[11px] font-black inline-flex items-center gap-1.5 transition"
+                >
+                  <Tag className="w-3.5 h-3.5" />
+                  <span>Choy Promo</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onOpenAdminChoySetup('choy_wallet')}
+                  className="px-3 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-[11px] font-black inline-flex items-center gap-1.5 transition"
+                >
+                  <Coins className="w-3.5 h-3.5" />
+                  <span>Choy Wallet</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Financial & Plan Summary Strip */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
@@ -1438,9 +1501,10 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
     );
   }
 
-  // 5. CHOY WALLET (CHOY COINS & REWARDS)
+  // 5. CHOY WALLET (CHOY COINS & TOP-UP)
   if (section === 'choy_wallet') {
     const choyTxs = dashboard.transactions.filter((t) => t.walletType === 'choy_wallet');
+    const walletCfg = programsCfg.choyWallet;
     return (
       <div className="max-w-4xl mx-auto space-y-4">
         {renderSectionBackBar(
@@ -1458,24 +1522,35 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
             <div className="text-3xl font-black font-mono tabular-nums mt-1">
               {dashboard.choyWalletBalance.toLocaleString()} <span className="text-base">CHOY</span>
             </div>
-            <div className="text-xs font-bold opacity-85 mt-1">
-              Top up or convert Cash Wallet funds for purchase purposes.
+            <div className="text-xs font-bold opacity-90 mt-1">
+              {walletCfg.topUpInstructions}
             </div>
           </div>
+          {currentUser.role === 'admin' && onOpenAdminChoySetup && (
+            <button
+              type="button"
+              onClick={() => onOpenAdminChoySetup('choy_wallet')}
+              className="px-4 py-2.5 rounded-xl bg-slate-950 hover:bg-slate-900 text-amber-300 text-xs font-black inline-flex items-center gap-1.5 shadow shrink-0 transition"
+            >
+              <Settings2 className="w-4 h-4" />
+              <span>Admin Set Up Choy Wallet</span>
+            </button>
+          )}
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* Convert Cash Wallet -> CHOY */}
           <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/60 rounded-2xl p-4 space-y-3 shadow-xs">
             <h3 className="text-xs font-black uppercase tracking-wider text-emerald-900 dark:text-white">
-              Convert Wallet → CHOY (₱1 = 2 CHOY)
+              Convert Wallet → CHOY (₱1 = {walletCfg.conversionRate} CHOY)
             </h3>
             <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
-              Available Wallet: ₱{dashboard.walletBalance.toFixed(2)}
+              Available Wallet: ₱{dashboard.walletBalance.toFixed(2)} · Limits: ₱{walletCfg.minConvertPhp}–₱{walletCfg.maxConvertPhp.toLocaleString()}
             </p>
             <input
               type="number"
-              min="1"
+              min={walletCfg.minConvertPhp}
+              max={walletCfg.maxConvertPhp}
               step="1"
               value={convertAmount}
               onChange={(e) => setConvertAmount(e.target.value)}
@@ -1483,11 +1558,11 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
               className="w-full min-h-[38px] px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs font-mono text-emerald-950 dark:text-white focus:outline-none focus:border-emerald-500"
             />
             <div className="text-xs font-bold text-amber-700 dark:text-amber-300">
-              You receive: {Math.max(0, Number(convertAmount) || 0) * 2} CHOY
+              You receive: {Math.round(Math.max(0, Number(convertAmount) || 0) * walletCfg.conversionRate * 100) / 100} CHOY
             </div>
             <button
               type="button"
-              disabled={isBusy}
+              disabled={isBusy || (!walletCfg.allowConvert && currentUser.role !== 'admin')}
               onClick={() =>
                 void onDashboardAction({
                   action: 'choy_wallet_convert',
@@ -1497,7 +1572,7 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
               className="w-full py-2.5 px-3 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-black inline-flex items-center justify-center gap-1.5 transition disabled:opacity-50"
             >
               <RefreshCw className="w-3.5 h-3.5" />
-              <span>Convert to CHOY Coins</span>
+              <span>{walletCfg.allowConvert ? 'Convert to CHOY Coins' : 'Conversion Paused by Admin'}</span>
             </button>
           </div>
 
@@ -1529,7 +1604,7 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
             />
             <button
               type="button"
-              disabled={isBusy || !choyTransferRecipientId}
+              disabled={isBusy || !choyTransferRecipientId || (!walletCfg.allowTransfers && currentUser.role !== 'admin')}
               onClick={() =>
                 void onDashboardAction({
                   action: 'wallet_transfer',
@@ -1542,7 +1617,7 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
               className="w-full py-2.5 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black inline-flex items-center justify-center gap-1.5 transition disabled:opacity-50"
             >
               <Send className="w-3.5 h-3.5" />
-              <span>Send CHOY Coins</span>
+              <span>{walletCfg.allowTransfers ? 'Send CHOY Coins' : 'Transfers Paused by Admin'}</span>
             </button>
           </div>
         </div>
@@ -1581,21 +1656,36 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
 
   // 6. CHOY PRO
   if (section === 'choy_pro') {
-    const perks = [
-      'Verified Choy Pro Crown Badge beside your Created Name (Public Show)',
-      '2× Daily Choy Wallet Rewards (+50 CHOY every day)',
-      'Priority Choy AI Assistant & GitHub Intelligence access',
-      'HD Video Calls with Custom Video Backgrounds & Screen Share',
-      'Priority Groupchat & Newsfeed Spotlight highlights',
-    ];
+    const proCfg = programsCfg.choyPro;
     return (
       <div className="max-w-3xl mx-auto space-y-4">
         {renderSectionBackBar(
           'Choy Pro',
-          'Unlock Pro member badge, double Choy Coins rewards & priority features',
+          proCfg.tagline,
           <Crown className="w-5 h-5" />
         )}
         {renderFeedbackBanner()}
+
+        {currentUser.role === 'admin' && onOpenAdminChoySetup && (
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => onOpenAdminChoySetup('choy_pro')}
+              className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black inline-flex items-center gap-1.5 shadow-xs transition"
+            >
+              <Settings2 className="w-3.5 h-3.5" />
+              <span>Admin Set Up Choy Pro</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onOpenAdminChoySetup('choy_promo')}
+              className="px-3.5 py-2 rounded-xl bg-orange-500 hover:bg-orange-400 text-slate-950 text-xs font-black inline-flex items-center gap-1.5 shadow-xs transition"
+            >
+              <Tag className="w-3.5 h-3.5" />
+              <span>Admin Set Up Choy Promo</span>
+            </button>
+          </div>
+        )}
 
         <div className="bg-white dark:bg-emerald-900/60 border-2 border-amber-400/70 rounded-2xl p-5 sm:p-6 space-y-5 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1621,12 +1711,12 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                   : 'bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 border border-amber-400'
               }`}
             >
-              {dashboard.choyProActive ? 'ACTIVE ✓' : '₱199 or 250 CHOY'}
+              {dashboard.choyProActive ? 'ACTIVE ✓' : `₱${proCfg.monthlyPhp} or ${proCfg.monthlyChoy} CHOY`}
             </span>
           </div>
 
           <ul className="space-y-2">
-            {perks.map((perk) => (
+            {proCfg.perks.map((perk) => (
               <li key={perk} className="flex items-start gap-2 text-xs text-emerald-950 dark:text-emerald-100">
                 <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
                 <span>{perk}</span>
@@ -1634,26 +1724,73 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
             ))}
           </ul>
 
+          {subscriptionPromos.length > 0 && !dashboard.choyProActive && (
+            <div className="p-3 rounded-xl bg-orange-50 dark:bg-orange-950/40 border border-orange-200 dark:border-orange-800 space-y-2">
+              <div className="text-[11px] font-black uppercase tracking-wider text-orange-800 dark:text-orange-200 flex items-center gap-1.5">
+                <Tag className="w-3.5 h-3.5" />
+                <span>Active Choy Promos</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {subscriptionPromos.map((pr) => (
+                  <button
+                    key={pr.id}
+                    type="button"
+                    onClick={() => setPromoCodeInput(pr.code)}
+                    className="px-2.5 py-1 rounded-lg bg-orange-500 hover:bg-orange-400 text-slate-950 text-[11px] font-black transition"
+                  >
+                    {pr.code} ({pr.discountType === 'percent' ? `${pr.discountValue}% OFF` : `₱${pr.discountValue} OFF`})
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {!dashboard.choyProActive ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2">
-              <button
-                type="button"
-                disabled={isBusy}
-                onClick={() => void onDashboardAction({ action: 'activate_choy_pro', paymentMethod: 'wallet' })}
-                className="py-3 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black inline-flex items-center justify-center gap-1.5 shadow transition disabled:opacity-50"
-              >
-                <Wallet className="w-4 h-4" />
-                <span>Activate via Wallet (₱199)</span>
-              </button>
-              <button
-                type="button"
-                disabled={isBusy}
-                onClick={() => void onDashboardAction({ action: 'activate_choy_pro', paymentMethod: 'choy_wallet' })}
-                className="py-3 px-4 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-black inline-flex items-center justify-center gap-1.5 shadow transition disabled:opacity-50"
-              >
-                <Coins className="w-4 h-4" />
-                <span>Activate via Choy Wallet (250 CHOY)</span>
-              </button>
+            <div className="space-y-3 pt-1">
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-emerald-900 dark:text-emerald-200">
+                  Choy Promo Code (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={promoCodeInput}
+                  onChange={(e) => setPromoCodeInput(e.target.value.toUpperCase())}
+                  placeholder="Enter promo code if available"
+                  className="w-full p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs font-mono uppercase text-emerald-950 dark:text-white"
+                />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  disabled={isBusy || (!proCfg.enabled && currentUser.role !== 'admin')}
+                  onClick={() =>
+                    void onDashboardAction({
+                      action: 'activate_choy_pro',
+                      paymentMethod: 'wallet',
+                      promoCode: promoCodeInput.trim() || undefined,
+                    })
+                  }
+                  className="py-3 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black inline-flex items-center justify-center gap-1.5 shadow transition disabled:opacity-50"
+                >
+                  <Wallet className="w-4 h-4" />
+                  <span>Activate via Wallet (₱{proCfg.monthlyPhp})</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isBusy || (!proCfg.enabled && currentUser.role !== 'admin')}
+                  onClick={() =>
+                    void onDashboardAction({
+                      action: 'activate_choy_pro',
+                      paymentMethod: 'choy_wallet',
+                      promoCode: promoCodeInput.trim() || undefined,
+                    })
+                  }
+                  className="py-3 px-4 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-black inline-flex items-center justify-center gap-1.5 shadow transition disabled:opacity-50"
+                >
+                  <Coins className="w-4 h-4" />
+                  <span>Activate via Choy Wallet ({proCfg.monthlyChoy} CHOY)</span>
+                </button>
+              </div>
             </div>
           ) : (
             <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/70 border border-emerald-300 dark:border-emerald-700 text-xs font-bold text-emerald-900 dark:text-emerald-200 flex items-center justify-between gap-2">
@@ -1674,6 +1811,7 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
 
   // 7. SUBSCRIPTION
   if (section === 'subscription') {
+    const proCfg = programsCfg.choyPro;
     const plans: Array<{
       id: UserDashboardData['subscriptionPlan'];
       title: string;
@@ -1686,27 +1824,27 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
         title: 'Free Starter',
         priceLabel: '₱0',
         choyLabel: '0 CHOY',
-        desc: 'Standard Newsfeed, Direct Messages, Groupchat & Daily +25 CHOY.',
+        desc: 'Standard Newsfeed, Direct Messages, Groupchat & Marketplace access.',
       },
       {
         id: 'choy_pro_monthly',
         title: 'Choy Pro Monthly',
-        priceLabel: '₱199 / mo',
-        choyLabel: '250 CHOY',
-        desc: 'Pro Crown badge, +50 Daily CHOY, Priority AI & HD Video Calls.',
+        priceLabel: `₱${proCfg.monthlyPhp.toLocaleString()} / mo`,
+        choyLabel: `${proCfg.monthlyChoy.toLocaleString()} CHOY`,
+        desc: 'Pro Crown badge, Priority AI, HD Video Calls & Choy Promo eligibility.',
       },
       {
         id: 'choy_pro_annual',
         title: 'Choy Pro Annual',
-        priceLabel: '₱1,499 / yr',
-        choyLabel: '1,800 CHOY',
-        desc: 'Best value 12-month Choy Pro pass with 37% savings.',
+        priceLabel: `₱${proCfg.annualPhp.toLocaleString()} / yr`,
+        choyLabel: `${proCfg.annualChoy.toLocaleString()} CHOY`,
+        desc: 'Best value 12-month Choy Pro pass with annual member perks.',
       },
       {
         id: 'vip_supporter',
         title: 'VIP Supporter',
-        priceLabel: '₱499 / mo',
-        choyLabel: '600 CHOY',
+        priceLabel: `₱${proCfg.vipPhp.toLocaleString()} / mo`,
+        choyLabel: `${proCfg.vipChoy.toLocaleString()} CHOY`,
         desc: 'VIP priority support, all Pro perks & featured community badge.',
       },
     ];
@@ -1719,6 +1857,27 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
           <CreditCard className="w-5 h-5" />
         )}
         {renderFeedbackBanner()}
+
+        {currentUser.role === 'admin' && onOpenAdminChoySetup && (
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => onOpenAdminChoySetup('choy_pro')}
+              className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black inline-flex items-center gap-1.5 shadow-xs transition"
+            >
+              <Settings2 className="w-3.5 h-3.5" />
+              <span>Admin Set Up Subscription</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onOpenAdminChoySetup('choy_promo')}
+              className="px-3.5 py-2 rounded-xl bg-orange-500 hover:bg-orange-400 text-slate-950 text-xs font-black inline-flex items-center gap-1.5 shadow-xs transition"
+            >
+              <Tag className="w-3.5 h-3.5" />
+              <span>Admin Set Up Choy Promo</span>
+            </button>
+          </div>
+        )}
 
         <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/60 rounded-2xl p-4 sm:p-5 flex flex-wrap items-center justify-between gap-3 shadow-xs">
           <div>
@@ -1765,6 +1924,38 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
           </div>
         </div>
 
+        {/* Choy Promo Code Bar for Subscriptions */}
+        <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/60 rounded-2xl p-4 shadow-xs space-y-2.5">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+            <label className="text-xs font-black text-emerald-950 dark:text-white flex items-center gap-1.5 shrink-0">
+              <Tag className="w-4 h-4 text-orange-500" />
+              <span>Choy Promo Code:</span>
+            </label>
+            <input
+              type="text"
+              value={promoCodeInput}
+              onChange={(e) => setPromoCodeInput(e.target.value.toUpperCase())}
+              placeholder="Optional promo code (applied when you click Pay)"
+              className="flex-1 p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs font-mono uppercase text-emerald-950 dark:text-white"
+            />
+          </div>
+          {subscriptionPromos.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300">Tap to apply:</span>
+              {subscriptionPromos.map((pr) => (
+                <button
+                  key={pr.id}
+                  type="button"
+                  onClick={() => setPromoCodeInput(pr.code)}
+                  className="px-2.5 py-1 rounded-lg bg-orange-100 dark:bg-orange-950 border border-orange-300 dark:border-orange-700 text-orange-900 dark:text-orange-200 text-[11px] font-black hover:bg-orange-200 transition"
+                >
+                  {pr.code} · {pr.discountType === 'percent' ? `${pr.discountValue}% OFF` : `₱${pr.discountValue} OFF`}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {plans.map((p) => {
             const isCurrent = dashboard.subscriptionPlan === p.id && dashboard.subscriptionStatus === 'active';
@@ -1808,13 +1999,14 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                   <div className="grid grid-cols-2 gap-2">
                     <button
                       type="button"
-                      disabled={isBusy}
+                      disabled={isBusy || (!proCfg.enabled && currentUser.role !== 'admin')}
                       onClick={() =>
                         void onDashboardAction({
                           action: 'update_subscription',
                           plan: p.id,
                           paymentMethod: 'wallet',
                           subAction: 'subscribe',
+                          promoCode: promoCodeInput.trim() || undefined,
                         })
                       }
                       className="py-2 px-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[11px] font-black transition disabled:opacity-50"
@@ -1823,13 +2015,14 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                     </button>
                     <button
                       type="button"
-                      disabled={isBusy}
+                      disabled={isBusy || (!proCfg.enabled && currentUser.role !== 'admin')}
                       onClick={() =>
                         void onDashboardAction({
                           action: 'update_subscription',
                           plan: p.id,
                           paymentMethod: 'choy_wallet',
                           subAction: 'subscribe',
+                          promoCode: promoCodeInput.trim() || undefined,
                         })
                       }
                       className="py-2 px-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-[11px] font-black transition disabled:opacity-50"
@@ -1903,7 +2096,7 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
             </div>
 
             {currentUser.role === 'admin' && (
-              <div className="pt-3 border-t border-emerald-200 dark:border-emerald-800">
+              <div className="pt-3 border-t border-emerald-200 dark:border-emerald-800 space-y-2">
                 <button
                   type="button"
                   onClick={() => {
@@ -1915,6 +2108,16 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                   <Plus className="w-4 h-4" />
                   <span>Admin Set Up Item</span>
                 </button>
+                {onOpenAdminChoySetup && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenAdminChoySetup('choy_promo')}
+                    className="w-full py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black inline-flex items-center justify-center gap-1.5 shadow-xs transition"
+                  >
+                    <Tag className="w-3.5 h-3.5" />
+                    <span>Admin Set Up Choy Promo</span>
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -2319,6 +2522,31 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                   </select>
                 </div>
 
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-emerald-900 dark:text-emerald-200">Choy Promo Code (Optional)</label>
+                  <input
+                    type="text"
+                    value={promoCodeInput}
+                    onChange={(e) => setPromoCodeInput(e.target.value.toUpperCase())}
+                    placeholder="e.g. CHOY20"
+                    className="w-full p-2 rounded-xl bg-emerald-50 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-xs font-mono uppercase text-emerald-950 dark:text-white"
+                  />
+                  {marketplacePromos.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {marketplacePromos.map((pr) => (
+                        <button
+                          key={pr.id}
+                          type="button"
+                          onClick={() => setPromoCodeInput(pr.code)}
+                          className="px-2 py-0.5 rounded-lg bg-orange-100 dark:bg-orange-950 text-orange-900 dark:text-orange-200 text-[10px] font-black"
+                        >
+                          {pr.code} ({pr.discountType === 'percent' ? `${pr.discountValue}%` : `₱${pr.discountValue}`} off)
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
                 <div className="p-3 rounded-xl bg-orange-50 dark:bg-orange-950/40 border border-orange-200 dark:border-orange-800 space-y-1.5 text-xs">
                   <div className="flex justify-between font-bold text-emerald-900 dark:text-emerald-200">
                     <span>Item Subtotal ({buyQuantity}x):</span>
@@ -2645,6 +2873,31 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                       <option value="8">5 - 8 km (Delivery Fee: ₱65)</option>
                       <option value="10">8+ km (Delivery Fee: ₱90)</option>
                     </select>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-emerald-900 dark:text-emerald-200">Choy Promo Code (Optional)</label>
+                    <input
+                      type="text"
+                      value={promoCodeInput}
+                      onChange={(e) => setPromoCodeInput(e.target.value.toUpperCase())}
+                      placeholder="e.g. CHOY20"
+                      className="w-full p-2 rounded-xl bg-emerald-50 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-xs font-mono uppercase text-emerald-950 dark:text-white"
+                    />
+                    {marketplacePromos.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {marketplacePromos.map((pr) => (
+                          <button
+                            key={pr.id}
+                            type="button"
+                            onClick={() => setPromoCodeInput(pr.code)}
+                            className="px-2 py-0.5 rounded-lg bg-orange-100 dark:bg-orange-950 text-orange-900 dark:text-orange-200 text-[10px] font-black"
+                          >
+                            {pr.code} ({pr.discountType === 'percent' ? `${pr.discountValue}%` : `₱${pr.discountValue}`} off)
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-800 space-y-1.5 text-xs">

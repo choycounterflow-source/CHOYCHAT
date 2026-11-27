@@ -94,10 +94,17 @@ import {
   BadgeCheck,
   ChevronDown,
   ChevronUp,
-  ShoppingBag
+  ShoppingBag,
+  Tag
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import {
+  AdminChoySetupPanel,
+  DEFAULT_CLIENT_CHOY_PROGRAMS_CONFIG,
+  type AdminChoySetupTab,
+  type ChoyProgramsConfig,
+} from './components/AdminChoySetupPanel';
 import {
   SecurityStudio,
   type StudioAnnouncementItem,
@@ -597,12 +604,15 @@ export default function App() {
     | 'admin_knowledge'
     | 'admin_prices'
     | 'admin_newsfeeds'
+    | 'admin_choy_setup'
     | 'admin_security'
     | 'choyai'
     | 'github'
     | 'people'
     | 'videos'
   >('dashboard');
+  const [adminChoySetupTab, setAdminChoySetupTab] = useState<AdminChoySetupTab>('choy_pro');
+  const [choyProgramsConfig, setChoyProgramsConfig] = useState<ChoyProgramsConfig>(DEFAULT_CLIENT_CHOY_PROGRAMS_CONFIG);
   const [isUserSidebarGroupOpen, setIsUserSidebarGroupOpen] = useState(true);
   const [userDashboardData, setUserDashboardData] = useState<UserDashboardData>({
     userId: '',
@@ -625,6 +635,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isMenuDrawerOpen, setIsMenuDrawerOpen] = useState(false);
+  const [isDrawerSettingsOpen, setIsDrawerSettingsOpen] = useState(false);
   const searchContainerRef = useRef<HTMLDivElement>(null);
 
   // Real Live WebRTC Video Call State & Refs (supports 1-on-1 & Group Video Calls)
@@ -1628,6 +1639,7 @@ export default function App() {
     | 'admin_knowledge'
     | 'admin_prices'
     | 'admin_newsfeeds'
+    | 'admin_choy_setup'
     | 'admin_security'
     | 'choyai'
     | 'github'
@@ -1737,6 +1749,7 @@ export default function App() {
     if (tab === 'profile') return 'Profile';
     if (tab === 'ledger') return 'Ledger';
     if (tab === 'analytics') return 'Analytics';
+    if (tab === 'admin_choy_setup') return 'Admin Set Up';
     if (tab === 'choyai') return 'Choy AI';
     if (tab === 'github') return 'GitHub';
     return 'Dashboard';
@@ -2207,6 +2220,9 @@ export default function App() {
             { publicShowName: boolean; choyProActive: boolean; subscriptionPlan: string }
           >
         );
+      }
+      if (data.choyProgramsConfig && typeof data.choyProgramsConfig === 'object') {
+        setChoyProgramsConfig(data.choyProgramsConfig as ChoyProgramsConfig);
       }
       if (data.settings) {
         setUnitPrices({
@@ -8130,237 +8146,281 @@ export default function App() {
 
       {/* DESKTOP SIDEBAR NAVIGATION (Hidden on mobile and when inside the separate full-width Newsfeed Dashboard) */}
       {activeTab !== 'feed' && (
-      <aside className={`hidden md:flex md:w-60 ${theme.sidebarBg} md:border-r p-3 flex-col justify-between shrink-0 overflow-y-auto transition-colors`}>
-        <div className="flex flex-col items-stretch gap-1.5 w-full">
-          <div className="flex items-center gap-2.5 px-2 py-2 mb-2">
-            <button
-              type="button"
-              onClick={() => setIsAppIconShareModalOpen(true)}
-              className={`relative w-10 h-13 rounded-lg border-2 ${theme.sidebarBrandBorder} p-0.5 shrink-0 hover:scale-105 transition shadow cursor-pointer group`}
-              title={`Open App Icon Emoji Link (${activeEmojiLink?.emojiCode || '🔐🟢💬✨🚀'})`}
-            >
-              <img
-                src={activeEmojiLink?.iconUrl || DEFAULT_AVATAR}
-                alt="Choy Chat App Icon"
-                className="w-full h-full object-contain rounded"
-              />
-              <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded-full bg-slate-950 border border-amber-400 text-[9px] leading-none whitespace-nowrap shadow">
-                {activeEmojiLink?.emojiCode || '🔐🟢💬'}
-              </span>
-            </button>
-            <div className="min-w-0">
-              <div className={`text-sm font-bold truncate ${theme.sidebarTitleText}`}>Choy Chat</div>
-              <div className={`text-[10px] flex items-center gap-1 ${theme.sidebarSubText}`}>
-                <Cloud className="w-3 h-3" /> {storageMode === 'postgres' ? 'Postgres Synced' : 'Live Synced'}
-              </div>
+      <aside className="hidden md:flex md:w-64 lg:w-[272px] bg-[#0E4B1D] text-white border-r border-white/10 flex-col shrink-0 overflow-hidden select-none">
+        {/* Top Brand Header */}
+        <div className="px-4 py-4 border-b border-white/10 flex items-center gap-3 shrink-0">
+          <button
+            type="button"
+            onClick={() => setIsAppIconShareModalOpen(true)}
+            className="relative w-11 h-11 rounded-xl border-2 border-[#FF5E1E]/85 bg-white p-0.5 shrink-0 hover:scale-105 transition shadow-sm cursor-pointer"
+            title={`Open App Icon Emoji Link (${activeEmojiLink?.emojiCode || '🔐🟢💬✨🚀'})`}
+          >
+            <img
+              src={activeEmojiLink?.iconUrl || DEFAULT_AVATAR}
+              alt="Choy Chat App Icon"
+              className="w-full h-full object-contain rounded-lg"
+            />
+          </button>
+          <div className="min-w-0 flex-1">
+            <div className="text-[17px] font-extrabold text-[#FF5E1E] leading-tight tracking-tight truncate">
+              Choy Chat
+            </div>
+            <div className="text-xs italic text-[#84B38D] truncate mt-0.5">
+              All What You Want
             </div>
           </div>
+        </div>
 
-          <nav className="flex flex-col gap-1 w-full text-xs font-medium">
-            {/* SIDEBAR BUTTON: USER DASHBOARD (WITH ALL 11 USER TOOLS INSIDE) */}
-            <div className="rounded-2xl border border-emerald-300/60 dark:border-emerald-700/60 bg-emerald-50/60 dark:bg-emerald-950/50 p-1.5 space-y-1 mb-1">
-              <div className="flex items-center gap-1">
+        {/* Scrollable Profile Card + Single-Column Navigation */}
+        <div className="flex-1 overflow-y-auto px-3.5 py-4 space-y-4">
+          {/* User / Admin Identity Card */}
+          <button
+            type="button"
+            onClick={() => setActiveTab('profile')}
+            className="w-full rounded-2xl bg-white/[0.07] hover:bg-white/[0.11] border border-white/15 p-3.5 text-left transition space-y-3"
+          >
+            <div className="flex items-center gap-3">
+              {isCustomAvatar(getUserAvatar(currentUser)) ? (
+                <img
+                  src={getUserAvatar(currentUser)}
+                  alt={currentUser.name}
+                  className="w-11 h-11 rounded-full object-cover bg-white shrink-0 border border-white/25"
+                />
+              ) : (
+                <div className="w-11 h-11 rounded-full bg-white text-[#0E4B1D] font-extrabold text-base flex items-center justify-center shrink-0 shadow-xs">
+                  {(currentUser.name || 'U').trim().charAt(0).toUpperCase()}
+                </div>
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="text-[15px] font-bold text-white truncate leading-tight">
+                  {currentUser.name}
+                </div>
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-[#90BE99] mt-0.5">
+                  {isAdmin ? 'ADMIN' : 'CUSTOMER'}
+                </div>
+              </div>
+            </div>
+            <div className="space-y-1.5 text-[12.5px] text-white/90">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <User className="w-3.5 h-3.5 text-[#8AB893] shrink-0" />
+                <span className="truncate font-medium">
+                  {currentUser.id}
+                </span>
+              </div>
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Phone className="w-3.5 h-3.5 text-[#8AB893] shrink-0" />
+                <span className="truncate font-mono text-[12px]">
+                  {currentUser.phone || 'No contact number'}
+                </span>
+              </div>
+            </div>
+          </button>
+
+          {/* Primary Single-Column Navigation */}
+          <nav className="flex flex-col gap-1 w-full">
+            {[
+              { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
+              { id: 'marketplace' as const, label: 'Food Store & Marketplace', icon: ShoppingBag },
+              { id: 'choy_wallet' as const, label: 'Choy Wallet', icon: Coins },
+              { id: 'choy_pro' as const, label: 'Choy Pro', icon: Crown },
+              { id: 'subscription' as const, label: 'Subscription', icon: CreditCard },
+              { id: 'wallet' as const, label: 'Wallet', icon: Wallet },
+              { id: 'feed' as const, label: 'Newsfeed', icon: Home },
+              { id: 'messages' as const, label: 'Message', icon: MessageSquare },
+              { id: 'groupchat' as const, label: 'Groupchat', icon: Users },
+              { id: 'acknowledgment' as const, label: 'Acknowledgement', icon: FileCheck2 },
+              { id: 'profile' as const, label: 'Profile & PIN', icon: User },
+              { id: 'user_created_name' as const, label: 'Created Name', icon: BadgeCheck },
+              { id: 'rules' as const, label: 'Rules and regulations', icon: BookOpen },
+            ].map((item) => {
+              const Icon = item.icon;
+              const isActive = activeTab === item.id;
+              return (
                 <button
+                  key={item.id}
                   type="button"
-                  onClick={() => setActiveTab('dashboard')}
-                  className={`flex-1 px-2.5 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap font-bold transition ${
-                    activeTab === 'dashboard' ? theme.navActive : theme.navInactive
+                  onClick={() => setActiveTab(item.id)}
+                  className={`w-full px-3.5 py-2.5 rounded-xl flex items-center gap-3 text-[13.5px] text-left transition whitespace-nowrap ${
+                    isActive
+                      ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                      : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
                   }`}
                 >
-                  <LayoutDashboard className="w-4 h-4 shrink-0" />
-                  <span>User Dashboard</span>
+                  <Icon className="w-[18px] h-[18px] shrink-0" />
+                  <span className="truncate">{item.label}</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setIsUserSidebarGroupOpen((v) => !v)}
-                  className="p-2 rounded-xl text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200/60 dark:hover:bg-emerald-800/70 transition shrink-0"
-                  title={isUserSidebarGroupOpen ? 'Collapse User Dashboard Menu' : 'Expand User Dashboard Menu'}
-                  aria-label="Toggle User Dashboard sidebar menu"
-                >
-                  {isUserSidebarGroupOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                </button>
-              </div>
+              );
+            })}
 
-              {isUserSidebarGroupOpen && (
-                <div className="flex flex-col gap-0.5 pl-1.5 border-l-2 border-emerald-300/70 dark:border-emerald-700/70 ml-2">
-                  {[
-                    { id: 'profile' as const, label: 'Profile (Admin Copy)', icon: <User className="w-3.5 h-3.5 shrink-0" /> },
-                    { id: 'user_created_name' as const, label: 'Created Name (Public Show)', icon: <BadgeCheck className="w-3.5 h-3.5 shrink-0" /> },
-                    { id: 'messages' as const, label: 'Message', icon: <MessageSquare className="w-3.5 h-3.5 shrink-0" /> },
-                    { id: 'feed' as const, label: 'Newsfeed', icon: <Home className="w-3.5 h-3.5 shrink-0" /> },
-                    { id: 'groupchat' as const, label: 'Groupchat', icon: <Users className="w-3.5 h-3.5 shrink-0" /> },
-                    { id: 'wallet' as const, label: 'Wallet', icon: <Wallet className="w-3.5 h-3.5 shrink-0" /> },
-                    { id: 'choy_pro' as const, label: 'Choy Pro', icon: <Crown className="w-3.5 h-3.5 shrink-0 text-amber-500" /> },
-                    { id: 'choy_wallet' as const, label: 'Choy Wallet', icon: <Coins className="w-3.5 h-3.5 shrink-0 text-amber-500" /> },
-                    { id: 'subscription' as const, label: 'Subscription', icon: <CreditCard className="w-3.5 h-3.5 shrink-0" /> },
-                    { id: 'rules' as const, label: 'Rules', icon: <BookOpen className="w-3.5 h-3.5 shrink-0" /> },
-                    { id: 'acknowledgment' as const, label: 'Acknowledgment', icon: <FileCheck2 className="w-3.5 h-3.5 shrink-0" /> },
-                    { id: 'marketplace' as const, label: 'Food Store & Marketplace', icon: <ShoppingBag className="w-3.5 h-3.5 shrink-0 text-orange-500" /> },
-                  ].map((item) => (
+            {/* Workspace Section */}
+            <div className="border-t border-white/10 my-2 pt-2.5">
+              <div className="px-3.5 pb-1.5 text-[10px] font-bold uppercase tracking-widest text-[#84B38D]">
+                Workspace
+              </div>
+              <div className="flex flex-col gap-1">
+                {[
+                  { id: 'people' as const, label: 'People', icon: Users },
+                  { id: 'videos' as const, label: 'Videos', icon: Video },
+                  { id: 'analytics' as const, label: 'Analytics', icon: Award },
+                  { id: 'choyai' as const, label: 'Choy AI', icon: Bot },
+                  { id: 'github' as const, label: 'GitHub Intelligence', icon: GitBranch },
+                ].map((item) => {
+                  const Icon = item.icon;
+                  const isActive = activeTab === item.id;
+                  return (
                     <button
                       key={item.id}
                       type="button"
                       onClick={() => setActiveTab(item.id)}
-                      className={`px-2.5 py-1.5 rounded-lg flex items-center gap-2 text-[11px] font-semibold transition text-left ${
-                        activeTab === item.id ? theme.navActive : theme.navInactive
+                      className={`w-full px-3.5 py-2.5 rounded-xl flex items-center gap-3 text-[13.5px] text-left transition whitespace-nowrap ${
+                        isActive
+                          ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                          : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
                       }`}
                     >
-                      {item.icon}
+                      <Icon className="w-[18px] h-[18px] shrink-0" />
                       <span className="truncate">{item.label}</span>
                     </button>
-                  ))}
-                </div>
-              )}
+                  );
+                })}
+              </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setActiveTab('people')}
-              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
-                activeTab === 'people' ? theme.navActive : theme.navInactive
-              }`}
-            >
-              <Users className="w-4 h-4 shrink-0" />
-              <span>People</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('videos')}
-              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
-                activeTab === 'videos' ? theme.navActive : theme.navInactive
-              }`}
-            >
-              <Video className="w-4 h-4 shrink-0" />
-              <span>Videos</span>
-            </button>
+            {/* Admin Panel Section */}
             {isAdmin && (
-              <button
-                type="button"
-                onClick={() => setActiveTab('ledger')}
-                className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
-                  activeTab === 'ledger' ? theme.navActive : theme.navInactive
-                }`}
-              >
-                <FileSpreadsheet className="w-4 h-4 shrink-0" />
-                <span>Milestone</span>
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => setActiveTab('analytics')}
-              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
-                activeTab === 'analytics' ? theme.navActive : theme.navInactive
-              }`}
-            >
-              <Award className="w-4 h-4 shrink-0" />
-              <span>Analytics</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('choyai')}
-              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
-                activeTab === 'choyai' ? 'bg-cyan-400 text-slate-950 font-bold' : theme.navInactive
-              }`}
-            >
-              <img
-                src={DEFAULT_AVATAR}
-                alt=""
-                className="w-4 h-5 rounded bg-emerald-50 dark:bg-emerald-950 object-contain shrink-0 border border-cyan-300"
-              />
-              <span>Choy AI</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('github')}
-              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
-                activeTab === 'github' ? theme.navActive : theme.navInactive
-              }`}
-            >
-              <GitBranch className="w-4 h-4 shrink-0" />
-              <span>GitHub Intelligence</span>
-            </button>
-
-            {isAdmin && (
-              <>
-                <div className="pt-2 pb-1 text-[10px] font-bold uppercase text-indigo-700 dark:text-indigo-300 hidden md:block px-2">
+              <div className="border-t border-white/10 my-2 pt-2.5">
+                <div className="px-3.5 pb-1.5 text-[10px] font-bold uppercase tracking-widest text-[#FF976B]">
                   Admin Panel
                 </div>
-
-
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('admin_knowledge')}
-                  className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
-                    activeTab === 'admin_knowledge'
-                      ? 'bg-indigo-600 text-white font-bold'
-                      : 'text-indigo-700 hover:bg-indigo-100 dark:text-indigo-200 dark:hover:bg-indigo-900/60'
-                  }`}
-                >
-                  <Database className="w-4 h-4 shrink-0" />
-                  <span>AI Brain</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('admin_prices')}
-                  className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
-                    activeTab === 'admin_prices'
-                      ? 'bg-indigo-600 text-white font-bold'
-                      : 'text-indigo-700 hover:bg-indigo-100 dark:text-indigo-200 dark:hover:bg-indigo-900/60'
-                  }`}
-                >
-                  <Sliders className="w-4 h-4 shrink-0" />
-                  <span>Unit Prices</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('admin_newsfeeds')}
-                  className={`px-3 py-2 rounded-xl flex items-center gap-2 whitespace-nowrap shrink-0 transition ${
-                    activeTab === 'admin_newsfeeds'
-                      ? 'bg-indigo-600 text-white font-bold'
-                      : 'text-indigo-700 hover:bg-indigo-100 dark:text-indigo-200 dark:hover:bg-indigo-900/60'
-                  }`}
-                >
-                  <Globe className="w-4 h-4 shrink-0" />
-                  <span>Newsfeed Setup</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('admin_security')}
-                  className={`px-3 py-2 rounded-xl flex items-center gap-2 whitespace-nowrap shrink-0 transition ${
-                    activeTab === 'admin_security'
-                      ? 'bg-indigo-600 text-white font-bold'
-                      : 'text-indigo-700 hover:bg-indigo-100 dark:text-indigo-200 dark:hover:bg-indigo-900/60'
-                  }`}
-                >
-                  <Key className="w-4 h-4 shrink-0" />
-                  <span>Security Studio</span>
-                </button>
-              </>
+                <div className="flex flex-col gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('admin_security')}
+                    className={`w-full px-3.5 py-2.5 rounded-xl flex items-center gap-3 text-[13.5px] text-left transition whitespace-nowrap ${
+                      activeTab === 'admin_security'
+                        ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                        : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                    }`}
+                  >
+                    <Key className="w-[18px] h-[18px] shrink-0" />
+                    <span className="truncate">Security Studio</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAdminChoySetupTab('choy_pro');
+                      setActiveTab('admin_choy_setup');
+                    }}
+                    className={`w-full px-3.5 py-2.5 rounded-xl flex items-center gap-3 text-[13.5px] text-left transition whitespace-nowrap ${
+                      activeTab === 'admin_choy_setup' && adminChoySetupTab === 'choy_pro'
+                        ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                        : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                    }`}
+                  >
+                    <Crown className="w-[18px] h-[18px] shrink-0" />
+                    <span className="truncate">Set Up: Choy Pro Sub</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAdminChoySetupTab('choy_promo');
+                      setActiveTab('admin_choy_setup');
+                    }}
+                    className={`w-full px-3.5 py-2.5 rounded-xl flex items-center gap-3 text-[13.5px] text-left transition whitespace-nowrap ${
+                      activeTab === 'admin_choy_setup' && adminChoySetupTab === 'choy_promo'
+                        ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                        : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                    }`}
+                  >
+                    <Tag className="w-[18px] h-[18px] shrink-0" />
+                    <span className="truncate">Set Up: Choy Promo</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAdminChoySetupTab('choy_wallet');
+                      setActiveTab('admin_choy_setup');
+                    }}
+                    className={`w-full px-3.5 py-2.5 rounded-xl flex items-center gap-3 text-[13.5px] text-left transition whitespace-nowrap ${
+                      activeTab === 'admin_choy_setup' && adminChoySetupTab === 'choy_wallet'
+                        ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                        : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                    }`}
+                  >
+                    <Coins className="w-[18px] h-[18px] shrink-0" />
+                    <span className="truncate">Set Up: Choy Wallet</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('ledger')}
+                    className={`w-full px-3.5 py-2.5 rounded-xl flex items-center gap-3 text-[13.5px] text-left transition whitespace-nowrap ${
+                      activeTab === 'ledger'
+                        ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                        : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                    }`}
+                  >
+                    <FileSpreadsheet className="w-[18px] h-[18px] shrink-0" />
+                    <span className="truncate">Milestone</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('admin_knowledge')}
+                    className={`w-full px-3.5 py-2.5 rounded-xl flex items-center gap-3 text-[13.5px] text-left transition whitespace-nowrap ${
+                      activeTab === 'admin_knowledge'
+                        ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                        : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                    }`}
+                  >
+                    <Database className="w-[18px] h-[18px] shrink-0" />
+                    <span className="truncate">AI Brain</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('admin_prices')}
+                    className={`w-full px-3.5 py-2.5 rounded-xl flex items-center gap-3 text-[13.5px] text-left transition whitespace-nowrap ${
+                      activeTab === 'admin_prices'
+                        ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                        : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                    }`}
+                  >
+                    <Sliders className="w-[18px] h-[18px] shrink-0" />
+                    <span className="truncate">Unit Prices</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('admin_newsfeeds')}
+                    className={`w-full px-3.5 py-2.5 rounded-xl flex items-center gap-3 text-[13.5px] text-left transition whitespace-nowrap ${
+                      activeTab === 'admin_newsfeeds'
+                        ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                        : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                    }`}
+                  >
+                    <Globe className="w-[18px] h-[18px] shrink-0" />
+                    <span className="truncate">Newsfeed Setup</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('admin_approvals')}
+                    className={`w-full px-3.5 py-2.5 rounded-xl flex items-center gap-3 text-[13.5px] text-left transition whitespace-nowrap ${
+                      activeTab === 'admin_approvals'
+                        ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                        : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                    }`}
+                  >
+                    <ShieldCheck className="w-[18px] h-[18px] shrink-0" />
+                    <span className="truncate">User Accounts</span>
+                  </button>
+                </div>
+              </div>
             )}
           </nav>
         </div>
 
-        <div className={`hidden md:block pt-3 border-t ${theme.sidebarFooterBorder} space-y-2`}>
-          <button
-            type="button"
-            onClick={() => setActiveTab('profile')}
-            className={`w-full p-2 rounded-xl border ${theme.sidebarCard} flex items-center gap-2 text-left transition`}
-          >
-            <img
-              src={getUserAvatar(currentUser)}
-              alt=""
-              className={`w-8 h-11 rounded-lg bg-white dark:bg-slate-900 shrink-0 border border-current/25 ${
-                isCustomAvatar(getUserAvatar(currentUser)) ? 'object-cover' : 'object-contain'
-              }`}
-            />
-            <div className="min-w-0 flex-1">
-              <div className={`text-[11px] font-bold truncate ${theme.sidebarTitleText}`}>{currentUser.name}</div>
-              <div className={`text-[9px] truncate ${theme.sidebarMutedText}`}>{isAdmin ? 'Admin • Synced' : 'Member • Synced'}</div>
-            </div>
-          </button>
-          <div className={`flex items-center justify-between gap-1.5 px-2.5 py-2 rounded-xl border ${theme.sidebarCard} text-xs`}>
-            <span className={`font-bold flex items-center gap-1.5 truncate ${theme.sidebarTitleText}`}>
-              <MessageSquare className={`w-3.5 h-3.5 shrink-0 ${theme.sidebarMutedText}`} /> Headbubble
+        {/* Clean Forest-Green Footer Controls */}
+        <div className="px-3.5 py-3 border-t border-white/10 bg-[#0B3D17] space-y-2 shrink-0">
+          <div className="flex items-center justify-between gap-1.5 px-3 py-2 rounded-xl bg-white/[0.07] border border-white/10 text-xs">
+            <span className="font-semibold flex items-center gap-2 truncate text-white/90">
+              <MessageSquare className="w-3.5 h-3.5 shrink-0 text-[#84B38D]" /> Headbubble
             </span>
             <div className="flex items-center gap-1 shrink-0">
               {isDocPipSupported && (
@@ -8370,8 +8430,8 @@ export default function App() {
                   title="Pop out floating window outside browser"
                   className={`px-2 py-1 rounded-lg text-[10px] font-bold transition ${
                     isHeadBubblePipOpen
-                      ? 'bg-amber-400 text-slate-950 shadow'
-                      : theme.chatSecondaryBtn + ' border'
+                      ? 'bg-[#FF5A1F] text-white shadow'
+                      : 'bg-white/10 hover:bg-white/20 text-white/90'
                   }`}
                 >
                   {isHeadBubblePipOpen ? 'Popped' : 'Pop Out'}
@@ -8392,8 +8452,8 @@ export default function App() {
                 }}
                 className={`px-2 py-1 rounded-lg text-[10px] font-bold transition ${
                   chatHeadBubbleEnabled
-                    ? theme.navActive
-                    : theme.drawerSegmentedInactive
+                    ? 'bg-[#FF5A1F] text-white'
+                    : 'bg-white/10 text-white/75 hover:bg-white/20'
                 }`}
               >
                 {chatHeadBubbleEnabled ? 'ON' : 'OFF'}
@@ -8402,8 +8462,11 @@ export default function App() {
           </div>
           <button
             type="button"
-            onClick={() => setIsMenuDrawerOpen(true)}
-            className={`w-full px-3 py-2 rounded-xl border ${theme.sidebarCard} ${theme.sidebarTitleText} text-xs font-semibold flex items-center justify-center gap-2 transition`}
+            onClick={() => {
+              setIsDrawerSettingsOpen(true);
+              setIsMenuDrawerOpen(true);
+            }}
+            className="w-full px-3 py-2 rounded-xl bg-white/[0.07] hover:bg-white/15 border border-white/10 text-white/90 text-xs font-semibold flex items-center justify-center gap-2 transition"
           >
             <MoreVertical className="w-3.5 h-3.5" /> Menu &amp; Settings
           </button>
@@ -10142,6 +10205,11 @@ export default function App() {
               }}
               onOpenPrivacyModal={() => setIsPrivacyModalOpen(true)}
               onDashboardUpdated={(next) => setUserDashboardData(next)}
+              choyProgramsConfig={choyProgramsConfig}
+              onOpenAdminChoySetup={(subTab) => {
+                setAdminChoySetupTab(subTab);
+                setActiveTab('admin_choy_setup');
+              }}
             />
           )}
 
@@ -13101,6 +13169,18 @@ export default function App() {
             </div>
           )}
 
+          {/* CHOY PRO SUBSCRIPTION, PROMO & WALLET ADMIN SET UP */}
+          {activeTab === 'admin_choy_setup' && isAdmin && (
+            <AdminChoySetupPanel
+              config={choyProgramsConfig}
+              initialTab={adminChoySetupTab}
+              members={visibleUsersList.map((u) => ({ id: u.id, name: u.name, phone: u.phone, role: u.role }))}
+              onConfigSaved={(next) => setChoyProgramsConfig(next)}
+              onOwnDashboardUpdated={(next) => setUserDashboardData(next)}
+              onNavigateTab={(tab) => setActiveTab(tab)}
+            />
+          )}
+
           {/* NEWSFEED SETUP (ADMIN ONLY SIDEBAR VIEW) */}
           {activeTab === 'admin_newsfeeds' && isAdmin && (
             <div className="max-w-3xl mx-auto space-y-4">
@@ -13331,6 +13411,9 @@ export default function App() {
               onBackupToFirebase={() => pushBackupToFirebase(false)}
               onRestoreFromFirebase={() => restoreBackupFromFirebase(false)}
               onCloudStateRestored={() => fetchSyncedState(true)}
+              currentUserName={currentUser.name}
+              currentUserPhone={currentUser.phone}
+              currentUserAvatar={isCustomAvatar(getUserAvatar(currentUser)) ? getUserAvatar(currentUser) : undefined}
             />
           )}
 
@@ -14141,928 +14224,856 @@ export default function App() {
         );
       })()}
 
-      {/* 3-DOTS / SIDEBAR MENU & SETTINGS DRAWER */}
+      {/* LEFT SLIDE-OUT FOREST-GREEN SIDEBAR DRAWER */}
       {isMenuDrawerOpen && (
         <div
-          className="fixed inset-0 z-50 bg-slate-950/65 backdrop-blur-sm flex justify-end"
+          className="fixed inset-0 z-50 bg-slate-950/65 backdrop-blur-xs flex justify-start"
           onClick={() => setIsMenuDrawerOpen(false)}
           role="dialog"
           aria-modal="true"
-          aria-label="Menu and Settings"
+          aria-label="Navigation Menu"
         >
           <aside
-            className={`w-full max-w-sm h-full ${theme.drawerAside} border-l shadow-2xl flex flex-col overflow-hidden transition-colors`}
+            className="w-[86%] max-w-[320px] h-full bg-[#0E4B1D] text-white border-r border-white/10 shadow-2xl flex flex-col overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Drawer Header */}
-            <div className={`px-4 py-3.5 border-b ${theme.drawerHeader} flex items-center justify-between gap-2 shrink-0`}>
-              <div className="flex items-center gap-2 min-w-0">
-                <MoreVertical className={`w-4 h-4 shrink-0 ${theme.drawerHeaderIcon}`} />
-                <span className={`text-sm font-black truncate ${theme.drawerHeaderTitle}`}>
-                  Menu &amp; Settings
-                </span>
+            {/* Brand Header matching reference */}
+            <div className="px-4 py-4 border-b border-white/10 flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-3 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsMenuDrawerOpen(false);
+                    setIsAppIconShareModalOpen(true);
+                  }}
+                  className="w-11 h-11 rounded-xl border-2 border-[#FF5E1E]/85 bg-white p-0.5 shrink-0 shadow-sm"
+                  title="Open App Icon Emoji Link"
+                >
+                  <img
+                    src={activeEmojiLink?.iconUrl || DEFAULT_AVATAR}
+                    alt="Choy Chat"
+                    className="w-full h-full object-contain rounded-lg"
+                  />
+                </button>
+                <div className="min-w-0">
+                  <div className="text-[18px] font-extrabold text-[#FF5E1E] leading-tight tracking-tight truncate">
+                    Choy Chat
+                  </div>
+                  <div className="text-xs italic text-[#84B38D] truncate mt-0.5">
+                    All What You Want
+                  </div>
+                </div>
               </div>
               <button
                 type="button"
                 onClick={() => setIsMenuDrawerOpen(false)}
-                className={`p-1.5 rounded-xl border transition ${theme.drawerCloseBtn}`}
+                className="p-2 rounded-xl text-white/85 hover:text-white hover:bg-white/10 transition shrink-0"
                 aria-label="Close menu"
               >
-                <X className="w-4 h-4" />
+                <X className="w-5 h-5" />
               </button>
             </div>
 
             {/* Scrollable Drawer Body */}
-            <div className="flex-1 overflow-y-auto overscroll-y-contain p-4 space-y-5">
-              {/* USER DASHBOARD SIDEBAR BUTTON SECTION (ALL 11 USER TOOLS INSIDE) */}
-              <div className="p-3.5 rounded-2xl border border-emerald-300 dark:border-emerald-700 bg-white/90 dark:bg-slate-900/90 shadow-xs space-y-2.5">
-                <div className="flex items-center justify-between gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveTab('dashboard');
-                      setIsMenuDrawerOpen(false);
-                    }}
-                    className="flex items-center gap-2 text-left min-w-0 flex-1"
-                  >
-                    <LayoutDashboard className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                    <span className="text-[11px] font-black uppercase tracking-wider text-emerald-900 dark:text-emerald-200 truncate">
-                      User Dashboard
+            <div className="flex-1 overflow-y-auto overscroll-y-contain px-4 py-4 space-y-4">
+              {/* Translucent User / Admin Profile Card */}
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('profile');
+                  setIsMenuDrawerOpen(false);
+                }}
+                className="w-full rounded-2xl bg-white/[0.07] hover:bg-white/[0.11] border border-white/15 p-4 text-left transition space-y-3"
+              >
+                <div className="flex items-center gap-3.5">
+                  {isCustomAvatar(getUserAvatar(currentUser)) ? (
+                    <img
+                      src={getUserAvatar(currentUser)}
+                      alt={currentUser.name}
+                      className="w-12 h-12 rounded-full object-cover bg-white shrink-0 border border-white/25"
+                    />
+                  ) : (
+                    <div className="w-12 h-12 rounded-full bg-white text-[#0E4B1D] font-extrabold text-lg flex items-center justify-center shrink-0 shadow-xs">
+                      {(currentUser.name || 'U').trim().charAt(0).toUpperCase()}
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[16px] font-bold text-white truncate leading-tight">
+                      {currentUser.name}
+                    </div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wider text-[#90BE99] mt-0.5">
+                      {isAdmin ? 'ADMIN' : 'CUSTOMER'}
+                    </div>
+                  </div>
+                </div>
+                <div className="space-y-1.5 text-[13px] text-white/90">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <User className="w-4 h-4 text-[#8AB893] shrink-0" />
+                    <span className="truncate font-medium">
+                      {currentUser.id}
                     </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsUserSidebarGroupOpen((v) => !v)}
-                    className="px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 text-[10px] font-bold inline-flex items-center gap-1"
-                  >
-                    <span>Menu</span>
-                    {isUserSidebarGroupOpen ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                  </button>
+                  </div>
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Phone className="w-4 h-4 text-[#8AB893] shrink-0" />
+                    <span className="truncate font-mono text-[12.5px]">
+                      {currentUser.phone || 'No contact number'}
+                    </span>
+                  </div>
+                </div>
+              </button>
+
+              {/* Single-Column Primary Navigation */}
+              <nav className="flex flex-col gap-1">
+                {[
+                  { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
+                  { id: 'marketplace' as const, label: 'Food Store & Marketplace', icon: ShoppingBag },
+                  { id: 'choy_wallet' as const, label: 'Choy Wallet', icon: Coins },
+                  { id: 'choy_pro' as const, label: 'Choy Pro', icon: Crown },
+                  { id: 'subscription' as const, label: 'Subscription', icon: CreditCard },
+                  { id: 'wallet' as const, label: 'Wallet', icon: Wallet },
+                  { id: 'feed' as const, label: 'Newsfeed', icon: Home },
+                  { id: 'messages' as const, label: 'Message', icon: MessageSquare },
+                  { id: 'groupchat' as const, label: 'Groupchat', icon: Users },
+                  { id: 'acknowledgment' as const, label: 'Acknowledgement', icon: FileCheck2 },
+                  { id: 'profile' as const, label: 'Profile & PIN', icon: User },
+                  { id: 'user_created_name' as const, label: 'Created Name', icon: BadgeCheck },
+                  { id: 'rules' as const, label: 'Rules and regulations', icon: BookOpen },
+                ].map((item) => {
+                  const Icon = item.icon;
+                  const isActive = activeTab === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => {
+                        setActiveTab(item.id);
+                        setIsMenuDrawerOpen(false);
+                      }}
+                      className={`w-full px-4 py-3 rounded-xl flex items-center gap-3.5 text-[14px] text-left transition whitespace-nowrap ${
+                        isActive
+                          ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                          : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                      }`}
+                    >
+                      <Icon className="w-5 h-5 shrink-0" />
+                      <span className="truncate">{item.label}</span>
+                    </button>
+                  );
+                })}
+
+                {/* Workspace Section */}
+                <div className="border-t border-white/10 my-2 pt-2.5">
+                  <div className="px-4 pb-1.5 text-[10px] font-bold uppercase tracking-widest text-[#84B38D]">
+                    Workspace
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    {[
+                      { id: 'people' as const, label: 'People', icon: Users },
+                      { id: 'videos' as const, label: 'Videos', icon: Video },
+                      { id: 'analytics' as const, label: 'Analytics', icon: Award },
+                      { id: 'choyai' as const, label: 'Choy AI', icon: Bot },
+                      { id: 'github' as const, label: 'GitHub Intelligence', icon: GitBranch },
+                    ].map((item) => {
+                      const Icon = item.icon;
+                      const isActive = activeTab === item.id;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => {
+                            setActiveTab(item.id);
+                            setIsMenuDrawerOpen(false);
+                          }}
+                          className={`w-full px-4 py-3 rounded-xl flex items-center gap-3.5 text-[14px] text-left transition whitespace-nowrap ${
+                            isActive
+                              ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                              : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                          }`}
+                        >
+                          <Icon className="w-5 h-5 shrink-0" />
+                          <span className="truncate">{item.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
 
-                {isUserSidebarGroupOpen && (
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {[
-                      { id: 'profile' as const, label: 'Profile (Admin Copy)', icon: <User className="w-3.5 h-3.5 shrink-0" /> },
-                      { id: 'user_created_name' as const, label: 'Created Name', icon: <BadgeCheck className="w-3.5 h-3.5 shrink-0" /> },
-                      { id: 'messages' as const, label: 'Message', icon: <MessageSquare className="w-3.5 h-3.5 shrink-0" /> },
-                      { id: 'feed' as const, label: 'Newsfeed', icon: <Home className="w-3.5 h-3.5 shrink-0" /> },
-                      { id: 'groupchat' as const, label: 'Groupchat', icon: <Users className="w-3.5 h-3.5 shrink-0" /> },
-                      { id: 'wallet' as const, label: 'Wallet', icon: <Wallet className="w-3.5 h-3.5 shrink-0" /> },
-                      { id: 'choy_pro' as const, label: 'Choy Pro', icon: <Crown className="w-3.5 h-3.5 shrink-0 text-amber-500" /> },
-                      { id: 'choy_wallet' as const, label: 'Choy Wallet', icon: <Coins className="w-3.5 h-3.5 shrink-0 text-amber-500" /> },
-                      { id: 'subscription' as const, label: 'Subscription', icon: <CreditCard className="w-3.5 h-3.5 shrink-0" /> },
-                      { id: 'rules' as const, label: 'Rules', icon: <BookOpen className="w-3.5 h-3.5 shrink-0" /> },
-                      { id: 'acknowledgment' as const, label: 'Acknowledgment', icon: <FileCheck2 className="w-3.5 h-3.5 shrink-0" /> },
-                      { id: 'marketplace' as const, label: 'Food Store & Marketplace', icon: <ShoppingBag className="w-3.5 h-3.5 shrink-0 text-orange-500" /> },
-                    ].map((item) => (
+                {/* Admin Panel Section */}
+                {isAdmin && (
+                  <div className="border-t border-white/10 my-2 pt-2.5">
+                    <div className="px-4 pb-1.5 text-[10px] font-bold uppercase tracking-widest text-[#FF976B]">
+                      Admin Panel
+                    </div>
+                    <div className="flex flex-col gap-1">
                       <button
-                        key={item.id}
                         type="button"
                         onClick={() => {
-                          setActiveTab(item.id);
+                          setActiveTab('admin_security');
                           setIsMenuDrawerOpen(false);
                         }}
-                        className={`px-2.5 py-2 rounded-xl border flex items-center gap-1.5 text-[11px] font-bold transition ${
-                          activeTab === item.id
-                            ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm'
-                            : `${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-emerald-400`
+                        className={`w-full px-4 py-3 rounded-xl flex items-center gap-3.5 text-[14px] text-left transition whitespace-nowrap ${
+                          activeTab === 'admin_security'
+                            ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                            : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
                         }`}
                       >
-                        {item.icon}
-                        <span className="truncate">{item.label}</span>
+                        <Key className="w-5 h-5 shrink-0" />
+                        <span className="truncate">Security Studio</span>
                       </button>
-                    ))}
-                  </div>
-                )}
-              </div>
 
-              {/* App Navigation Section */}
-              <div className="p-3.5 rounded-2xl border border-emerald-200 dark:border-emerald-800 bg-white/80 dark:bg-slate-900/80 shadow-xs space-y-3">
-                <div className="flex items-center justify-between px-1">
-                  <div className="flex items-center gap-1.5">
-                    <Home className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                    <span className="text-[11px] font-black uppercase tracking-wider text-emerald-900 dark:text-emerald-200">
-                      Other Workspace Tools
-                    </span>
-                  </div>
-                  <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 capitalize">
-                    {activeTab === 'feed' ? 'Newsfeed' : activeTab}
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveTab('people');
-                      setIsMenuDrawerOpen(false);
-                    }}
-                    className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
-                      activeTab === 'people'
-                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm'
-                        : `${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-emerald-400`
-                    }`}
-                  >
-                    <Users className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                    <span>People</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveTab('videos');
-                      setIsMenuDrawerOpen(false);
-                    }}
-                    className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
-                      activeTab === 'videos'
-                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm'
-                        : `${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-emerald-400`
-                    }`}
-                  >
-                    <Video className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                    <span>Videos</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveTab('analytics');
-                      setIsMenuDrawerOpen(false);
-                    }}
-                    className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
-                      activeTab === 'analytics'
-                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm'
-                        : `${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-emerald-400`
-                    }`}
-                  >
-                    <Award className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                    <span>Analytics</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveTab('choyai');
-                      setIsMenuDrawerOpen(false);
-                    }}
-                    className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
-                      activeTab === 'choyai'
-                        ? 'bg-cyan-400 text-slate-950 border-cyan-300 shadow-sm'
-                        : `${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-cyan-400`
-                    }`}
-                  >
-                    <Bot className="w-4 h-4 shrink-0 text-cyan-500" />
-                    <span>Choy AI</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveTab('github');
-                      setIsMenuDrawerOpen(false);
-                    }}
-                    className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
-                      activeTab === 'github'
-                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm'
-                        : `${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-emerald-400`
-                    }`}
-                  >
-                    <GitBranch className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                    <span>GitHub Intel</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Admin Panel Navigation Section (Mobile & Desktop Drawer) */}
-              {isAdmin && (
-                <div className="p-3.5 rounded-2xl border border-indigo-300 dark:border-indigo-700/80 bg-indigo-50/70 dark:bg-indigo-950/50 shadow-xs space-y-2.5">
-                  <div className="flex items-center justify-between px-1">
-                    <div className="flex items-center gap-1.5">
-                      <ShieldCheck className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                      <span className="text-[11px] font-black uppercase tracking-wider text-indigo-900 dark:text-indigo-200">
-                        Admin Panel
-                      </span>
-                    </div>
-                    <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-indigo-200/80 dark:bg-indigo-900 text-indigo-800 dark:text-indigo-200">
-                      Admin Only
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveTab('admin_security');
-                        setIsMenuDrawerOpen(false);
-                      }}
-                      className={`col-span-2 px-3 py-2.5 rounded-xl border flex items-center justify-center gap-2 text-xs font-black transition ${
-                        activeTab === 'admin_security'
-                          ? 'bg-indigo-600 text-white border-indigo-400 shadow-sm'
-                          : 'bg-white dark:bg-indigo-900/60 border-indigo-300 dark:border-indigo-700 text-indigo-800 dark:text-indigo-100 hover:bg-indigo-100 dark:hover:bg-indigo-800'
-                      }`}
-                    >
-                      <Key className="w-4 h-4 shrink-0" />
-                      <span>Security Studio</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveTab('ledger');
-                        setIsMenuDrawerOpen(false);
-                      }}
-                      className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
-                        activeTab === 'ledger'
-                          ? 'bg-indigo-600 text-white border-indigo-400 shadow-sm'
-                          : 'bg-white dark:bg-indigo-900/40 border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 hover:border-indigo-400'
-                      }`}
-                    >
-                      <FileSpreadsheet className="w-4 h-4 shrink-0" />
-                      <span className="truncate">Milestone</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveTab('admin_knowledge');
-                        setIsMenuDrawerOpen(false);
-                      }}
-                      className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
-                        activeTab === 'admin_knowledge'
-                          ? 'bg-indigo-600 text-white border-indigo-400 shadow-sm'
-                          : 'bg-white dark:bg-indigo-900/40 border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 hover:border-indigo-400'
-                      }`}
-                    >
-                      <Database className="w-4 h-4 shrink-0" />
-                      <span className="truncate">AI Brain</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveTab('admin_prices');
-                        setIsMenuDrawerOpen(false);
-                      }}
-                      className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
-                        activeTab === 'admin_prices'
-                          ? 'bg-indigo-600 text-white border-indigo-400 shadow-sm'
-                          : 'bg-white dark:bg-indigo-900/40 border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 hover:border-indigo-400'
-                      }`}
-                    >
-                      <Sliders className="w-4 h-4 shrink-0" />
-                      <span className="truncate">Unit Prices</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveTab('admin_newsfeeds');
-                        setIsMenuDrawerOpen(false);
-                      }}
-                      className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
-                        activeTab === 'admin_newsfeeds'
-                          ? 'bg-indigo-600 text-white border-indigo-400 shadow-sm'
-                          : 'bg-white dark:bg-indigo-900/40 border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 hover:border-indigo-400'
-                      }`}
-                    >
-                      <Globe className="w-4 h-4 shrink-0" />
-                      <span className="truncate">Newsfeeds</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveTab('admin_approvals');
-                        setIsMenuDrawerOpen(false);
-                      }}
-                      className={`col-span-2 px-3 py-2 rounded-xl border flex items-center justify-center gap-2 text-xs font-bold transition ${
-                        activeTab === 'admin_approvals'
-                          ? 'bg-indigo-600 text-white border-indigo-400 shadow-sm'
-                          : 'bg-white dark:bg-indigo-900/40 border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 hover:border-indigo-400'
-                      }`}
-                    >
-                      <Users className="w-4 h-4 shrink-0" />
-                      <span>User Accounts Management</span>
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Account Summary & Quick Actions */}
-              <div className="space-y-2.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActiveTab('profile');
-                    setIsMenuDrawerOpen(false);
-                  }}
-                  className={`w-full p-3 rounded-2xl border flex items-center gap-3 text-left transition ${
-                    activeTab === 'profile'
-                      ? 'bg-emerald-100 dark:bg-emerald-900 border-emerald-400 dark:border-emerald-500'
-                      : 'bg-emerald-50/70 dark:bg-emerald-900/40 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100/80 dark:hover:bg-emerald-900/70'
-                  }`}
-                >
-                  <img
-                    src={getUserAvatar(currentUser)}
-                    alt=""
-                    className={`w-10 h-13 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-500/60 shrink-0 ${
-                      isCustomAvatar(getUserAvatar(currentUser)) ? 'object-cover' : 'object-contain'
-                    }`}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-xs font-black text-emerald-950 dark:text-white truncate">{currentUser.name}</div>
-                    <div className="text-[11px] font-mono text-emerald-700 dark:text-emerald-300 truncate">{currentUser.phone}</div>
-                    <div className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-300 mt-0.5">
-                      {isAdmin ? 'Admin' : 'Active Member'} · Tap to view Profile
-                    </div>
-                  </div>
-                </button>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveTab('profile');
-                      setIsMenuDrawerOpen(false);
-                    }}
-                    className="px-3 py-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-100 dark:hover:bg-emerald-800 text-xs font-bold inline-flex items-center justify-center gap-1.5 transition"
-                  >
-                    <User className="w-3.5 h-3.5" /> My Profile
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleShareApp}
-                    className="px-3 py-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-100 dark:hover:bg-emerald-800 text-xs font-bold inline-flex items-center justify-center gap-1.5 transition"
-                  >
-                    <Share2 className="w-3.5 h-3.5" /> {shareCopied ? 'Copied!' : 'Share App'}
-                  </button>
-                </div>
-
-                <div>
-                  <PWAInstallButton fullWidth />
-                </div>
-
-                {/* Background Home-Screen Notifications (Messages & Video Calls) */}
-                <div className="p-3 rounded-xl bg-emerald-50/80 dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-700 space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      {isPushSubscribed ? (
-                        <Bell className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                      ) : (
-                        <BellOff className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
-                      )}
-                      <div className="min-w-0">
-                        <div className="text-xs font-bold text-emerald-950 dark:text-white truncate">
-                          Background Notifications
-                        </div>
-                        <div className="text-[10px] text-emerald-700 dark:text-emerald-300">
-                          {pushPermission === 'unsupported'
-                            ? 'Install PWA on Home Screen to enable'
-                            : pushPermission === 'denied'
-                            ? 'Blocked in browser site settings'
-                            : isPushSubscribed
-                            ? 'Active — Home-screen messages & calls ON'
-                            : 'Receive alerts even when app is closed'}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  {pushPermission !== 'unsupported' && (
-                    <button
-                      type="button"
-                      disabled={isSubscribingPush || pushPermission === 'denied'}
-                      onClick={() =>
-                        isPushSubscribed
-                          ? unsubscribeFromBackgroundPush()
-                          : subscribeToBackgroundPush(false)
-                      }
-                      className={`w-full py-2 rounded-lg text-xs font-bold transition disabled:opacity-50 ${
-                        isPushSubscribed
-                          ? 'bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800'
-                          : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-xs'
-                      }`}
-                    >
-                      {isSubscribingPush
-                        ? 'Updating...'
-                        : isPushSubscribed
-                        ? 'Turn Off Background Alerts'
-                        : 'Enable Home-Screen Alerts'}
-                    </button>
-                  )}
-                </div>
-
-                {/* Chat Headbubble Popup Toggle (Accessible on Mobile & Desktop) */}
-                <div className="p-3 rounded-xl bg-emerald-50/80 dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-700 space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <MessageSquare className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                      <div className="min-w-0">
-                        <div className="text-xs font-bold text-emerald-950 dark:text-white truncate">
-                          Headbubble Popup
-                        </div>
-                        <div className="text-[10px] text-emerald-700 dark:text-emerald-300">
-                          In-app bubble + OS heads-up popup when minimized
-                        </div>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const next = !chatHeadBubbleEnabled;
-                        setChatHeadBubbleEnabled(next);
-                        localStorage.setItem('choychat_chat_head_bubble_v1', String(next));
-                        if (!next) {
-                          setActiveChatHeadMessage(null);
-                        } else if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
-                          void subscribeToBackgroundPush(false);
-                        }
-                        showNotice(next ? 'Chat Head Bubbles Enabled' : 'Chat Head Bubbles Disabled');
-                      }}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold shrink-0 transition ${
-                        chatHeadBubbleEnabled
-                          ? 'bg-emerald-400 text-slate-950 shadow-xs'
-                          : 'bg-emerald-200 dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200'
-                      }`}
-                    >
-                      {chatHeadBubbleEnabled ? 'ON' : 'OFF'}
-                    </button>
-                  </div>
-                  {isDocPipSupported && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsMenuDrawerOpen(false);
-                        void openFloatingHeadBubbleWindow();
-                      }}
-                      className="w-full py-2 rounded-lg text-xs font-bold bg-amber-400 hover:bg-amber-300 text-slate-950 transition shadow-xs"
-                    >
-                      {isHeadBubblePipOpen ? 'Focus Floating Mini-Window' : 'Pop Out Floating Mini-Window (Outside Browser)'}
-                    </button>
-                  )}
-                </div>
-
-                {/* Live GPS Location Activation */}
-                <div className="p-3 rounded-xl bg-emerald-50/80 dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-700 space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <MapPin
-                        className={`w-4 h-4 shrink-0 ${
-                          appPermissions.location === 'granted'
-                            ? 'text-emerald-600 dark:text-emerald-400'
-                            : 'text-amber-600 dark:text-amber-400'
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAdminChoySetupTab('choy_pro');
+                          setActiveTab('admin_choy_setup');
+                          setIsMenuDrawerOpen(false);
+                        }}
+                        className={`w-full px-4 py-3 rounded-xl flex items-center gap-3.5 text-[14px] text-left transition whitespace-nowrap ${
+                          activeTab === 'admin_choy_setup' && adminChoySetupTab === 'choy_pro'
+                            ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                            : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
                         }`}
-                      />
-                      <div className="min-w-0">
-                        <div className="text-xs font-bold text-emerald-950 dark:text-white truncate">
-                          GPS Location
-                        </div>
-                        <div className="text-[10px] text-emerald-700 dark:text-emerald-300">
-                          {appPermissions.location === 'granted'
-                            ? 'Active — Live GPS location is ON'
-                            : appPermissions.location === 'denied'
-                            ? 'Blocked — Allow Location in browser site settings'
-                            : 'Turn ON to allow live GPS location in app'}
-                        </div>
-                      </div>
+                      >
+                        <Crown className="w-5 h-5 shrink-0" />
+                        <span className="truncate">Set Up: Choy Pro Sub</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAdminChoySetupTab('choy_promo');
+                          setActiveTab('admin_choy_setup');
+                          setIsMenuDrawerOpen(false);
+                        }}
+                        className={`w-full px-4 py-3 rounded-xl flex items-center gap-3.5 text-[14px] text-left transition whitespace-nowrap ${
+                          activeTab === 'admin_choy_setup' && adminChoySetupTab === 'choy_promo'
+                            ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                            : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                        }`}
+                      >
+                        <Tag className="w-5 h-5 shrink-0" />
+                        <span className="truncate">Set Up: Choy Promo</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAdminChoySetupTab('choy_wallet');
+                          setActiveTab('admin_choy_setup');
+                          setIsMenuDrawerOpen(false);
+                        }}
+                        className={`w-full px-4 py-3 rounded-xl flex items-center gap-3.5 text-[14px] text-left transition whitespace-nowrap ${
+                          activeTab === 'admin_choy_setup' && adminChoySetupTab === 'choy_wallet'
+                            ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                            : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                        }`}
+                      >
+                        <Coins className="w-5 h-5 shrink-0" />
+                        <span className="truncate">Set Up: Choy Wallet</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab('ledger');
+                          setIsMenuDrawerOpen(false);
+                        }}
+                        className={`w-full px-4 py-3 rounded-xl flex items-center gap-3.5 text-[14px] text-left transition whitespace-nowrap ${
+                          activeTab === 'ledger'
+                            ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                            : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                        }`}
+                      >
+                        <FileSpreadsheet className="w-5 h-5 shrink-0" />
+                        <span className="truncate">Milestone</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab('admin_knowledge');
+                          setIsMenuDrawerOpen(false);
+                        }}
+                        className={`w-full px-4 py-3 rounded-xl flex items-center gap-3.5 text-[14px] text-left transition whitespace-nowrap ${
+                          activeTab === 'admin_knowledge'
+                            ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                            : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                        }`}
+                      >
+                        <Database className="w-5 h-5 shrink-0" />
+                        <span className="truncate">AI Brain</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab('admin_prices');
+                          setIsMenuDrawerOpen(false);
+                        }}
+                        className={`w-full px-4 py-3 rounded-xl flex items-center gap-3.5 text-[14px] text-left transition whitespace-nowrap ${
+                          activeTab === 'admin_prices'
+                            ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                            : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                        }`}
+                      >
+                        <Sliders className="w-5 h-5 shrink-0" />
+                        <span className="truncate">Unit Prices</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab('admin_newsfeeds');
+                          setIsMenuDrawerOpen(false);
+                        }}
+                        className={`w-full px-4 py-3 rounded-xl flex items-center gap-3.5 text-[14px] text-left transition whitespace-nowrap ${
+                          activeTab === 'admin_newsfeeds'
+                            ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                            : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                        }`}
+                      >
+                        <Globe className="w-5 h-5 shrink-0" />
+                        <span className="truncate">Newsfeed Setup</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab('admin_approvals');
+                          setIsMenuDrawerOpen(false);
+                        }}
+                        className={`w-full px-4 py-3 rounded-xl flex items-center gap-3.5 text-[14px] text-left transition whitespace-nowrap ${
+                          activeTab === 'admin_approvals'
+                            ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                            : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                        }`}
+                      >
+                        <ShieldCheck className="w-5 h-5 shrink-0" />
+                        <span className="truncate">User Accounts</span>
+                      </button>
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    disabled={isRequestingPermissions}
-                    onClick={() => {
-                      if (typeof navigator === 'undefined' || !('geolocation' in navigator)) {
-                        showNotice('GPS is not supported on this browser/device.');
-                        return;
-                      }
-                      navigator.geolocation.getCurrentPosition(
-                        (pos) => {
-                          const coords = {
-                            lat: pos.coords.latitude,
-                            lng: pos.coords.longitude,
-                            accuracy: Math.round(pos.coords.accuracy || 0),
-                            speed: pos.coords.speed,
-                            heading: pos.coords.heading,
-                          };
-                          initialGpsRef.current = coords;
-                          setAppPermissions((prev) => ({ ...prev, location: 'granted' }));
-                          if (authToken) {
-                            fetch('/api/choy/gps/ping', {
-                              method: 'POST',
-                              credentials: 'same-origin',
-                              headers: {
-                                'Content-Type': 'application/json',
-                                Authorization: `Bearer ${authToken}`,
-                              },
-                              body: JSON.stringify(coords),
-                            }).catch(() => {});
-                          }
-                          showNotice('GPS Location ON na ug na-sync na!');
-                        },
-                        (err) => {
-                          if (err.code === err.PERMISSION_DENIED) {
-                            setAppPermissions((prev) => ({ ...prev, location: 'denied' }));
-                            showNotice('Naka-block ang Location sa browser. I-allow sa padlock icon sa address bar ug i-on ang GPS sa cellphone.');
-                          } else {
-                            showNotice('I-on ang Location/GPS sa imong cellphone settings unya sulayi pag-usab.');
-                          }
-                        },
-                        { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
-                      );
-                    }}
-                    className={`w-full py-2 rounded-lg text-xs font-bold transition disabled:opacity-50 ${
-                      appPermissions.location === 'granted'
-                        ? 'bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800'
-                        : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-xs'
-                    }`}
-                  >
-                    {appPermissions.location === 'granted' ? 'Refresh Live GPS Location' : 'Turn On GPS Location'}
-                  </button>
-                </div>
-
-                {/* Test Video Call Ringtone */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    void playSingleRingtoneBurst().then((ok) => {
-                      showNotice(ok ? 'Playing video call ringtone!' : 'Tap again or check device volume.');
-                    });
-                  }}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-emerald-100 dark:bg-emerald-900/70 border border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-emerald-100 hover:bg-emerald-200/80 dark:hover:bg-emerald-800 text-xs font-bold inline-flex items-center justify-center gap-1.5 transition"
-                >
-                  <PhoneCall className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-300" /> Test Video Call Ringtone
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsMenuDrawerOpen(false);
-                    setIsPrivacyModalOpen(true);
-                  }}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-emerald-100 dark:bg-emerald-900/70 border border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-emerald-100 hover:bg-emerald-200/80 dark:hover:bg-emerald-800 text-xs font-bold inline-flex items-center justify-center gap-1.5 transition"
-                >
-                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-300" /> Privacy Policy &amp; Acknowledgments
-                </button>
-
-                {isAdmin && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveTab('admin_approvals');
-                      setIsMenuDrawerOpen(false);
-                    }}
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 transition shadow-xs"
-                  >
-                    <Users className="w-4 h-4" /> User Accounts Management
-                  </button>
                 )}
-              </div>
+              </nav>
 
-              {/* Themes & Appearance Controls */}
-              <section className={`p-4 rounded-2xl border ${theme.drawerSectionCard} space-y-4`}>
-                <div className={`flex items-center justify-between gap-2 pb-2.5 border-b ${theme.drawerSectionBorder}`}>
-                  <div>
-                    <h3 className={`text-xs font-black uppercase tracking-wider flex items-center gap-1.5 ${theme.sidebarTitleText}`}>
-                      <Palette className={`w-3.5 h-3.5 shrink-0 ${theme.drawerHeaderIcon}`} />
-                      <span>Themes &amp; Appearance</span>
-                    </h3>
-                    <p className={`text-[11px] mt-0.5 ${theme.sidebarMutedText}`}>
-                      Theme: <span className="font-bold">{theme.name}</span> · {resolvedTheme === 'dark' ? 'Dark' : 'Light'}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={resetAppearance}
-                    className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold inline-flex items-center gap-1 transition ${theme.drawerCloseBtn}`}
-                  >
-                    <RotateCcw className="w-3 h-3" /> Reset
-                  </button>
-                </div>
+              {/* Collapsible Settings, Appearance & Device Controls */}
+              <div className="border-t border-white/10 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setIsDrawerSettingsOpen((prev) => !prev)}
+                  className="w-full px-4 py-3 rounded-xl bg-white/[0.07] hover:bg-white/15 border border-white/15 flex items-center justify-between gap-2 text-[13.5px] font-semibold text-white/95 transition"
+                >
+                  <span className="flex items-center gap-3 truncate">
+                    <Palette className="w-4 h-4 text-[#84B38D] shrink-0" />
+                    <span className="truncate">Settings &amp; Appearance</span>
+                  </span>
+                  {isDrawerSettingsOpen ? (
+                    <ChevronUp className="w-4 h-4 text-white/75 shrink-0" />
+                  ) : (
+                    <ChevronDown className="w-4 h-4 text-white/75 shrink-0" />
+                  )}
+                </button>
 
-                {/* Predefined Color Scheme Themes Picker */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className={`text-[11px] font-bold ${theme.sidebarTitleText}`}>Themes</span>
-                    <span className={`text-[10px] ${theme.sidebarMutedText}`}>Updates headers &amp; chat bubbles</span>
-                  </div>
-                  <div
-                    role="radiogroup"
-                    aria-label="Predefined color themes"
-                    className="grid grid-cols-2 gap-2"
-                  >
-                    {COLOR_THEME_LIST.map((preset) => {
-                      const isSelected = colorTheme === preset.id;
-                      return (
-                        <button
-                          key={preset.id}
-                          type="button"
-                          role="radio"
-                          aria-checked={isSelected}
-                          onClick={() => {
-                            setColorTheme(preset.id);
-                            showNotice(`${preset.name} theme applied`);
-                          }}
-                          className={`p-2.5 rounded-xl border text-left transition flex flex-col gap-2 ${
-                            isSelected
-                              ? `${theme.drawerAside} ring-2 ring-amber-400 border-amber-400 shadow-sm`
-                              : `${theme.drawerAside} opacity-90 hover:opacity-100`
-                          }`}
-                        >
-                          {/* Mini UI Header + Bubble Preview */}
-                          <div className="w-full rounded-lg border border-black/10 dark:border-white/10 overflow-hidden bg-slate-50 dark:bg-slate-900/70 p-1.5 space-y-1">
-                            <div className={`h-2 w-full rounded-full bg-gradient-to-r ${preset.previewHeaderBar}`} />
-                            <div className="flex flex-col gap-1 pt-0.5">
-                              <div className={`h-2 w-9 rounded-full self-start ${preset.previewBubbleOther}`} />
-                              <div className={`h-2 w-11 rounded-full self-end ${preset.previewBubbleMe}`} />
-                            </div>
+                {isDrawerSettingsOpen && (
+                  <div className="mt-3 space-y-3">
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab('profile');
+                          setIsMenuDrawerOpen(false);
+                        }}
+                        className="px-3 py-2.5 rounded-xl bg-white/[0.08] border border-white/15 text-white hover:bg-white/15 text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition"
+                      >
+                        <User className="w-3.5 h-3.5" /> My Profile
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleShareApp}
+                        className="px-3 py-2.5 rounded-xl bg-white/[0.08] border border-white/15 text-white hover:bg-white/15 text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition"
+                      >
+                        <Share2 className="w-3.5 h-3.5" /> {shareCopied ? 'Copied!' : 'Share App'}
+                      </button>
+                    </div>
+
+                    <div>
+                      <PWAInstallButton fullWidth />
+                    </div>
+
+                    {/* Background Home-Screen Notifications */}
+                    <div className="p-3 rounded-xl bg-white/[0.07] border border-white/15 space-y-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        {isPushSubscribed ? (
+                          <Bell className="w-4 h-4 text-[#84B38D] shrink-0" />
+                        ) : (
+                          <BellOff className="w-4 h-4 text-amber-300 shrink-0" />
+                        )}
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-white truncate">
+                            Background Notifications
                           </div>
-                          <div className="flex items-center justify-between gap-1.5">
-                            <div className="min-w-0">
-                              <div className={`text-xs font-extrabold truncate flex items-center gap-1.5 ${theme.sidebarTitleText}`}>
-                                <span className={`w-2.5 h-2.5 rounded-full bg-gradient-to-br ${preset.swatchGradient} shrink-0`} />
-                                <span>{preset.name}</span>
-                              </div>
-                              <div className={`text-[10px] truncate ${theme.sidebarMutedText}`}>
-                                {preset.subtitle}
-                              </div>
-                            </div>
-                            {isSelected && (
-                              <span className={`w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0 ${theme.chatActivePill}`}>
-                                <Check className="w-3 h-3" />
-                              </span>
-                            )}
+                          <div className="text-[10px] text-white/70">
+                            {pushPermission === 'unsupported'
+                              ? 'Install PWA on Home Screen to enable'
+                              : pushPermission === 'denied'
+                              ? 'Blocked in browser site settings'
+                              : isPushSubscribed
+                              ? 'Active — Home-screen messages & calls ON'
+                              : 'Receive alerts even when app is closed'}
                           </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Brightness Mode Selector */}
-                <div className={`space-y-2 pt-2 border-t ${theme.drawerSectionBorder}`}>
-                  <div className={`text-[11px] font-bold ${theme.sidebarTitleText}`}>Brightness Mode</div>
-                  <div
-                    role="radiogroup"
-                    aria-label="Brightness mode"
-                    className={`grid grid-cols-3 gap-1.5 p-1 rounded-xl border ${theme.drawerAside}`}
-                  >
-                    {(
-                      [
-                        { id: 'light', label: 'Light', icon: Sun },
-                        { id: 'dark', label: 'Dark', icon: Moon },
-                        { id: 'system', label: 'System', icon: Monitor },
-                      ] as const
-                    ).map((opt) => {
-                      const Icon = opt.icon;
-                      const isActive = themeMode === opt.id;
-                      return (
+                        </div>
+                      </div>
+                      {pushPermission !== 'unsupported' && (
                         <button
-                          key={opt.id}
                           type="button"
-                          role="radio"
-                          aria-checked={isActive}
-                          onClick={() => setThemeMode(opt.id)}
-                          className={`min-h-[42px] px-2 py-2 rounded-lg flex items-center justify-center gap-1.5 text-xs font-semibold transition ${
-                            isActive ? theme.drawerSegmentedActive : theme.drawerSegmentedInactive
+                          disabled={isSubscribingPush || pushPermission === 'denied'}
+                          onClick={() =>
+                            isPushSubscribed
+                              ? unsubscribeFromBackgroundPush()
+                              : subscribeToBackgroundPush(false)
+                          }
+                          className={`w-full py-2 rounded-lg text-xs font-bold transition disabled:opacity-50 ${
+                            isPushSubscribed
+                              ? 'bg-white/10 border border-white/20 text-white hover:bg-white/20'
+                              : 'bg-[#FF5A1F] hover:bg-[#EA4E14] text-white shadow-xs'
                           }`}
                         >
-                          <Icon className="w-3.5 h-3.5 shrink-0" />
-                          <span>{opt.label}</span>
+                          {isSubscribingPush
+                            ? 'Updating...'
+                            : isPushSubscribed
+                            ? 'Turn Off Background Alerts'
+                            : 'Enable Home-Screen Alerts'}
                         </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Message Background Color Selector */}
-                <div className={`space-y-2 pt-2 border-t ${theme.drawerSectionBorder}`}>
-                  <div className={`text-[11px] font-bold ${theme.sidebarTitleText}`}>Message Background Color</div>
-                  <div
-                    role="radiogroup"
-                    aria-label="Message background color"
-                    className={`grid grid-cols-3 gap-1.5 p-1 rounded-xl border ${theme.drawerAside}`}
-                  >
-                    {(
-                      [
-                        { id: 'default', label: 'Themed', swatch: `bg-gradient-to-br ${theme.swatchGradient} border-white/60` },
-                        { id: 'black', label: 'Black / White', swatch: 'bg-black border-neutral-400' },
-                        { id: 'white', label: 'White / Black', swatch: 'bg-white border-slate-500' },
-                      ] as const
-                    ).map((opt) => {
-                      const isActive = msgBgMode === opt.id;
-                      return (
-                        <button
-                          key={opt.id}
-                          type="button"
-                          role="radio"
-                          aria-checked={isActive}
-                          onClick={() => selectMsgBgMode(opt.id)}
-                          className={`min-h-[40px] px-2 py-2 rounded-lg flex items-center justify-center gap-1.5 text-[11px] font-semibold transition ${
-                            isActive ? theme.drawerSegmentedActive : theme.drawerSegmentedInactive
-                          }`}
-                        >
-                          <span className={`w-3 h-3 rounded-full border shrink-0 ${opt.swatch}`} />
-                          <span className="truncate">{opt.label}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Quick Dark Mode Switch */}
-                <div className={`flex items-center justify-between gap-3 pt-2 border-t ${theme.drawerSectionBorder}`}>
-                  <div className="min-w-0">
-                    <div className={`text-xs font-semibold ${theme.sidebarTitleText}`}>Dark Mode Switch</div>
-                    <div className={`text-[10px] ${theme.sidebarMutedText}`}>Quick daylight / night toggle</div>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={resolvedTheme === 'dark'}
-                    aria-label="Toggle dark mode"
-                    onClick={toggleLightDark}
-                    className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors ${
-                      resolvedTheme === 'dark' ? theme.drawerSwitchTrackOn : theme.drawerSwitchTrackOff
-                    }`}
-                  >
-                    <span
-                      className={`inline-flex h-5 w-5 items-center justify-center rounded-full bg-white text-slate-900 shadow transition-transform ${
-                        resolvedTheme === 'dark' ? 'translate-x-6' : 'translate-x-1'
-                      }`}
-                    >
-                      {resolvedTheme === 'dark' ? (
-                        <Moon className="w-3 h-3" />
-                      ) : (
-                        <Sun className="w-3 h-3 text-amber-600" />
                       )}
-                    </span>
-                  </button>
-                </div>
+                    </div>
 
-                {/* Reading Text Size */}
-                <div className={`space-y-2 pt-2 border-t ${theme.drawerSectionBorder}`}>
-                  <div className="flex items-center justify-between text-[11px]">
-                    <span className={`font-bold inline-flex items-center gap-1.5 ${theme.sidebarTitleText}`}>
-                      <Type className={`w-3.5 h-3.5 ${theme.sidebarMutedText}`} /> Reading Text Size
-                    </span>
-                    <span className={`font-mono capitalize ${theme.sidebarMutedText}`}>{fontScale}</span>
-                  </div>
-                  <div className={`grid grid-cols-3 gap-1.5 p-1 rounded-xl border ${theme.drawerAside}`}>
-                    {(
-                      [
-                        { id: 'compact', label: 'Compact' },
-                        { id: 'standard', label: 'Standard' },
-                        { id: 'large', label: 'Large' },
-                      ] as const
-                    ).map((opt) => {
-                      const active = fontScale === opt.id;
-                      return (
+                    {/* Chat Headbubble Popup Toggle */}
+                    <div className="p-3 rounded-xl bg-white/[0.07] border border-white/15 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <MessageSquare className="w-4 h-4 text-[#84B38D] shrink-0" />
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold text-white truncate">
+                              Headbubble Popup
+                            </div>
+                            <div className="text-[10px] text-white/70">
+                              In-app bubble + OS heads-up popup
+                            </div>
+                          </div>
+                        </div>
                         <button
-                          key={opt.id}
                           type="button"
-                          onClick={() => setFontScale(opt.id)}
-                          className={`min-h-[36px] px-2 py-1.5 rounded-lg text-xs font-semibold transition ${
-                            active ? theme.drawerSegmentedActive : theme.drawerSegmentedInactive
+                          onClick={() => {
+                            const next = !chatHeadBubbleEnabled;
+                            setChatHeadBubbleEnabled(next);
+                            localStorage.setItem('choychat_chat_head_bubble_v1', String(next));
+                            if (!next) {
+                              setActiveChatHeadMessage(null);
+                            } else if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
+                              void subscribeToBackgroundPush(false);
+                            }
+                            showNotice(next ? 'Chat Head Bubbles Enabled' : 'Chat Head Bubbles Disabled');
+                          }}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-bold shrink-0 transition ${
+                            chatHeadBubbleEnabled
+                              ? 'bg-[#FF5A1F] text-white shadow-xs'
+                              : 'bg-white/15 text-white/80'
                           }`}
                         >
-                          {opt.label}
+                          {chatHeadBubbleEnabled ? 'ON' : 'OFF'}
                         </button>
-                      );
-                    })}
-                  </div>
-                </div>
+                      </div>
+                      {isDocPipSupported && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsMenuDrawerOpen(false);
+                            void openFloatingHeadBubbleWindow();
+                          }}
+                          className="w-full py-2 rounded-lg text-xs font-bold bg-[#FF5A1F] hover:bg-[#EA4E14] text-white transition shadow-xs"
+                        >
+                          {isHeadBubblePipOpen ? 'Focus Floating Mini-Window' : 'Pop Out Floating Mini-Window'}
+                        </button>
+                      )}
+                    </div>
 
-                {/* Reduce Motion */}
-                <div className={`flex items-center justify-between gap-3 pt-2 border-t ${theme.drawerSectionBorder}`}>
-                  <div className="min-w-0">
-                    <div className={`text-xs font-semibold ${theme.sidebarTitleText}`}>Reduce Motion</div>
-                    <div className={`text-[10px] ${theme.sidebarMutedText}`}>Minimize animations &amp; transitions</div>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={reducedMotion}
-                    aria-label="Toggle reduced motion"
-                    onClick={() => setReducedMotion(!reducedMotion)}
-                    className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors ${
-                      reducedMotion ? theme.drawerSwitchTrackOn : theme.drawerSwitchTrackOff
-                    }`}
-                  >
-                    <span
-                      className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${
-                        reducedMotion ? 'translate-x-6' : 'translate-x-1'
-                      }`}
-                    />
-                  </button>
-                </div>
-              </section>
+                    {/* Live GPS Location Activation */}
+                    <div className="p-3 rounded-xl bg-white/[0.07] border border-white/15 space-y-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <MapPin
+                          className={`w-4 h-4 shrink-0 ${
+                            appPermissions.location === 'granted' ? 'text-[#84B38D]' : 'text-amber-300'
+                          }`}
+                        />
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-white truncate">GPS Location</div>
+                          <div className="text-[10px] text-white/70">
+                            {appPermissions.location === 'granted'
+                              ? 'Active — Live GPS location is ON'
+                              : appPermissions.location === 'denied'
+                              ? 'Blocked — Allow Location in browser settings'
+                              : 'Turn ON to allow live GPS location in app'}
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={isRequestingPermissions}
+                        onClick={() => {
+                          if (typeof navigator === 'undefined' || !('geolocation' in navigator)) {
+                            showNotice('GPS is not supported on this browser/device.');
+                            return;
+                          }
+                          navigator.geolocation.getCurrentPosition(
+                            (pos) => {
+                              const coords = {
+                                lat: pos.coords.latitude,
+                                lng: pos.coords.longitude,
+                                accuracy: Math.round(pos.coords.accuracy || 0),
+                                speed: pos.coords.speed,
+                                heading: pos.coords.heading,
+                              };
+                              initialGpsRef.current = coords;
+                              setAppPermissions((prev) => ({ ...prev, location: 'granted' }));
+                              if (authToken) {
+                                fetch('/api/choy/gps/ping', {
+                                  method: 'POST',
+                                  credentials: 'same-origin',
+                                  headers: {
+                                    'Content-Type': 'application/json',
+                                    Authorization: `Bearer ${authToken}`,
+                                  },
+                                  body: JSON.stringify(coords),
+                                }).catch(() => {});
+                              }
+                              showNotice('GPS Location ON na ug na-sync na!');
+                            },
+                            (err) => {
+                              if (err.code === err.PERMISSION_DENIED) {
+                                setAppPermissions((prev) => ({ ...prev, location: 'denied' }));
+                                showNotice('Naka-block ang Location sa browser. I-allow sa padlock icon sa address bar ug i-on ang GPS sa cellphone.');
+                              } else {
+                                showNotice('I-on ang Location/GPS sa imong cellphone settings unya sulayi pag-usab.');
+                              }
+                            },
+                            { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+                          );
+                        }}
+                        className={`w-full py-2 rounded-lg text-xs font-bold transition disabled:opacity-50 ${
+                          appPermissions.location === 'granted'
+                            ? 'bg-white/10 border border-white/20 text-white hover:bg-white/20'
+                            : 'bg-[#FF5A1F] hover:bg-[#EA4E14] text-white shadow-xs'
+                        }`}
+                      >
+                        {appPermissions.location === 'granted' ? 'Refresh Live GPS Location' : 'Turn On GPS Location'}
+                      </button>
+                    </div>
 
-              {/* Account Setup & Delete Account */}
-              <section className="p-4 rounded-2xl bg-rose-50/70 dark:bg-rose-950/35 border border-rose-200 dark:border-rose-800/70 space-y-3">
-                <div>
-                  <h3 className="text-xs font-black uppercase tracking-wider text-rose-800 dark:text-rose-200 flex items-center gap-1.5">
-                    <Trash2 className="w-3.5 h-3.5" /> Account Setup &amp; Delete
-                  </h3>
-                  <p className="text-[11px] text-rose-700/90 dark:text-rose-200/80 mt-1 leading-relaxed">
-                    {isAdmin
-                      ? 'Open Accounts to review or permanently remove member accounts.'
-                      : 'Permanently delete your Choy Chat account and sign out of this device.'}
-                  </p>
-                </div>
-
-                {isAdmin ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveTab('admin_approvals');
-                      setIsMenuDrawerOpen(false);
-                    }}
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 transition shadow-xs"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" /> Manage / Delete Accounts
-                  </button>
-                ) : (
-                  <>
+                    {/* Ringtone & Privacy */}
                     <button
                       type="button"
                       onClick={() => {
-                        setShowDeleteAccountSetup((v) => !v);
-                        setDeleteAccountError('');
-                        setDeleteAccountPin('');
-                        setDeleteAccountConfirmed(false);
+                        void playSingleRingtoneBurst().then((ok) => {
+                          showNotice(ok ? 'Playing video call ringtone!' : 'Tap again or check device volume.');
+                        });
                       }}
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-rose-300 dark:border-rose-700 bg-white dark:bg-rose-950/70 text-rose-700 dark:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-900/70 text-xs font-bold inline-flex items-center justify-center gap-1.5 transition"
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.08] border border-white/15 text-white hover:bg-white/15 text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition"
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>{showDeleteAccountSetup ? 'Cancel Delete Setup' : 'Set Up Delete Account'}</span>
+                      <PhoneCall className="w-3.5 h-3.5 text-[#84B38D]" /> Test Video Call Ringtone
                     </button>
 
-                    {showDeleteAccountSetup && (
-                      <form onSubmit={handleDeleteMyAccount} className="space-y-3 pt-1">
-                        <div className="p-3 rounded-xl bg-rose-100/70 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-700/80 space-y-2">
-                          <p className="text-xs font-bold text-rose-900 dark:text-rose-100 flex items-center gap-1.5">
-                            <Trash2 className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
-                            Are you sure you want to permanently delete your account?
-                          </p>
-                          <p className="text-[11px] text-rose-800/90 dark:text-rose-200/90 leading-relaxed">
-                            This action is permanent and cannot be undone. All your posts, messages, and profile data will be removed.
-                          </p>
-                          <label className="flex items-start gap-2.5 pt-1 cursor-pointer select-none">
-                            <input
-                              type="checkbox"
-                              checked={deleteAccountConfirmed}
-                              onChange={(e) => setDeleteAccountConfirmed(e.target.checked)}
-                              className="mt-0.5 w-4 h-4 rounded border-rose-400 text-rose-600 focus:ring-rose-500 accent-rose-600 shrink-0"
-                            />
-                            <span className="text-[11px] font-semibold text-rose-950 dark:text-rose-100 leading-tight">
-                              I understand that deleting my account is permanent and irreversible.
-                            </span>
-                          </label>
-                        </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsMenuDrawerOpen(false);
+                        setIsPrivacyModalOpen(true);
+                      }}
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.08] border border-white/15 text-white hover:bg-white/15 text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition"
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5 text-[#84B38D]" /> Privacy Policy &amp; Acknowledgments
+                    </button>
 
-                        <p className="text-[11px] text-rose-800 dark:text-rose-200 leading-relaxed">
-                          Enter your current PIN to confirm deletion:
-                        </p>
-                        {deleteAccountError && (
-                          <div
-                            role="alert"
-                            className="p-2 rounded-lg bg-white dark:bg-rose-950 border border-rose-300 dark:border-rose-700 text-[11px] text-rose-700 dark:text-rose-200"
-                          >
-                            {deleteAccountError}
-                          </div>
-                        )}
-                        <input
-                          type="password"
-                          required
-                          minLength={4}
-                          value={deleteAccountPin}
-                          onChange={(e) => setDeleteAccountPin(e.target.value)}
-                          placeholder="Enter your account PIN..."
-                          className="w-full min-h-[38px] px-3 py-2 rounded-xl bg-white dark:bg-emerald-950 border border-rose-300 dark:border-rose-700 text-xs text-emerald-950 dark:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
-                        />
+                    {/* Themes & Appearance Controls */}
+                    <section className="p-3.5 rounded-2xl bg-white/[0.07] border border-white/15 space-y-3.5">
+                      <div className="flex items-center justify-between gap-2 pb-2 border-b border-white/10">
+                        <div>
+                          <h3 className="text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5">
+                            <Palette className="w-3.5 h-3.5 shrink-0 text-[#FF5E1E]" />
+                            <span>Themes</span>
+                          </h3>
+                          <p className="text-[10px] mt-0.5 text-white/70">
+                            {theme.name} · {resolvedTheme === 'dark' ? 'Dark' : 'Light'}
+                          </p>
+                        </div>
                         <button
-                          type="submit"
-                          disabled={deletingMyAccount || !deleteAccountPin.trim() || !deleteAccountConfirmed}
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition disabled:opacity-50 shadow"
+                          type="button"
+                          onClick={resetAppearance}
+                          className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-[11px] font-semibold text-white inline-flex items-center gap-1 transition"
                         >
-                          {deletingMyAccount ? 'Deleting...' : 'Confirm Delete Account'}
+                          <RotateCcw className="w-3 h-3" /> Reset
                         </button>
-                      </form>
-                    )}
-                  </>
+                      </div>
+
+                      <div role="radiogroup" aria-label="Predefined color themes" className="grid grid-cols-2 gap-2">
+                        {COLOR_THEME_LIST.map((preset) => {
+                          const isSelected = colorTheme === preset.id;
+                          return (
+                            <button
+                              key={preset.id}
+                              type="button"
+                              role="radio"
+                              aria-checked={isSelected}
+                              onClick={() => {
+                                setColorTheme(preset.id);
+                                showNotice(`${preset.name} theme applied`);
+                              }}
+                              className={`p-2 rounded-xl border text-left transition flex flex-col gap-1.5 ${
+                                isSelected
+                                  ? 'bg-white/15 border-[#FF5A1F] ring-1 ring-[#FF5A1F]'
+                                  : 'bg-white/[0.05] border-white/10 hover:bg-white/10'
+                              }`}
+                            >
+                              <div className="w-full rounded-md overflow-hidden bg-black/25 p-1 space-y-1">
+                                <div className={`h-1.5 w-full rounded-full bg-gradient-to-r ${preset.previewHeaderBar}`} />
+                                <div className="flex flex-col gap-0.5">
+                                  <div className={`h-1.5 w-7 rounded-full self-start ${preset.previewBubbleOther}`} />
+                                  <div className={`h-1.5 w-9 rounded-full self-end ${preset.previewBubbleMe}`} />
+                                </div>
+                              </div>
+                              <div className="flex items-center justify-between gap-1">
+                                <span className="text-[11px] font-bold text-white truncate">{preset.name}</span>
+                                {isSelected && <Check className="w-3 h-3 text-[#FF5E1E] shrink-0" />}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* Brightness Mode */}
+                      <div className="space-y-1.5 pt-2 border-t border-white/10">
+                        <div className="text-[11px] font-bold text-white/90">Brightness Mode</div>
+                        <div role="radiogroup" aria-label="Brightness mode" className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-black/25">
+                          {(
+                            [
+                              { id: 'light', label: 'Light', icon: Sun },
+                              { id: 'dark', label: 'Dark', icon: Moon },
+                              { id: 'system', label: 'System', icon: Monitor },
+                            ] as const
+                          ).map((opt) => {
+                            const Icon = opt.icon;
+                            const isActive = themeMode === opt.id;
+                            return (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                role="radio"
+                                aria-checked={isActive}
+                                onClick={() => setThemeMode(opt.id)}
+                                className={`py-1.5 rounded-lg flex items-center justify-center gap-1 text-[11px] font-semibold transition ${
+                                  isActive ? 'bg-[#FF5A1F] text-white' : 'text-white/75 hover:text-white'
+                                }`}
+                              >
+                                <Icon className="w-3 h-3 shrink-0" />
+                                <span>{opt.label}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Message Background */}
+                      <div className="space-y-1.5 pt-2 border-t border-white/10">
+                        <div className="text-[11px] font-bold text-white/90">Message Background</div>
+                        <div role="radiogroup" aria-label="Message background color" className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-black/25">
+                          {(
+                            [
+                              { id: 'default', label: 'Themed' },
+                              { id: 'black', label: 'Black' },
+                              { id: 'white', label: 'White' },
+                            ] as const
+                          ).map((opt) => {
+                            const isActive = msgBgMode === opt.id;
+                            return (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                role="radio"
+                                aria-checked={isActive}
+                                onClick={() => selectMsgBgMode(opt.id)}
+                                className={`py-1.5 rounded-lg text-[11px] font-semibold transition ${
+                                  isActive ? 'bg-[#FF5A1F] text-white' : 'text-white/75 hover:text-white'
+                                }`}
+                              >
+                                {opt.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Dark Mode Switch */}
+                      <div className="flex items-center justify-between gap-2 pt-2 border-t border-white/10">
+                        <span className="text-xs font-semibold text-white/90">Dark Mode Switch</span>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={resolvedTheme === 'dark'}
+                          aria-label="Toggle dark mode"
+                          onClick={toggleLightDark}
+                          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                            resolvedTheme === 'dark' ? 'bg-[#FF5A1F]' : 'bg-white/25'
+                          }`}
+                        >
+                          <span
+                            className={`inline-flex h-4.5 w-4.5 items-center justify-center rounded-full bg-white text-slate-900 shadow transition-transform ${
+                              resolvedTheme === 'dark' ? 'translate-x-5.5' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                      </div>
+
+                      {/* Reading Text Size */}
+                      <div className="space-y-1.5 pt-2 border-t border-white/10">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="font-bold text-white/90 inline-flex items-center gap-1">
+                            <Type className="w-3 h-3 text-[#84B38D]" /> Text Size
+                          </span>
+                          <span className="font-mono capitalize text-white/70">{fontScale}</span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-black/25">
+                          {(
+                            [
+                              { id: 'compact', label: 'Compact' },
+                              { id: 'standard', label: 'Standard' },
+                              { id: 'large', label: 'Large' },
+                            ] as const
+                          ).map((opt) => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => setFontScale(opt.id)}
+                              className={`py-1.5 rounded-lg text-[11px] font-semibold transition ${
+                                fontScale === opt.id ? 'bg-[#FF5A1F] text-white' : 'text-white/75 hover:text-white'
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Reduce Motion */}
+                      <div className="flex items-center justify-between gap-2 pt-2 border-t border-white/10">
+                        <span className="text-xs font-semibold text-white/90">Reduce Motion</span>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={reducedMotion}
+                          aria-label="Toggle reduced motion"
+                          onClick={() => setReducedMotion(!reducedMotion)}
+                          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                            reducedMotion ? 'bg-[#FF5A1F]' : 'bg-white/25'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4.5 w-4.5 rounded-full bg-white shadow transition-transform ${
+                              reducedMotion ? 'translate-x-5.5' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                      </div>
+                    </section>
+
+                    {/* Account Setup & Delete Account */}
+                    <section className="p-3.5 rounded-2xl bg-rose-950/50 border border-rose-400/30 space-y-2.5">
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-rose-200 flex items-center gap-1.5">
+                        <Trash2 className="w-3.5 h-3.5" /> Account Setup &amp; Delete
+                      </h3>
+                      {isAdmin ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveTab('admin_approvals');
+                            setIsMenuDrawerOpen(false);
+                          }}
+                          className="w-full px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 transition"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" /> Manage / Delete Accounts
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowDeleteAccountSetup((v) => !v);
+                              setDeleteAccountError('');
+                              setDeleteAccountPin('');
+                              setDeleteAccountConfirmed(false);
+                            }}
+                            className="w-full px-3 py-2 rounded-xl border border-rose-400/40 bg-rose-950/70 text-rose-100 hover:bg-rose-900/70 text-xs font-bold inline-flex items-center justify-center gap-1.5 transition"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>{showDeleteAccountSetup ? 'Cancel Delete Setup' : 'Set Up Delete Account'}</span>
+                          </button>
+
+                          {showDeleteAccountSetup && (
+                            <form onSubmit={handleDeleteMyAccount} className="space-y-2.5 pt-1">
+                              <div className="p-2.5 rounded-xl bg-rose-950/80 border border-rose-400/30 space-y-1.5">
+                                <p className="text-[11px] font-bold text-rose-100">
+                                  Are you sure you want to permanently delete your account?
+                                </p>
+                                <label className="flex items-start gap-2 cursor-pointer select-none">
+                                  <input
+                                    type="checkbox"
+                                    checked={deleteAccountConfirmed}
+                                    onChange={(e) => setDeleteAccountConfirmed(e.target.checked)}
+                                    className="mt-0.5 w-4 h-4 rounded accent-rose-500 shrink-0"
+                                  />
+                                  <span className="text-[11px] text-rose-100/90 leading-tight">
+                                    I understand that deleting my account is permanent and irreversible.
+                                  </span>
+                                </label>
+                              </div>
+                              {deleteAccountError && (
+                                <div role="alert" className="p-2 rounded-lg bg-rose-950 border border-rose-400/40 text-[11px] text-rose-200">
+                                  {deleteAccountError}
+                                </div>
+                              )}
+                              <input
+                                type="password"
+                                required
+                                minLength={4}
+                                value={deleteAccountPin}
+                                onChange={(e) => setDeleteAccountPin(e.target.value)}
+                                placeholder="Enter your account PIN..."
+                                className="w-full min-h-[38px] px-3 py-2 rounded-xl bg-black/30 border border-rose-400/40 text-xs text-white placeholder:text-white/50 focus:outline-none"
+                              />
+                              <button
+                                type="submit"
+                                disabled={deletingMyAccount || !deleteAccountPin.trim() || !deleteAccountConfirmed}
+                                className="w-full px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition disabled:opacity-50"
+                              >
+                                {deletingMyAccount ? 'Deleting...' : 'Confirm Delete Account'}
+                              </button>
+                            </form>
+                          )}
+                        </>
+                      )}
+                    </section>
+                  </div>
                 )}
-              </section>
+              </div>
             </div>
 
-            {/* Sticky Drawer Footer: Logout */}
-            <div className="p-4 border-t border-emerald-200 dark:border-emerald-800 bg-emerald-50/70 dark:bg-emerald-900/50 shrink-0">
+            {/* Sticky Forest-Green Footer: Logout */}
+            <div className="px-4 py-3 border-t border-white/10 bg-[#0B3D17] shrink-0">
               <button
                 type="button"
                 onClick={() => {
                   setIsMenuDrawerOpen(false);
                   handleLogout();
                 }}
-                className="w-full px-4 py-2.5 rounded-xl bg-red-50 dark:bg-emerald-950 border border-red-300 dark:border-red-500/50 text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-950/60 text-xs font-bold inline-flex items-center justify-center gap-2 transition"
+                className="w-full px-4 py-2.5 rounded-xl bg-white/[0.08] hover:bg-rose-600/90 border border-white/15 text-white text-xs font-bold inline-flex items-center justify-center gap-2 transition"
               >
                 <LogOut className="w-4 h-4" /> Logout Account
               </button>

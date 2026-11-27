@@ -48,7 +48,12 @@ import {
   Activity,
   AlertTriangle,
   CheckCircle2,
-  XCircle
+  XCircle,
+  Menu,
+  X,
+  Phone,
+  User,
+  LayoutDashboard
 } from 'lucide-react';
 import { LiveGpsMap, type LiveGpsUserLocation } from './LiveGpsMap';
 import {
@@ -141,6 +146,9 @@ interface SecurityStudioProps {
   onBackupToFirebase?: () => Promise<void> | void;
   onRestoreFromFirebase?: () => Promise<void> | void;
   onCloudStateRestored?: () => Promise<void> | void;
+  currentUserName?: string;
+  currentUserPhone?: string;
+  currentUserAvatar?: string;
 }
 
 interface StudioNoteEntry {
@@ -280,6 +288,9 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   onBackupToFirebase,
   onRestoreFromFirebase,
   onCloudStateRestored,
+  currentUserName,
+  currentUserPhone,
+  currentUserAvatar,
 }) => {
   // 1. Direct Admin Links
   const [adminLinks, setAdminLinks] = useState(() => {
@@ -511,6 +522,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
     | 'users'
     | 'tools_guide'
   >(initialModule || 'home');
+  const [isStudioSidebarOpen, setIsStudioSidebarOpen] = useState(false);
 
   useEffect(() => {
     if (initialModule && initialModule !== 'home') {
@@ -2267,24 +2279,338 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
     );
   }
 
+  const studioDashboardCards = [
+    {
+      id: 'type_notes' as const,
+      title: 'Type Notes & AI Prompt',
+      fullTitle: 'Type Notes & AI Prompt Builder',
+      subtitle: 'Create note files, auto-summarise & connect updates for AI Studio',
+      badge: `${studioNotes.length} file${studioNotes.length === 1 ? '' : 's'}`,
+      navIcon: FileText,
+      icon: <FileText className="w-5 h-5 text-emerald-600 dark:text-emerald-300" />,
+      accent: 'border-emerald-300 dark:border-emerald-600/70 hover:border-emerald-400',
+    },
+    {
+      id: 'emoji_links' as const,
+      title: 'Emoji Link & App Icon',
+      fullTitle: 'Emoji Link & App Icon Share',
+      subtitle: 'Live website URL to emoji link, App Icon image & Auto Push/Sync',
+      badge: `${emojiLinksList.length} link${emojiLinksList.length === 1 ? '' : 's'}`,
+      navIcon: Sparkles,
+      icon: <Sparkles className="w-5 h-5 text-amber-500 dark:text-amber-300" />,
+      accent: 'border-amber-300 dark:border-amber-500/60 hover:border-amber-400',
+    },
+    {
+      id: 'keys_env' as const,
+      title: 'Keys & .env Vault',
+      fullTitle: 'Keys & .env Code Vault',
+      subtitle: 'Render, Supabase, Gemini AI & categorized .env auto-synced vault',
+      badge: `${envVaultEntries.length} synced`,
+      navIcon: Key,
+      icon: <Key className="w-5 h-5 text-indigo-600 dark:text-indigo-300" />,
+      accent: 'border-indigo-300 dark:border-indigo-500/60 hover:border-indigo-400',
+    },
+    {
+      id: 'quick_links' as const,
+      title: 'Quick Links',
+      fullTitle: 'Quick Links (Render & AI Studio)',
+      subtitle: 'Direct links to AI Studio Chat, Render Dashboard, Live URL & Postgres',
+      badge: 'Direct Links',
+      navIcon: Cloud,
+      icon: <Cloud className="w-5 h-5 text-cyan-600 dark:text-cyan-300" />,
+      accent: 'border-cyan-300 dark:border-cyan-500/60 hover:border-cyan-400',
+    },
+    {
+      id: 'user_pins' as const,
+      title: 'User Account PINs',
+      fullTitle: 'Change User Account PINs',
+      subtitle: 'Admin-only PIN setup & reset for all registered user accounts',
+      badge: 'Admin Only',
+      navIcon: KeyRound,
+      icon: <KeyRound className="w-5 h-5 text-rose-600 dark:text-rose-300" />,
+      accent: 'border-rose-300 dark:border-rose-500/60 hover:border-rose-400',
+    },
+    {
+      id: 'announcements' as const,
+      title: 'Announcement Banners',
+      fullTitle: 'Announcement Slide Banner Setup',
+      subtitle: 'Moving Newsfeed announcement & reminder slides for A, B, C, B+C, or All',
+      badge: `${activeStudioSlides.length} active`,
+      navIcon: Megaphone,
+      icon: <Megaphone className="w-5 h-5 text-amber-500 dark:text-amber-300" />,
+      accent: 'border-amber-300 dark:border-amber-500/60 hover:border-amber-400',
+    },
+    {
+      id: 'newsfeeds' as const,
+      title: 'Newsfeeds Setup',
+      fullTitle: 'Newsfeeds A, B, C & B+C Setup',
+      subtitle: 'Rename Newsfeeds A, B, C & assign each user to 1 of 4 separated channels',
+      badge: `${usersList.length} users`,
+      navIcon: Globe,
+      icon: <Globe className="w-5 h-5 text-emerald-600 dark:text-emerald-300" />,
+      accent: 'border-emerald-300 dark:border-emerald-600/70 hover:border-emerald-400',
+    },
+    {
+      id: 'users' as const,
+      title: 'Users Data & Accounts',
+      fullTitle: 'Users Data & Accounts',
+      subtitle: 'Add cloud accounts, export backup, copy IDs & manage users',
+      badge: `${usersList.length} users`,
+      navIcon: Users,
+      icon: <Users className="w-5 h-5 text-emerald-600 dark:text-emerald-300" />,
+      accent: 'border-emerald-300 dark:border-emerald-600/70 hover:border-emerald-400',
+    },
+    {
+      id: 'gps_tracker' as const,
+      title: 'Admin Live GPS Map',
+      fullTitle: 'Admin Live GPS Map',
+      subtitle: 'Watch moving user pins, trails, live speed & accuracy on Leaflet Map',
+      badge: `${gpsLocations.length} live`,
+      navIcon: MapPin,
+      icon: <MapPin className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />,
+      accent: 'border-emerald-300 dark:border-emerald-600/70 hover:border-emerald-400',
+    },
+    {
+      id: 'storage' as const,
+      title: 'Cloud Storage & Cache',
+      fullTitle: 'Cloud Storage & Cache Monitor',
+      subtitle: 'Cloudflare R2 video vault, Supabase bucket, Render DB & cache controls',
+      badge:
+        mediaStorageMode === 'r2+supabase'
+          ? 'R2 + Supabase'
+          : mediaStorageMode === 'r2'
+          ? 'Cloudflare R2'
+          : mediaStorageMode === 'supabase'
+          ? 'Supabase'
+          : 'Server DB',
+      navIcon: HardDrive,
+      icon: <HardDrive className="w-5 h-5 text-cyan-600 dark:text-cyan-300" />,
+      accent: 'border-cyan-300 dark:border-cyan-500/60 hover:border-cyan-400',
+    },
+    {
+      id: 'analytics' as const,
+      title: 'App Analytics',
+      fullTitle: 'App Analytics Overview',
+      subtitle: 'Live stats for posts, messages, ledger value, blocked & AI Q&A',
+      badge: `${postsCount} posts`,
+      navIcon: BarChart3,
+      icon: <BarChart3 className="w-5 h-5 text-emerald-600 dark:text-emerald-300" />,
+      accent: 'border-emerald-300 dark:border-emerald-600/70 hover:border-emerald-400',
+    },
+    {
+      id: 'tools_guide' as const,
+      title: 'Tech Stack & Pricing',
+      fullTitle: 'Tech Stack, Tools & Pricing Guide',
+      subtitle: 'Spreadsheet of all app tools, free vs paid plans & setup instructions',
+      badge: `${TOOLS_PRICING_GUIDE.length} tools`,
+      navIcon: Layers,
+      icon: <Layers className="w-5 h-5 text-indigo-600 dark:text-indigo-300" />,
+      accent: 'border-indigo-300 dark:border-indigo-500/60 hover:border-indigo-400',
+    },
+  ];
+
+  const activeStudioCard = studioDashboardCards.find((c) => c.id === activeStudioModule);
+  const adminDisplayName = currentUserName?.trim() || 'Administrator';
+  const adminDisplayPhone = currentUserPhone?.trim() || mainKeys.ADMIN_PHONE || 'Admin Console';
+
+  const renderStudioSidebarContent = (isMobileDrawer: boolean) => (
+    <>
+      {/* Top Brand Header */}
+      <div className="px-4 py-4 border-b border-white/10 flex items-center justify-between gap-2 shrink-0">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-10 h-10 rounded-xl border-2 border-[#FF5E1E]/85 bg-white p-0.5 shrink-0 shadow-sm overflow-hidden">
+            <img
+              src={defaultAppIcon}
+              alt="Security Studio"
+              className="w-full h-full object-contain rounded-lg"
+            />
+          </div>
+          <div className="min-w-0">
+            <div className="text-[16px] font-extrabold text-[#FF5E1E] leading-tight tracking-tight truncate">
+              Security Studio
+            </div>
+            <div className="text-[11px] italic text-[#84B38D] truncate mt-0.5">
+              Admin Control Center
+            </div>
+          </div>
+        </div>
+        {isMobileDrawer && (
+          <button
+            type="button"
+            onClick={() => setIsStudioSidebarOpen(false)}
+            className="p-2 rounded-xl text-white/85 hover:text-white hover:bg-white/10 transition shrink-0"
+            aria-label="Close Security Studio menu"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        )}
+      </div>
+
+      {/* Scrollable Identity Card + Single-Column Studio Navigation */}
+      <div className="flex-1 overflow-y-auto px-3.5 py-4 space-y-4">
+        {/* Translucent Admin Identity Card */}
+        <div className="w-full rounded-2xl bg-white/[0.07] border border-white/15 p-3.5 space-y-2.5">
+          <div className="flex items-center gap-3">
+            {currentUserAvatar ? (
+              <img
+                src={currentUserAvatar}
+                alt={adminDisplayName}
+                className="w-11 h-11 rounded-full object-cover bg-white shrink-0 border border-white/25"
+              />
+            ) : (
+              <div className="w-11 h-11 rounded-full bg-white text-[#0E4B1D] font-extrabold text-base flex items-center justify-center shrink-0 shadow-xs">
+                {adminDisplayName.charAt(0).toUpperCase()}
+              </div>
+            )}
+            <div className="min-w-0 flex-1">
+              <div className="text-[14px] font-bold text-white truncate leading-tight">
+                {adminDisplayName}
+              </div>
+              <div className="text-[10.5px] font-semibold uppercase tracking-wider text-[#90BE99] mt-0.5">
+                ADMIN
+              </div>
+            </div>
+          </div>
+          <div className="space-y-1 text-[12px] text-white/90">
+            <div className="flex items-center gap-2 min-w-0">
+              <User className="w-3.5 h-3.5 text-[#8AB893] shrink-0" />
+              <span className="truncate font-medium">
+                {storageMode === 'postgres' ? 'PostgreSQL Synced' : 'Live Server Sync'}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 min-w-0">
+              <Phone className="w-3.5 h-3.5 text-[#8AB893] shrink-0" />
+              <span className="truncate font-mono text-[11.5px]">{adminDisplayPhone}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Single-Column Studio Navigation */}
+        <nav className="flex flex-col gap-1">
+          <button
+            type="button"
+            onClick={() => {
+              setActiveStudioModule('home');
+              if (isMobileDrawer) setIsStudioSidebarOpen(false);
+            }}
+            className={`w-full px-3.5 py-2.5 rounded-xl flex items-center gap-3 text-[13.5px] text-left transition whitespace-nowrap ${
+              activeStudioModule === 'home'
+                ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+            }`}
+          >
+            <LayoutDashboard className="w-[18px] h-[18px] shrink-0" />
+            <span className="truncate">Dashboard</span>
+          </button>
+
+          {studioDashboardCards.map((item) => {
+            const Icon = item.navIcon;
+            const isActive = activeStudioModule === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => {
+                  setActiveStudioModule(item.id);
+                  if (isMobileDrawer) setIsStudioSidebarOpen(false);
+                }}
+                className={`w-full px-3.5 py-2.5 rounded-xl flex items-center gap-3 text-[13.5px] text-left transition whitespace-nowrap ${
+                  isActive
+                    ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                    : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                }`}
+              >
+                <Icon className="w-[18px] h-[18px] shrink-0" />
+                <span className="truncate">{item.title}</span>
+              </button>
+            );
+          })}
+        </nav>
+      </div>
+
+      {/* Studio Sidebar Footer Controls */}
+      <div className="px-3.5 py-3 border-t border-white/10 bg-[#0B3D17] space-y-2 shrink-0">
+        <button
+          type="button"
+          onClick={() => {
+            setShowSetPinModal(true);
+            if (isMobileDrawer) setIsStudioSidebarOpen(false);
+          }}
+          className="w-full px-3 py-2 rounded-xl bg-white/[0.08] hover:bg-white/15 border border-white/15 text-white text-xs font-semibold flex items-center justify-center gap-2 transition"
+        >
+          <KeyRound className="w-3.5 h-3.5 text-[#84B38D]" />
+          <span>{securityPin ? 'Change PIN Lock' : 'Set PIN Lock'}</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            void handleClearAppCache();
+            if (isMobileDrawer) setIsStudioSidebarOpen(false);
+          }}
+          disabled={isClearingCache}
+          className="w-full px-3 py-2 rounded-xl bg-[#FF5A1F] hover:bg-[#EA4E14] text-white text-xs font-bold flex items-center justify-center gap-2 transition disabled:opacity-60"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${isClearingCache ? 'animate-spin' : ''}`} />
+          <span>{isClearingCache ? 'Clearing Cache...' : 'Clear App Cache'}</span>
+        </button>
+      </div>
+    </>
+  );
+
   return (
-    <div className="max-w-5xl mx-auto space-y-5 pb-6 text-xs">
+    <div className="max-w-7xl mx-auto flex flex-col lg:flex-row gap-4 lg:gap-5 pb-6 text-xs items-start">
+      {/* DESKTOP SECURITY STUDIO FOREST-GREEN SIDEBAR */}
+      <aside className="hidden lg:flex lg:w-64 xl:w-[272px] shrink-0 bg-[#0E4B1D] text-white rounded-2xl border border-white/10 shadow-xl flex-col overflow-hidden lg:sticky lg:top-3 max-h-[calc(100dvh-7.5rem)]">
+        {renderStudioSidebarContent(false)}
+      </aside>
+
+      {/* MOBILE SECURITY STUDIO LEFT SLIDE-OUT DRAWER */}
+      {isStudioSidebarOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/65 backdrop-blur-xs flex justify-start lg:hidden"
+          onClick={() => setIsStudioSidebarOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Security Studio Navigation"
+        >
+          <aside
+            className="w-[86%] max-w-[320px] h-full bg-[#0E4B1D] text-white border-r border-white/10 shadow-2xl flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {renderStudioSidebarContent(true)}
+          </aside>
+        </div>
+      )}
+
+      {/* MAIN SECURITY STUDIO CONTENT */}
+      <div className="flex-1 min-w-0 w-full space-y-5">
       {/* HEADER */}
-      <div className="bg-white dark:bg-emerald-900/70 border border-emerald-500/40 rounded-2xl p-5 flex flex-wrap items-center justify-between gap-3 shadow-lg">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-indigo-600/30 border border-indigo-400/50 flex items-center justify-center text-indigo-300">
+      <div className="bg-white dark:bg-emerald-900/70 border border-emerald-500/40 rounded-2xl p-4 sm:p-5 flex flex-wrap items-center justify-between gap-3 shadow-lg">
+        <div className="flex items-center gap-3 min-w-0">
+          <button
+            type="button"
+            onClick={() => setIsStudioSidebarOpen(true)}
+            className="lg:hidden px-3 py-2 rounded-xl bg-[#0E4B1D] hover:bg-[#135E26] text-white font-bold flex items-center gap-1.5 shadow shrink-0 transition"
+            aria-label="Open Security Studio Sidebar"
+          >
+            <Menu className="w-4 h-4 text-[#FF5E1E]" />
+            <span>Studio Menu</span>
+          </button>
+          <div className="w-10 h-10 rounded-xl bg-[#0E4B1D] border border-[#FF5E1E]/50 flex items-center justify-center text-[#FF5E1E] shrink-0">
             <ShieldCheck className="w-5 h-5" />
           </div>
-          <div>
+          <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-base font-black text-emerald-950 dark:text-white uppercase tracking-wide">Security Studio</h2>
+              <h2 className="text-base font-black text-emerald-950 dark:text-white uppercase tracking-wide truncate">
+                {activeStudioCard ? activeStudioCard.fullTitle : 'Security Studio'}
+              </h2>
               {(mediaStorageMode === 'r2' || mediaStorageMode === 'r2+supabase') && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-orange-500/20 border border-orange-400/40 text-orange-800 dark:text-orange-200">
-                  {mediaStorageMode === 'r2+supabase' ? 'Cloudflare R2 + Supabase Active' : 'Cloudflare R2 Video Vault Active'}
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-orange-500/20 border border-orange-400/40 text-orange-800 dark:text-orange-200">
+                  {mediaStorageMode === 'r2+supabase' ? 'Cloudflare R2 + Supabase Active' : 'Cloudflare R2 Vault Active'}
                 </span>
               )}
               {mediaStorageMode === 'supabase' && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500/20 border border-cyan-400/40 text-cyan-800 dark:text-cyan-200">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-cyan-500/20 border border-cyan-400/40 text-cyan-800 dark:text-cyan-200">
                   Supabase Storage Active
                 </span>
               )}
@@ -2292,17 +2618,21 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
                 <span
                   className={`px-2 py-0.5 rounded-md border text-[10px] font-bold ${
                     storageMode === 'postgres'
-                      ? 'bg-emerald-500/20 border-emerald-400/50 text-emerald-300'
-                      : 'bg-amber-500/20 border-amber-400/50 text-amber-200'
+                      ? 'bg-emerald-500/20 border-emerald-400/50 text-emerald-700 dark:text-emerald-300'
+                      : 'bg-amber-500/20 border-amber-400/50 text-amber-800 dark:text-amber-200'
                   }`}
                 >
                   {storageMode === 'postgres'
-                    ? 'PostgreSQL Cloud Sync Active'
-                    : 'Live Server Sync (Add DATABASE_URL in Render for Permanent DB)'}
+                    ? 'PostgreSQL Synced'
+                    : 'Live Server Sync'}
                 </span>
               )}
             </div>
-            <p className="text-[11px] text-emerald-700 dark:text-emerald-300">Simple Admin Hub — Render Postgres, Supabase, Keys, Storage & Cache</p>
+            <p className="text-[11px] text-emerald-700 dark:text-emerald-300 truncate">
+              {activeStudioCard
+                ? activeStudioCard.subtitle
+                : 'Simple Admin Hub — Render Postgres, Supabase, Keys, Storage & Cache'}
+            </p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -2310,7 +2640,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
             <button
               type="button"
               onClick={() => setActiveStudioModule('home')}
-              className="px-3.5 py-2 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-black flex items-center gap-1.5 shadow transition"
+              className="px-3.5 py-2 rounded-xl bg-[#0E4B1D] hover:bg-[#135E26] text-white font-bold flex items-center gap-1.5 shadow transition"
             >
               <ArrowLeft className="w-3.5 h-3.5" />
               <span>All Dashboards</span>
@@ -2318,20 +2648,8 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           )}
           <button
             type="button"
-            onClick={() => setActiveStudioModule(activeStudioModule === 'type_notes' ? 'home' : 'type_notes')}
-            className={`px-3.5 py-2 rounded-xl font-bold flex items-center gap-1.5 shadow transition border ${
-              activeStudioModule === 'type_notes'
-                ? 'bg-emerald-400 text-slate-950 border-emerald-300'
-                : 'bg-emerald-500/20 border-emerald-400/50 text-emerald-900 dark:text-emerald-200 hover:bg-emerald-500/30'
-            }`}
-          >
-            <FileText className="w-3.5 h-3.5" />
-            <span>Type Notes ({studioNotes.length})</span>
-          </button>
-          <button
-            type="button"
             onClick={() => setShowSetPinModal(true)}
-            className="px-3.5 py-2 rounded-xl bg-indigo-600/20 border border-indigo-400/40 text-indigo-800 dark:text-indigo-200 font-bold hover:bg-indigo-600/30 flex items-center gap-1.5 shadow transition"
+            className="px-3.5 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/70 border border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100 font-bold hover:bg-emerald-100 dark:hover:bg-emerald-900 flex items-center gap-1.5 shadow-xs transition"
           >
             <KeyRound className="w-3.5 h-3.5" />
             {securityPin ? 'Change PIN Lock' : 'Set PIN Lock'}
@@ -2340,7 +2658,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
             type="button"
             onClick={handleClearAppCache}
             disabled={isClearingCache}
-            className="px-4 py-2 rounded-xl bg-amber-400 text-slate-950 font-bold hover:bg-amber-300 flex items-center gap-2 shadow transition disabled:opacity-60"
+            className="px-4 py-2 rounded-xl bg-[#FF5A1F] hover:bg-[#EA4E14] text-white font-bold flex items-center gap-2 shadow transition disabled:opacity-60"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isClearingCache ? 'animate-spin' : ''}`} />
             {isClearingCache ? 'Clearing Cache...' : 'Clear App Cache'}
@@ -2390,219 +2708,71 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
       )}
 
       {pinSavedMsg && (
-        <div className="p-3 rounded-xl bg-emerald-500/20 border border-emerald-400/50 text-emerald-200 font-bold text-center">
+        <div className="p-3 rounded-xl bg-emerald-500/20 border border-emerald-400/50 text-emerald-900 dark:text-emerald-200 font-bold text-center">
           {pinSavedMsg}
         </div>
       )}
 
       {cacheStatus && (
-        <div className="px-4 py-2.5 rounded-xl bg-emerald-500/20 border border-emerald-400/50 text-emerald-200 flex items-center justify-between">
+        <div className="px-4 py-2.5 rounded-xl bg-emerald-500/20 border border-emerald-400/50 text-emerald-900 dark:text-emerald-200 flex items-center justify-between">
           <span>{cacheStatus}</span>
           <button type="button" onClick={() => setCacheStatus('')} className="text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white font-bold">✕</button>
         </div>
       )}
 
-      {/* SECURITY STUDIO CLEAN DASHBOARD HUB (CLICK ANY SETUP BUTTON TO OPEN ITS OWN DASHBOARD) */}
-      {(() => {
-        const dashboardCards = [
-          {
-            id: 'type_notes' as const,
-            title: 'Type Notes & AI Prompt Builder',
-            subtitle: 'Create note files, auto-summarise & connect updates for AI Studio',
-            badge: `${studioNotes.length} file${studioNotes.length === 1 ? '' : 's'}`,
-            icon: <FileText className="w-5 h-5 text-emerald-600 dark:text-emerald-300" />,
-            accent: 'border-emerald-300 dark:border-emerald-600/70 hover:border-emerald-400',
-          },
-          {
-            id: 'emoji_links' as const,
-            title: 'Emoji Link & App Icon Share',
-            subtitle: 'Live website URL to emoji link, App Icon image & Auto Push/Sync',
-            badge: `${emojiLinksList.length} link${emojiLinksList.length === 1 ? '' : 's'}`,
-            icon: <Sparkles className="w-5 h-5 text-amber-500 dark:text-amber-300" />,
-            accent: 'border-amber-300 dark:border-amber-500/60 hover:border-amber-400',
-          },
-          {
-            id: 'keys_env' as const,
-            title: 'Keys & .env Code Vault',
-            subtitle: 'Render, Supabase, Gemini AI & categorized .env auto-synced vault',
-            badge: `${envVaultEntries.length} synced`,
-            icon: <Key className="w-5 h-5 text-indigo-600 dark:text-indigo-300" />,
-            accent: 'border-indigo-300 dark:border-indigo-500/60 hover:border-indigo-400',
-          },
-          {
-            id: 'quick_links' as const,
-            title: 'Quick Links (Render & AI Studio)',
-            subtitle: 'Direct links to AI Studio Chat, Render Dashboard, Live URL & Postgres',
-            badge: 'Direct Links',
-            icon: <Cloud className="w-5 h-5 text-cyan-600 dark:text-cyan-300" />,
-            accent: 'border-cyan-300 dark:border-cyan-500/60 hover:border-cyan-400',
-          },
-          {
-            id: 'user_pins' as const,
-            title: 'Change User Account PINs',
-            subtitle: 'Admin-only PIN setup & reset for all registered user accounts',
-            badge: 'Admin Only',
-            icon: <KeyRound className="w-5 h-5 text-rose-600 dark:text-rose-300" />,
-            accent: 'border-rose-300 dark:border-rose-500/60 hover:border-rose-400',
-          },
-          {
-            id: 'announcements' as const,
-            title: 'Announcement Slide Banner Setup',
-            subtitle: 'Moving Newsfeed announcement & reminder slides for A, B, C, B+C, or All',
-            badge: `${activeStudioSlides.length} active`,
-            icon: <Megaphone className="w-5 h-5 text-amber-500 dark:text-amber-300" />,
-            accent: 'border-amber-300 dark:border-amber-500/60 hover:border-amber-400',
-          },
-          {
-            id: 'newsfeeds' as const,
-            title: 'Newsfeeds A, B, C & B+C Setup',
-            subtitle: 'Rename Newsfeeds A, B, C & assign each user to 1 of 4 separated channels',
-            badge: `${usersList.length} users`,
-            icon: <Globe className="w-5 h-5 text-emerald-600 dark:text-emerald-300" />,
-            accent: 'border-emerald-300 dark:border-emerald-600/70 hover:border-emerald-400',
-          },
-          {
-            id: 'users' as const,
-            title: 'Users Data & Accounts',
-            subtitle: 'Add cloud accounts, export backup, copy IDs & manage users',
-            badge: `${usersList.length} users`,
-            icon: <Users className="w-5 h-5 text-emerald-600 dark:text-emerald-300" />,
-            accent: 'border-emerald-300 dark:border-emerald-600/70 hover:border-emerald-400',
-          },
-          {
-            id: 'gps_tracker' as const,
-            title: 'Admin Live GPS Map',
-            subtitle: 'Watch moving user pins, trails, live speed & accuracy on Leaflet Map',
-            badge: `${gpsLocations.length} live`,
-            icon: <MapPin className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />,
-            accent: 'border-emerald-300 dark:border-emerald-600/70 hover:border-emerald-400',
-          },
-          {
-            id: 'storage' as const,
-            title: 'Cloud Storage & Cache Monitor',
-            subtitle: 'Cloudflare R2 video vault, Supabase bucket, Render DB & cache controls',
-            badge:
-              mediaStorageMode === 'r2+supabase'
-                ? 'R2 + Supabase'
-                : mediaStorageMode === 'r2'
-                ? 'Cloudflare R2'
-                : mediaStorageMode === 'supabase'
-                ? 'Supabase'
-                : 'Server DB',
-            icon: <HardDrive className="w-5 h-5 text-cyan-600 dark:text-cyan-300" />,
-            accent: 'border-cyan-300 dark:border-cyan-500/60 hover:border-cyan-400',
-          },
-          {
-            id: 'analytics' as const,
-            title: 'App Analytics Overview',
-            subtitle: 'Live stats for posts, messages, ledger value, blocked & AI Q&A',
-            badge: `${postsCount} posts`,
-            icon: <BarChart3 className="w-5 h-5 text-emerald-600 dark:text-emerald-300" />,
-            accent: 'border-emerald-300 dark:border-emerald-600/70 hover:border-emerald-400',
-          },
-          {
-            id: 'tools_guide' as const,
-            title: 'Tech Stack, Tools & Pricing Guide',
-            subtitle: 'Spreadsheet of all app tools, free vs paid plans & setup instructions',
-            badge: `${TOOLS_PRICING_GUIDE.length} tools`,
-            icon: <Layers className="w-5 h-5 text-indigo-600 dark:text-indigo-300" />,
-            accent: 'border-indigo-300 dark:border-indigo-500/60 hover:border-indigo-400',
-          },
-        ];
-
-        if (activeStudioModule === 'home') {
-          return (
-            <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4 shadow">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <LayoutGrid className="w-4 h-4 text-emerald-600 dark:text-emerald-300" />
-                  <div>
-                    <h3 className="text-sm font-black text-emerald-950 dark:text-white">
-                      Security Studio Setup Dashboards
-                    </h3>
-                    <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
-                      Click any button below to open its own setup dashboard. Everything stays clean and organized.
-                    </p>
-                  </div>
-                </div>
-                <span className="px-2.5 py-1 rounded-lg bg-emerald-100 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 font-bold text-[10px]">
-                  {dashboardCards.length} Setup Dashboards
-                </span>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {dashboardCards.map((card) => (
-                  <button
-                    key={card.id}
-                    type="button"
-                    onClick={() => setActiveStudioModule(card.id)}
-                    className={`group text-left p-4 rounded-2xl bg-emerald-50/80 dark:bg-emerald-950/80 border ${card.accent} hover:bg-emerald-100/80 dark:hover:bg-emerald-900/80 transition shadow-sm flex flex-col justify-between gap-3`}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="w-10 h-10 rounded-xl bg-white dark:bg-emerald-900 border border-emerald-200 dark:border-emerald-700 flex items-center justify-center shrink-0 shadow-xs group-hover:scale-105 transition">
-                        {card.icon}
-                      </div>
-                      <span className="px-2 py-0.5 rounded-full bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-[10px] font-bold text-emerald-800 dark:text-emerald-200">
-                        {card.badge}
-                      </span>
-                    </div>
-                    <div className="space-y-1">
-                      <div className="text-xs font-black text-emerald-950 dark:text-white group-hover:text-emerald-700 dark:group-hover:text-emerald-300">
-                        {card.title}
-                      </div>
-                      <p className="text-[11px] text-emerald-700 dark:text-emerald-300/90 leading-snug">
-                        {card.subtitle}
-                      </p>
-                    </div>
-                    <div className="text-[10px] font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-300 flex items-center gap-1 pt-0.5">
-                      <span>Open Dashboard</span>
-                      <span className="group-hover:translate-x-0.5 transition-transform">→</span>
-                    </div>
-                  </button>
-                ))}
+      {/* SECURITY STUDIO HOME DASHBOARD OVERVIEW */}
+      {activeStudioModule === 'home' && (
+        <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4 shadow">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <LayoutGrid className="w-4 h-4 text-[#FF5A1F]" />
+              <div>
+                <h3 className="text-sm font-black text-emerald-950 dark:text-white">
+                  Security Studio Setup Dashboards
+                </h3>
+                <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
+                  Select any module from the left sidebar or click a card below to configure it.
+                </p>
               </div>
             </div>
-          );
-        }
-
-        const currentCard = dashboardCards.find((c) => c.id === activeStudioModule);
-        return (
-          <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-3 space-y-2.5 shadow-sm">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <button
-                type="button"
-                onClick={() => setActiveStudioModule('home')}
-                className="px-3 py-1.5 rounded-xl bg-emerald-100 dark:bg-emerald-950 hover:bg-emerald-200 dark:hover:bg-emerald-800 border border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-white font-bold text-xs inline-flex items-center gap-1.5 transition"
-              >
-                <ArrowLeft className="w-3.5 h-3.5" />
-                <span>Back to Security Studio Dashboards</span>
-              </button>
-              {currentCard && (
-                <div className="flex items-center gap-1.5 text-xs font-black text-emerald-950 dark:text-white">
-                  {currentCard.icon}
-                  <span>{currentCard.title}</span>
-                </div>
-              )}
-            </div>
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
-              {dashboardCards.map((card) => (
-                <button
-                  key={card.id}
-                  type="button"
-                  onClick={() => setActiveStudioModule(card.id)}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold whitespace-nowrap shrink-0 border transition ${
-                    activeStudioModule === card.id
-                      ? 'bg-emerald-400 text-slate-950 border-emerald-400 shadow-xs'
-                      : 'bg-emerald-50 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-900'
-                  }`}
-                >
-                  {card.title}
-                </button>
-              ))}
-            </div>
+            <span className="px-2.5 py-1 rounded-lg bg-[#0E4B1D] text-white font-bold text-[10px]">
+              {studioDashboardCards.length} Modules
+            </span>
           </div>
-        );
-      })()}
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+            {studioDashboardCards.map((card) => (
+              <button
+                key={card.id}
+                type="button"
+                onClick={() => setActiveStudioModule(card.id)}
+                className={`group text-left p-4 rounded-2xl bg-emerald-50/80 dark:bg-emerald-950/80 border ${card.accent} hover:bg-emerald-100/80 dark:hover:bg-emerald-900/80 transition shadow-xs flex flex-col justify-between gap-3`}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="w-10 h-10 rounded-xl bg-white dark:bg-emerald-900 border border-emerald-200 dark:border-emerald-700 flex items-center justify-center shrink-0 shadow-xs group-hover:scale-105 transition">
+                    {card.icon}
+                  </div>
+                  <span className="px-2 py-0.5 rounded-md bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-[10px] font-bold text-emerald-800 dark:text-emerald-200">
+                    {card.badge}
+                  </span>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs font-black text-emerald-950 dark:text-white group-hover:text-[#FF5A1F] transition-colors">
+                    {card.fullTitle}
+                  </div>
+                  <p className="text-[11px] text-emerald-700 dark:text-emerald-300/90 leading-snug">
+                    {card.subtitle}
+                  </p>
+                </div>
+                <div className="text-[10px] font-black uppercase tracking-wider text-[#0E4B1D] dark:text-[#FF976B] flex items-center gap-1 pt-0.5">
+                  <span>Open Dashboard</span>
+                  <span className="group-hover:translate-x-0.5 transition-transform">→</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* TYPE NOTES: AI FEATURE PLANNER & AUTO-SUMMARISE NOTEBOOK */}
       {activeStudioModule === 'type_notes' && (
@@ -5249,6 +5419,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
         </div>
       </div>
       )}
+      </div>
     </div>
   );
 };
