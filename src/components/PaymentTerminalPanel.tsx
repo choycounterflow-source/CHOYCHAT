@@ -173,12 +173,22 @@ const CHANNEL_META: Record<
     icon: Building2,
   },
   online_card: {
-    label: 'Online Card / Checkout',
-    badge: 'Visa • MC • E-Wallet',
+    label: 'Stripe Checkout',
+    badge: 'Visa • MC • Stripe',
     accent: 'text-[#FF5A1F]',
     icon: CreditCard,
   },
 };
+
+function isSafeHttpsUrl(url?: string): url is string {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
 interface PaymentTerminalPanelProps {
   currentUser: {
@@ -286,7 +296,17 @@ export const PaymentTerminalPanel: React.FC<PaymentTerminalPanelProps> = ({
   );
   const [config, setConfig] = useState<PaymentTerminalConfig>(DEFAULT_TERMINAL_CONFIG);
   const [configDraft, setConfigDraft] = useState<PaymentTerminalConfig>(DEFAULT_TERMINAL_CONFIG);
-  const [paymongoConfigured, setPaymongoConfigured] = useState(false);
+  const clientStripePublishableConfigured = Boolean(
+    String(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || '').trim()
+  );
+  const [stripeConfigured, setStripeConfigured] = useState(false);
+  const [stripeConfigIdConfigured, setStripeConfigIdConfigured] = useState(false);
+  const [stripePublishableKeyConfigured, setStripePublishableKeyConfigured] = useState(
+    clientStripePublishableConfigured
+  );
+  const [stripeWebhookConfigured, setStripeWebhookConfigured] = useState(false);
+  const [stripeMode, setStripeMode] = useState<'live' | 'test' | 'unconfigured'>('unconfigured');
+  const [verifyingTxId, setVerifyingTxId] = useState<string | null>(null);
   const [transactions, setTransactions] = useState<PaymentTerminalTx[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -345,7 +365,19 @@ export const PaymentTerminalPanel: React.FC<PaymentTerminalPanelProps> = ({
           setConfig(cfgData.config);
           setConfigDraft(cfgData.config);
         }
-        setPaymongoConfigured(Boolean(cfgData.paymongoConfigured));
+        setStripeConfigured(Boolean(cfgData.stripeConfigured));
+        setStripeConfigIdConfigured(Boolean(cfgData.stripeConfigIdConfigured));
+        setStripePublishableKeyConfigured(
+          Boolean(cfgData.stripePublishableKeyConfigured) || clientStripePublishableConfigured
+        );
+        setStripeWebhookConfigured(Boolean(cfgData.stripeWebhookConfigured));
+        if (
+          cfgData.stripeMode === 'live' ||
+          cfgData.stripeMode === 'test' ||
+          cfgData.stripeMode === 'unconfigured'
+        ) {
+          setStripeMode(cfgData.stripeMode);
+        }
       }
       if (txRes.ok) {
         const txData = await txRes.json();
@@ -359,11 +391,88 @@ export const PaymentTerminalPanel: React.FC<PaymentTerminalPanelProps> = ({
       setLoading(false);
       setRefreshing(false);
     }
-  }, [getAuthHeaders]);
+  }, [getAuthHeaders, clientStripePublishableConfigured]);
 
   useEffect(() => {
     loadData(false);
   }, [loadData]);
+
+  const handleVerifyStripePayment = useCallback(
+    async (txId: string, sessionId?: string) => {
+      setVerifyingTxId(txId);
+      setErrorMsg(null);
+      setNotice(null);
+      try {
+        const res = await fetch(
+          `/api/choy/payment-terminal/transactions/${encodeURIComponent(txId)}/verify-stripe`,
+          {
+            method: 'POST',
+            credentials: 'include',
+            headers: getAuthHeaders(true),
+            body: JSON.stringify(sessionId ? { sessionId } : {}),
+          }
+        );
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Could not verify Stripe payment.');
+        }
+        if (data.transaction) {
+          const updated: PaymentTerminalTx = data.transaction;
+          setTransactions((prev) => {
+            const exists = prev.some((item) => item.id === updated.id);
+            return exists
+              ? prev.map((item) => (item.id === updated.id ? updated : item))
+              : [updated, ...prev];
+          });
+          setLastCreatedTx((prev) => (prev?.id === updated.id ? updated : prev));
+          setSelectedReceiptTx((prev) => (prev?.id === updated.id ? updated : prev));
+        }
+        if (data.ownDashboard && onOwnDashboardUpdated) {
+          onOwnDashboardUpdated(data.ownDashboard);
+        }
+        if (data.paid) {
+          setNotice(data.message || 'Stripe payment verified and credited.');
+        } else {
+          setNotice(
+            data.message ||
+              'Stripe checkout is not marked paid yet. Complete checkout on Stripe, then click Verify Stripe Payment.'
+          );
+        }
+      } catch (err: unknown) {
+        setErrorMsg(err instanceof Error ? err.message : 'Failed to verify Stripe payment.');
+      } finally {
+        setVerifyingTxId(null);
+      }
+    },
+    [getAuthHeaders, onOwnDashboardUpdated]
+  );
+
+  const handledStripeReturnRef = useRef(false);
+  useEffect(() => {
+    if (handledStripeReturnRef.current || typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const stripeTx = params.get('stripe_tx');
+    const stripeSessionId = params.get('stripe_session_id');
+    const stripeCancelled = params.get('stripe_cancelled');
+    if (!stripeTx) return;
+    handledStripeReturnRef.current = true;
+
+    params.delete('stripe_tx');
+    params.delete('stripe_session_id');
+    params.delete('stripe_cancelled');
+    const nextQuery = params.toString();
+    const cleanUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ''}${window.location.hash}`;
+    window.history.replaceState({}, '', cleanUrl);
+
+    if (stripeCancelled === '1') {
+      setNotice('Stripe checkout was cancelled. You can resume or verify it anytime in Transaction History.');
+      setView('history');
+      return;
+    }
+
+    setView('history');
+    void handleVerifyStripePayment(stripeTx, stripeSessionId || undefined);
+  }, [handleVerifyStripePayment]);
 
   // Ensure active channel stays enabled when config loads
   const enabledChannels = useMemo(() => {
@@ -531,10 +640,32 @@ export const PaymentTerminalPanel: React.FC<PaymentTerminalPanelProps> = ({
       setPayerReference('');
       setNote('');
       setReceiptImageUrl('');
-      setNotice(
-        data.gatewayNotice ||
-          `Payment ${created.referenceCode} submitted! Status: Pending verification.`
-      );
+      if (created.channel === 'gcash') {
+        handleCopyText('gcash_direct', cleanGcashDigits);
+        setNotice(
+          `Payment ${created.referenceCode} submitted! Opening GCash app automatically — recipient ${cleanGcashDigits} copied.`
+        );
+        if (typeof window !== 'undefined') {
+          setTimeout(() => {
+            if (isDesktopBrowser) {
+              const link = document.createElement('a');
+              link.href = directGcashHref;
+              link.target = '_blank';
+              link.rel = 'noopener noreferrer';
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+            } else {
+              window.location.href = directGcashHref;
+            }
+          }, 350);
+        }
+      } else {
+        setNotice(
+          data.gatewayNotice ||
+            `Payment ${created.referenceCode} submitted! Status: Pending verification.`
+        );
+      }
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to process payment.');
     } finally {
@@ -1121,14 +1252,31 @@ export const PaymentTerminalPanel: React.FC<PaymentTerminalPanelProps> = ({
                     )}
 
                     {channel === 'online_card' && (
-                      <div className="space-y-1">
-                        <div className="text-[11px] font-bold uppercase text-[#FF5A1F]">
-                          Online Checkout Gateway (Card / GCash / Maya / QRPh)
+                      <div className="space-y-1.5">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-[11px] font-bold uppercase text-[#FF5A1F]">
+                            Stripe Checkout Terminal (Cards &amp; Configured Methods)
+                          </div>
+                          <span
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase ${
+                              stripeConfigured
+                                ? stripeMode === 'live'
+                                  ? 'bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300'
+                                  : 'bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-300'
+                                : 'bg-slate-200 dark:bg-emerald-900/70 text-slate-700 dark:text-emerald-300'
+                            }`}
+                          >
+                            {stripeConfigured
+                              ? stripeMode === 'live'
+                                ? 'Stripe Live'
+                                : 'Stripe Test Mode'
+                              : 'Stripe Not Connected'}
+                          </span>
                         </div>
                         <p className="text-xs text-emerald-800 dark:text-emerald-200 leading-relaxed">
-                          {paymongoConfigured
-                            ? 'Live PayMongo Checkout is connected! Submit this terminal charge to generate your secure hosted payment link.'
-                            : 'Submit this terminal charge to log your online card/checkout request. Add PAYMONGO_SECRET_KEY in server environment variables to generate instant PayMongo Checkout links.'}
+                          {stripeConfigured
+                            ? `Stripe Checkout is connected${stripeConfigIdConfigured ? ' with your Stripe Payment Method Configuration ID' : ''}. Submit this terminal charge to open a secure Stripe payment page—balances auto-credit once Stripe confirms payment.`
+                            : 'Submit this terminal charge to log your online payment request. Add STRIPE_SECRET_KEY (and optional STRIPE_CONFIG_ID, VITE_STRIPE_PUBLISHABLE_KEY, STRIPE_WEBHOOK_SECRET) in environment variables to generate instant Stripe Checkout links.'}
                         </p>
                       </div>
                     )}
@@ -1274,8 +1422,8 @@ export const PaymentTerminalPanel: React.FC<PaymentTerminalPanelProps> = ({
                     ) : (
                       <>
                         <ShieldCheck className="w-4 h-4" />
-                        {channel === 'online_card' && paymongoConfigured
-                          ? `Generate Online Checkout • ${formatPhp(totalPhp)}`
+                        {channel === 'online_card' && stripeConfigured
+                          ? `Generate Stripe Checkout • ${formatPhp(totalPhp)}`
                           : `Submit Payment • ${formatPhp(totalPhp)}`}
                       </>
                     )}
@@ -1325,7 +1473,7 @@ export const PaymentTerminalPanel: React.FC<PaymentTerminalPanelProps> = ({
                           Open GCash ({cleanGcashDigits})
                         </a>
                       )}
-                      {lastCreatedTx.checkoutUrl && (
+                      {isSafeHttpsUrl(lastCreatedTx.checkoutUrl) && lastCreatedTx.status === 'pending' && (
                         <a
                           href={lastCreatedTx.checkoutUrl}
                           target="_blank"
@@ -1333,9 +1481,28 @@ export const PaymentTerminalPanel: React.FC<PaymentTerminalPanelProps> = ({
                           className="px-4 py-2 rounded-xl bg-[#FF5A1F] hover:bg-[#e54f18] text-white text-xs font-extrabold inline-flex items-center gap-1.5"
                         >
                           <ExternalLink className="w-3.5 h-3.5" />
-                          Open Secure PayMongo Checkout
+                          Open Secure Stripe Checkout
                         </a>
                       )}
+                      {lastCreatedTx.channel === 'online_card' &&
+                        lastCreatedTx.status === 'pending' &&
+                        lastCreatedTx.payerReference?.startsWith('cs_') && (
+                          <button
+                            type="button"
+                            disabled={verifyingTxId === lastCreatedTx.id}
+                            onClick={() =>
+                              handleVerifyStripePayment(lastCreatedTx.id, lastCreatedTx.payerReference)
+                            }
+                            className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold inline-flex items-center gap-1.5 disabled:opacity-50"
+                          >
+                            {verifyingTxId === lastCreatedTx.id ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <ShieldCheck className="w-3.5 h-3.5" />
+                            )}
+                            Verify Stripe Payment
+                          </button>
+                        )}
                       <button
                         type="button"
                         onClick={() => setSelectedReceiptTx(lastCreatedTx)}
@@ -1481,14 +1648,33 @@ export const PaymentTerminalPanel: React.FC<PaymentTerminalPanelProps> = ({
                         </div>
                       )}
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedReceiptTx(tx)}
-                      className="px-3 py-2 rounded-xl bg-emerald-100 dark:bg-emerald-900 hover:bg-emerald-200 dark:hover:bg-emerald-800 text-emerald-950 dark:text-emerald-100 text-xs font-bold inline-flex items-center gap-1.5"
-                    >
-                      <Receipt className="w-3.5 h-3.5" />
-                      Receipt
-                    </button>
+                    <div className="flex items-center gap-2">
+                      {tx.channel === 'online_card' &&
+                        tx.status === 'pending' &&
+                        tx.payerReference?.startsWith('cs_') && (
+                          <button
+                            type="button"
+                            disabled={verifyingTxId === tx.id}
+                            onClick={() => handleVerifyStripePayment(tx.id, tx.payerReference)}
+                            className="px-3 py-2 rounded-xl bg-[#FF5A1F] hover:bg-[#e54f18] text-white text-xs font-extrabold inline-flex items-center gap-1.5 disabled:opacity-50"
+                          >
+                            {verifyingTxId === tx.id ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <ShieldCheck className="w-3.5 h-3.5" />
+                            )}
+                            Verify Stripe
+                          </button>
+                        )}
+                      <button
+                        type="button"
+                        onClick={() => setSelectedReceiptTx(tx)}
+                        className="px-3 py-2 rounded-xl bg-emerald-100 dark:bg-emerald-900 hover:bg-emerald-200 dark:hover:bg-emerald-800 text-emerald-950 dark:text-emerald-100 text-xs font-bold inline-flex items-center gap-1.5"
+                      >
+                        <Receipt className="w-3.5 h-3.5" />
+                        Receipt
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -1603,7 +1789,22 @@ export const PaymentTerminalPanel: React.FC<PaymentTerminalPanelProps> = ({
                           maxLength={200}
                           className="flex-1 px-3 py-2 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white"
                         />
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          {tx.channel === 'online_card' && tx.payerReference?.startsWith('cs_') && (
+                            <button
+                              type="button"
+                              disabled={busy || verifyingTxId === tx.id}
+                              onClick={() => handleVerifyStripePayment(tx.id, tx.payerReference)}
+                              className="flex-1 sm:flex-none px-3.5 py-2 rounded-xl bg-[#FF5A1F] hover:bg-[#e54f18] text-white text-xs font-extrabold inline-flex items-center justify-center gap-1.5 disabled:opacity-50"
+                            >
+                              {verifyingTxId === tx.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <ShieldCheck className="w-3.5 h-3.5" />
+                              )}
+                              Verify Stripe
+                            </button>
+                          )}
                           <button
                             type="button"
                             disabled={busy}
@@ -1927,7 +2128,7 @@ export const PaymentTerminalPanel: React.FC<PaymentTerminalPanelProps> = ({
                   className="w-full px-3 py-2 rounded-lg bg-emerald-50 dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-700 text-xs font-mono text-emerald-950 dark:text-white"
                 />
                 <label className="flex items-center justify-between pt-1.5 border-t border-emerald-200/70 dark:border-emerald-800 text-xs font-bold text-emerald-950 dark:text-white cursor-pointer">
-                  <span>Online Card / PayMongo Checkout</span>
+                  <span>Online Card / Stripe Checkout</span>
                   <input
                     type="checkbox"
                     checked={configDraft.onlineCardEnabled}
@@ -1935,6 +2136,23 @@ export const PaymentTerminalPanel: React.FC<PaymentTerminalPanelProps> = ({
                     className="w-4 h-4 accent-[#FF5A1F]"
                   />
                 </label>
+                <div className="rounded-lg bg-emerald-50/80 dark:bg-emerald-900/40 border border-emerald-200/80 dark:border-emerald-800 px-3 py-2 text-[11px] text-emerald-800 dark:text-emerald-200 space-y-1">
+                  <div className="font-bold">
+                    Stripe Terminal Status:{' '}
+                    <span className={stripeConfigured ? 'text-emerald-600 dark:text-emerald-300' : 'text-amber-600 dark:text-amber-300'}>
+                      {stripeConfigured
+                        ? stripeMode === 'live'
+                          ? 'Connected (Live)'
+                          : 'Connected (Test Mode)'
+                        : 'Needs STRIPE_SECRET_KEY in env'}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-emerald-700 dark:text-emerald-300/90 flex flex-wrap gap-x-3 gap-y-0.5">
+                    <span>Config ID: {stripeConfigIdConfigured ? 'Active' : 'Default Card'}</span>
+                    <span>Publishable Key: {stripePublishableKeyConfigured ? 'Set' : 'Optional'}</span>
+                    <span>Webhook Secret: {stripeWebhookConfigured ? 'Active' : 'Manual Verify Only'}</span>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -2081,7 +2299,7 @@ export const PaymentTerminalPanel: React.FC<PaymentTerminalPanelProps> = ({
                 </div>
               )}
 
-              {selectedReceiptTx.checkoutUrl && selectedReceiptTx.status === 'pending' && (
+              {isSafeHttpsUrl(selectedReceiptTx.checkoutUrl) && selectedReceiptTx.status === 'pending' && (
                 <a
                   href={selectedReceiptTx.checkoutUrl}
                   target="_blank"
@@ -2089,9 +2307,28 @@ export const PaymentTerminalPanel: React.FC<PaymentTerminalPanelProps> = ({
                   className="w-full py-2.5 rounded-xl bg-[#FF5A1F] hover:bg-[#e54f18] text-white text-xs font-extrabold flex items-center justify-center gap-1.5"
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
-                  Continue to PayMongo Checkout
+                  Continue to Stripe Checkout
                 </a>
               )}
+              {selectedReceiptTx.channel === 'online_card' &&
+                selectedReceiptTx.status === 'pending' &&
+                selectedReceiptTx.payerReference?.startsWith('cs_') && (
+                  <button
+                    type="button"
+                    disabled={verifyingTxId === selectedReceiptTx.id}
+                    onClick={() =>
+                      handleVerifyStripePayment(selectedReceiptTx.id, selectedReceiptTx.payerReference)
+                    }
+                    className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  >
+                    {verifyingTxId === selectedReceiptTx.id ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                    )}
+                    Verify Stripe Payment Now
+                  </button>
+                )}
             </div>
 
             <div className="px-5 py-3.5 bg-emerald-50 dark:bg-emerald-900/40 border-t border-emerald-200 dark:border-emerald-800 flex items-center justify-end gap-2">

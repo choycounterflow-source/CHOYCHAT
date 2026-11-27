@@ -1,11 +1,14 @@
-import React, { useState } from 'react';
-import { Gamepad2, Trophy, RotateCcw, Sparkles, Star, Award, Zap, Heart, Coins, Ticket, Flame, RefreshCw, CheckCircle2, History, Activity, BarChart3, ShieldAlert, TrendingUp } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Gamepad2, Trophy, RotateCcw, Sparkles, Star, Award, Zap, Heart, Coins, Ticket, Flame, RefreshCw, CheckCircle2, History, Activity, BarChart3, ShieldAlert, TrendingUp, Clock, Megaphone, Delete, Layers } from 'lucide-react';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
+import { TongitsGamePanel } from './TongitsGamePanel';
+import type { UserDashboardData } from './UserDashboardPanels';
 
 interface GamesPanelProps {
   currentUser: {
     id: string;
     name: string;
+    role?: 'admin' | 'member';
   };
   theme: {
     cardBg: string;
@@ -18,6 +21,10 @@ interface GamesPanelProps {
     swertresLive?: boolean;
     nbaHub?: boolean;
   };
+  authToken?: string | null;
+  onOwnDashboardUpdated?: (next: UserDashboardData) => void;
+  onNavigatePaymentTerminal?: () => void;
+  onPostSwertresBanner?: (bannerText: string) => Promise<void> | void;
 }
 
 interface SwertresTicket {
@@ -38,8 +45,10 @@ interface NbaGame {
   awayTeam: string;
   awayScore: number;
   awayLogo: string;
-  status: 'Q1' | 'Q2' | 'Q3' | 'Q4' | 'Halftime' | 'Final';
+  status: 'Betting Open' | 'Q1' | 'Q2' | 'Q3' | 'Q4' | 'Halftime' | 'Final';
   clock: string;
+  secondsRemaining: number;
+  tipOffCountdownSec?: number;
 }
 
 interface NbaTeam {
@@ -62,37 +71,41 @@ interface TeamTopupTransaction {
 
 const INITIAL_GAMES: NbaGame[] = [
   {
-    id: 'game-1',
+    id: 'game-upcoming-1',
     homeTeam: 'Los Angeles Lakers',
-    homeScore: 112,
+    homeScore: 0,
     homeLogo: '💛💜',
     awayTeam: 'Golden State Warriors',
-    awayScore: 108,
+    awayScore: 0,
     awayLogo: '💙💛',
+    status: 'Betting Open',
+    clock: 'Starts in 01:48:20',
+    secondsRemaining: 720,
+    tipOffCountdownSec: 6500, // within 2 hours before play
+  },
+  {
+    id: 'game-1',
+    homeTeam: 'Boston Celtics',
+    homeScore: 112,
+    homeLogo: '☘️',
+    awayTeam: 'Miami Heat',
+    awayScore: 108,
+    awayLogo: '🔥',
     status: 'Q4',
-    clock: '2:14 remaining',
+    clock: '02:14',
+    secondsRemaining: 134,
   },
   {
     id: 'game-2',
-    homeTeam: 'Boston Celtics',
-    homeScore: 98,
-    homeLogo: '☘️',
-    awayTeam: 'Miami Heat',
-    awayScore: 95,
-    awayLogo: '🔥',
-    status: 'Q3',
-    clock: '4:50 remaining',
-  },
-  {
-    id: 'game-3',
     homeTeam: 'Chicago Bulls',
-    homeScore: 74,
+    homeScore: 98,
     homeLogo: '🐂',
     awayTeam: 'Milwaukee Bucks',
-    awayScore: 82,
+    awayScore: 95,
     awayLogo: '🦌',
-    status: 'Halftime',
-    clock: 'HT',
+    status: 'Q3',
+    clock: '04:50',
+    secondsRemaining: 290,
   },
   {
     id: 'game-4',
@@ -104,6 +117,7 @@ const INITIAL_GAMES: NbaGame[] = [
     awayLogo: '☀️',
     status: 'Final',
     clock: 'FINAL',
+    secondsRemaining: 0,
   },
 ];
 
@@ -191,8 +205,16 @@ const TEAM_HISTORY_DATA: Record<string, Array<{ game: string; winProbability: nu
   ],
 };
 
-export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, featureToggles }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'arcade' | 'swertres' | 'nba'>('arcade');
+export const GamesPanel: React.FC<GamesPanelProps> = ({
+  currentUser,
+  theme,
+  featureToggles,
+  authToken,
+  onOwnDashboardUpdated,
+  onNavigatePaymentTerminal,
+  onPostSwertresBanner,
+}) => {
+  const [activeSubTab, setActiveSubTab] = useState<'arcade' | 'swertres' | 'nba' | 'tongits'>('arcade');
 
   // Tic Tac Toe State
   const [board, setBoard] = useState<Array<string | null>>(Array(9).fill(null));
@@ -220,8 +242,10 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
     gameType: 'swertres' | 'nba';
     gameId: string;
     gameTitle: string;
+    matchup?: string;
     selection: string;
     stake: number;
+    adminTong?: number;
     odds: number;
     potentialWin: number;
     status: 'Pending' | 'Won' | 'Lost';
@@ -231,27 +255,32 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
     if (saved) {
       try { return JSON.parse(saved); } catch { return []; }
     }
-    return [
-      {
-        id: 'swt-102',
-        userId: currentUser.id,
-        userName: currentUser.name || 'User',
-        gameType: 'swertres',
-        gameId: '5:00 PM',
-        gameTitle: 'Swertres 5:00 PM Draw',
-        selection: '7-4-2',
-        stake: 10,
-        odds: 400,
-        potentialWin: 4000,
-        status: 'Pending',
-        createdAt: 'Today, 2:10 PM',
-      }
-    ];
+    return [];
   });
 
   React.useEffect(() => {
     localStorage.setItem('choy_real_bets', JSON.stringify(realBets));
   }, [realBets]);
+
+  const recordAdminTong = (amount: number, source: string, stake?: number) => {
+    try {
+      const existing = JSON.parse(localStorage.getItem('choy_admin_tong_ledger') || '[]');
+      const next = [
+        {
+          id: `tong-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          source,
+          amount: Math.round(amount * 100) / 100,
+          stake,
+          detail: `${source} (${currentUser.name})`,
+          createdAt: new Date().toISOString(),
+        },
+        ...(Array.isArray(existing) ? existing : []),
+      ].slice(0, 300);
+      localStorage.setItem('choy_admin_tong_ledger', JSON.stringify(next));
+    } catch {
+      // ignore storage errors
+    }
+  };
 
   // Reflex State
   const [reflexState, setReflexState] = useState<'idle' | 'wait' | 'ready' | 'result'>('idle');
@@ -308,6 +337,175 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
   ]);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [showNbaKeypad, setShowNbaKeypad] = useState<boolean>(false);
+  const [showSwertresKeypad, setShowSwertresKeypad] = useState<boolean>(false);
+  const [swertresCountdownText, setSwertresCountdownText] = useState<string>('00:45:00');
+  const [swertresNextDrawLabel, setSwertresNextDrawLabel] = useState<string>('5:00 PM');
+  const [swertresLatestOfficialResult, setSwertresLatestOfficialResult] = useState<{
+    drawTime: string;
+    digits: string;
+    publishedAt: string;
+  }>(() => {
+    try {
+      const saved = localStorage.getItem('choy_swertres_latest_official');
+      if (saved) return JSON.parse(saved);
+    } catch {
+      // ignore
+    }
+    return {
+      drawTime: '2:00 PM',
+      digits: '4-8-2',
+      publishedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+  });
+  const [publishingSwertres, setPublishingSwertres] = useState<boolean>(false);
+
+  // Live 1-second ticker for NBA pre-game (2h before tip-off) + live game clocks + Swertres next-draw countdown
+  useEffect(() => {
+    const formatHms = (totalSec: number) => {
+      const s = Math.max(0, totalSec);
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const rem = s % 60;
+      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(rem).padStart(2, '0')}`;
+    };
+    const tick = () => {
+      const now = new Date();
+      const draws = [
+        { hour: 14, label: '2:00 PM' },
+        { hour: 17, label: '5:00 PM' },
+        { hour: 21, label: '9:00 PM' },
+      ];
+      let target = new Date(now);
+      let label = '2:00 PM';
+      let found = false;
+      for (const d of draws) {
+        const cand = new Date(now);
+        cand.setHours(d.hour, 0, 0, 0);
+        if (cand.getTime() > now.getTime()) {
+          target = cand;
+          label = d.label;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        target = new Date(now);
+        target.setDate(target.getDate() + 1);
+        target.setHours(14, 0, 0, 0);
+        label = '2:00 PM (Tomorrow)';
+      }
+      const diffSec = Math.max(0, Math.floor((target.getTime() - now.getTime()) / 1000));
+      setSwertresCountdownText(formatHms(diffSec));
+      setSwertresNextDrawLabel(label);
+
+      setGames((prev) =>
+        prev.map((g) => {
+          if (g.status === 'Final') return g;
+          if (g.status === 'Betting Open' && typeof g.tipOffCountdownSec === 'number') {
+            const nextTip = Math.max(0, g.tipOffCountdownSec - 1);
+            if (nextTip === 0) {
+              return {
+                ...g,
+                status: 'Q1',
+                tipOffCountdownSec: 0,
+                secondsRemaining: 720,
+                clock: '12:00',
+              };
+            }
+            return {
+              ...g,
+              tipOffCountdownSec: nextTip,
+              clock: `Starts in ${formatHms(nextTip)}`,
+            };
+          }
+          const nextSec = Math.max(0, g.secondsRemaining - 1);
+          const m = Math.floor(nextSec / 60);
+          const s = nextSec % 60;
+          return {
+            ...g,
+            secondsRemaining: nextSec,
+            clock: `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`,
+          };
+        })
+      );
+    };
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const handlePublishOfficialSwertresResult = async () => {
+    const drawDigits = `${digit1 || '0'}-${digit2 || '0'}-${digit3 || '0'}`;
+    setPublishingSwertres(true);
+    const officialObj = {
+      drawTime: selectedDraw,
+      digits: drawDigits,
+      publishedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+    setSwertresLatestOfficialResult(officialObj);
+    try {
+      localStorage.setItem('choy_swertres_latest_official', JSON.stringify(officialObj));
+    } catch {
+      // ignore
+    }
+
+    let winnersCount = 0;
+    let totalPayout = 0;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers.Authorization = `Bearer ${authToken}`;
+
+    const nextBets = await Promise.all(
+      realBets.map(async (b) => {
+        if (b.gameType === 'swertres' && b.gameId === selectedDraw && b.status === 'Pending') {
+          const isWin = b.selection === drawDigits;
+          if (isWin) {
+            winnersCount += 1;
+            totalPayout += b.potentialWin;
+            if (b.userId === currentUser.id) {
+              setScore((s) => s + b.potentialWin);
+            } else {
+              const key = `choy_user_coins_${b.userId}`;
+              localStorage.setItem(key, String(Number(localStorage.getItem(key) || '0') + b.potentialWin));
+            }
+            try {
+              const res = await fetch('/api/choy/games/credit-win', {
+                method: 'POST',
+                credentials: 'include',
+                headers,
+                body: JSON.stringify({
+                  targetUserId: b.userId,
+                  amountPhp: b.potentialWin,
+                  gameName: `Swertres ${selectedDraw}`,
+                  reference: `${b.id}-${drawDigits}`,
+                }),
+              });
+              const data = await res.json().catch(() => ({}));
+              if (res.ok && data.userDashboard && onOwnDashboardUpdated) {
+                onOwnDashboardUpdated(data.userDashboard);
+              }
+            } catch {
+              // ignore
+            }
+            return { ...b, status: 'Won' as const };
+          }
+          return { ...b, status: 'Lost' as const };
+        }
+        return b;
+      })
+    );
+    setRealBets(nextBets);
+
+    const bannerText = `🎯 OFFICIAL SWERTRES LIVE RESULT (${selectedDraw} Draw)\nWinning Digits: ${drawDigits}\nVerified Winners Auto-Credited to Wallet: ${winnersCount} · Total Payout: ₱${totalPayout.toLocaleString()}\n#SwertresLive #ChoyChat`;
+    if (onPostSwertresBanner) {
+      await onPostSwertresBanner(bannerText);
+    }
+    setPublishingSwertres(false);
+    setNotice(
+      `Official Swertres ${selectedDraw} result (${drawDigits}) posted to Newsfeed! ${winnersCount} winner(s) auto-credited ₱${totalPayout.toLocaleString()} to Wallet.`
+    );
+    setTimeout(() => setNotice(null), 6000);
+  };
 
   const triviaQuestions = [
     {
@@ -459,15 +657,23 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
     setTimeout(() => setNotice(null), 5000);
   };
 
-  // NBA Team Betting & Topup Logic
+  // NBA Team Betting & Topup Logic (Every ₱100 bet earns Admin ₱2 Kalas/Tong)
   const handleTeamTopup = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!Number.isFinite(topupAmount) || topupAmount <= 0) {
+      setNotice('Please type a valid bet amount.');
+      return;
+    }
     if (score < topupAmount) {
-      alert('Insufficient Choy Coins balance!');
+      setNotice('Insufficient Choy Coins balance! Tap Top Up in Payment Terminal to add coins.');
       return;
     }
     const teamFullName = `${selectedTeam.city} ${selectedTeam.name}`;
-    const confirmed = window.confirm(`Are you sure you want to top up / bet ${topupAmount} Coins on ${teamFullName}?`);
+    const adminKalas = Math.round(((topupAmount * 2) / 100) * 100) / 100;
+    const netPoolStake = Math.round((topupAmount - adminKalas) * 100) / 100;
+    const confirmed = window.confirm(
+      `Are you sure you want to bet ₱${topupAmount.toLocaleString()} Coins on ${teamFullName}?\n\nAdmin Kalas/Tong (₱2 per ₱100): ₱${adminKalas.toFixed(2)}\nNet Match Pool Stake: ₱${netPoolStake.toFixed(2)}`
+    );
     if (!confirmed) return;
 
     setScore((s) => s - topupAmount);
@@ -494,16 +700,19 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
       gameType: 'nba' as const,
       gameId: selectedTeam.id,
       gameTitle: `NBA Match Bet: ${teamFullName}`,
+      matchup: teamFullName,
       selection: teamFullName,
       stake: topupAmount,
-      odds: 2.5,
-      potentialWin: topupAmount * 2.5,
+      adminTong: adminKalas,
+      odds: 2.0,
+      potentialWin: Math.round(netPoolStake * 2 * 100) / 100,
       status: 'Pending' as const,
       createdAt: 'Just now',
     };
     setRealBets((prev) => [newRealBet, ...prev]);
+    recordAdminTong(adminKalas, `NBA (${teamFullName})`, topupAmount);
 
-    setNotice(`Successfully placed real NBA bet on ${teamFullName} with ${topupAmount} Choy Coins!`);
+    setNotice(`Placed ₱${topupAmount.toLocaleString()} bet on ${teamFullName} (Admin Kalas: ₱${adminKalas.toFixed(2)})!`);
     setTimeout(() => setNotice(null), 5000);
   };
 
@@ -607,9 +816,22 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
             }`}
           >
             <Trophy className="w-4 h-4" />
-            NBA Live & Team Topup
+            NBA Live &amp; Betting Board
           </button>
         )}
+
+        <button
+          type="button"
+          onClick={() => setActiveSubTab('tongits')}
+          className={`px-4 py-2.5 rounded-xl font-bold text-xs flex items-center gap-2 transition ${
+            activeSubTab === 'tongits'
+              ? 'bg-amber-500 text-slate-950 shadow-sm'
+              : `${theme.cardBg} ${theme.textMain} border ${theme.cardBorder} hover:bg-slate-100 dark:hover:bg-slate-800`
+          }`}
+        >
+          <Layers className="w-4 h-4" />
+          Tong-its (Coming Soon)
+        </button>
       </div>
 
       {/* 1. ARCADE TAB */}
@@ -865,6 +1087,47 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
       {activeSubTab === 'swertres' && (
         isSwertresEnabled ? (
           <div className="space-y-6">
+            {/* Live Swertres Countdown & Official Result Banner Bar */}
+            <div className={`p-4 sm:p-5 rounded-2xl border ${theme.cardBg} ${theme.cardBorder} shadow-sm bg-gradient-to-r from-emerald-600/10 via-teal-500/10 to-transparent flex flex-col md:flex-row md:items-center justify-between gap-4`}>
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                  <Clock className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="text-[11px] font-black uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                    Swertres Live Draw Countdown · Next: {swertresNextDrawLabel}
+                  </div>
+                  <div className={`text-2xl font-mono font-black tabular-nums ${theme.textMain}`}>
+                    {swertresCountdownText}
+                  </div>
+                  <div className={`text-[11px] ${theme.textMuted}`}>
+                    Official Result auto-posts to Newsfeed banner &amp; auto-credits winners&apos; Cash Wallet!
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="px-4 py-2 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-center">
+                  <div className="text-[10px] font-bold uppercase text-emerald-600 dark:text-emerald-300">
+                    Legit Official Result ({swertresLatestOfficialResult.drawTime})
+                  </div>
+                  <div className="text-xl font-mono font-black tracking-[0.25em] text-emerald-600 dark:text-emerald-300">
+                    {swertresLatestOfficialResult.digits}
+                  </div>
+                </div>
+                {currentUser.role === 'admin' && (
+                  <button
+                    type="button"
+                    disabled={publishingSwertres}
+                    onClick={() => void handlePublishOfficialSwertresResult()}
+                    className="px-3.5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs inline-flex items-center gap-1.5 shadow transition disabled:opacity-50"
+                  >
+                    <Megaphone className="w-4 h-4" />
+                    <span>{publishingSwertres ? 'Posting...' : 'Publish Result & Credit Winners'}</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
             <div className={`p-6 rounded-2xl border ${theme.cardBg} ${theme.cardBorder} shadow-lg space-y-6`}>
               <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
                 <div className="space-y-1">
@@ -872,7 +1135,7 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
                     <Flame className="w-5 h-5 text-emerald-500" />
                     Place Your 3-Digit Swertres Bet (1₱ = 400₱ Win)
                   </h2>
-                  <p className={`text-xs ${theme.textMuted}`}>Guaranteed payout: 1 Peso bet wins 400 Pesos!</p>
+                  <p className={`text-xs ${theme.textMuted}`}>Guaranteed payout: 1 Peso bet wins 400 Pesos! Auto-credited to your Wallet.</p>
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -904,6 +1167,8 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
                       <div key={idx} className="flex flex-col items-center">
                         <input
                           type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
                           maxLength={1}
                           value={item.val}
                           onChange={(e) => item.set(e.target.value.replace(/[^0-9]/g, ''))}
@@ -929,7 +1194,26 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
                 </div>
 
                 <div className="space-y-2 max-w-md mx-auto">
-                  <label className={`block text-xs font-bold uppercase ${theme.textMuted}`}>Bet Amount (Pesos)</label>
+                  <div className="flex items-center justify-between">
+                    <label className={`block text-xs font-bold uppercase ${theme.textMuted}`}>Type or Tap Bet Amount (Pesos)</label>
+                    <button
+                      type="button"
+                      onClick={() => setShowSwertresKeypad((v) => !v)}
+                      className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 hover:underline"
+                    >
+                      {showSwertresKeypad ? 'Hide Keypad' : 'Show Number Keypad'}
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={betAmount === 0 ? '' : String(betAmount)}
+                    onFocus={() => setShowSwertresKeypad(true)}
+                    onChange={(e) => setBetAmount(Number(e.target.value.replace(/[^0-9]/g, '')) || 0)}
+                    placeholder="Type bet amount..."
+                    className={`w-full px-3.5 py-2.5 rounded-xl border ${theme.cardBorder} ${theme.cardBg} ${theme.textMain} font-mono text-base font-black`}
+                  />
                   <div className="grid grid-cols-5 gap-2">
                     {[1, 5, 10, 50, 100].map((amt) => (
                       <button
@@ -946,6 +1230,24 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
                       </button>
                     ))}
                   </div>
+                  {showSwertresKeypad && (
+                    <div className="grid grid-cols-3 gap-1.5 pt-2">
+                      {['1', '2', '3', '4', '5', '6', '7', '8', '9', 'CLR', '0', 'BACK'].map((k) => (
+                        <button
+                          key={k}
+                          type="button"
+                          onClick={() => {
+                            if (k === 'CLR') setBetAmount(0);
+                            else if (k === 'BACK') setBetAmount((prev) => Math.floor(prev / 10));
+                            else setBetAmount((prev) => Number(`${prev === 0 ? '' : prev}${k}`));
+                          }}
+                          className="h-10 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-emerald-500 hover:text-white font-mono font-bold text-sm transition flex items-center justify-center"
+                        >
+                          {k === 'BACK' ? <Delete className="w-4 h-4" /> : k}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div className="p-4 rounded-xl bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-4 max-w-md mx-auto">
@@ -1153,30 +1455,56 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   {games.map((g) => {
                     const { homeProb, awayProb } = calculateWinProbability(g.homeScore, g.awayScore, g.status);
+                    const homeBetTotal = realBets
+                      .filter((b) => b.gameType === 'nba' && b.selection.toLowerCase().includes(g.homeTeam.toLowerCase()))
+                      .reduce((s, b) => s + b.stake, 0);
+                    const awayBetTotal = realBets
+                      .filter((b) => b.gameType === 'nba' && b.selection.toLowerCase().includes(g.awayTeam.toLowerCase()))
+                      .reduce((s, b) => s + b.stake, 0);
                     return (
                       <div key={g.id} className={`p-4 rounded-2xl border ${theme.cardBg} ${theme.cardBorder} shadow-sm space-y-3.5`}>
                         <div className="flex items-center justify-between text-xs font-semibold">
-                          <span className="px-2 py-0.5 rounded bg-slate-500/10 text-slate-600 dark:text-slate-300">
-                            {g.status} • {g.clock}
+                          <span
+                            className={`px-2 py-0.5 rounded font-mono font-bold ${
+                              g.status === 'Betting Open'
+                                ? 'bg-amber-500/15 text-amber-600 dark:text-amber-300'
+                                : g.status === 'Final'
+                                ? 'bg-slate-500/15 text-slate-500'
+                                : 'bg-rose-500/15 text-rose-600 dark:text-rose-300'
+                            }`}
+                          >
+                            {g.status === 'Betting Open' ? '⏱ 2H PRE-GAME BETTING' : g.status} • {g.clock}
                           </span>
-                          <span className="text-emerald-500 font-bold">Live Feed</span>
+                          <span className="text-emerald-500 font-bold">
+                            {g.status === 'Betting Open' ? 'Board Open' : g.status === 'Final' ? 'Final' : 'LIVE'}
+                          </span>
                         </div>
 
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
                               <span className="text-lg">{g.awayLogo}</span>
-                              <span className={`text-sm font-bold ${theme.textMain}`}>{g.awayTeam}</span>
+                              <div>
+                                <div className={`text-sm font-bold ${theme.textMain}`}>{g.awayTeam}</div>
+                                <div className="text-[10px] font-mono text-sky-500 font-bold">Pool: ₱{awayBetTotal.toLocaleString()}</div>
+                              </div>
                             </div>
-                            <span className={`text-lg font-extrabold ${theme.textMain}`}>{g.awayScore}</span>
+                            <span className={`text-lg font-extrabold font-mono ${theme.textMain}`}>
+                              {g.status === 'Betting Open' ? '—' : g.awayScore}
+                            </span>
                           </div>
 
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
                               <span className="text-lg">{g.homeLogo}</span>
-                              <span className={`text-sm font-bold ${theme.textMain}`}>{g.homeTeam}</span>
+                              <div>
+                                <div className={`text-sm font-bold ${theme.textMain}`}>{g.homeTeam}</div>
+                                <div className="text-[10px] font-mono text-purple-500 font-bold">Pool: ₱{homeBetTotal.toLocaleString()}</div>
+                              </div>
                             </div>
-                            <span className={`text-lg font-extrabold ${theme.textMain}`}>{g.homeScore}</span>
+                            <span className={`text-lg font-extrabold font-mono ${theme.textMain}`}>
+                              {g.status === 'Betting Open' ? '—' : g.homeScore}
+                            </span>
                           </div>
                         </div>
 
@@ -1224,7 +1552,7 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
               <div className="space-y-4">
                 <h2 className={`text-lg font-extrabold ${theme.textMain} flex items-center gap-2`}>
                   <Star className="w-5 h-5 text-amber-500" />
-                  Topup for Team
+                  NBA Betting Slip (₱2 Kalas / ₱100)
                 </h2>
 
                 <div className={`p-5 rounded-2xl border ${theme.cardBg} ${theme.cardBorder} shadow-sm space-y-4`}>
@@ -1247,9 +1575,48 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
                       </select>
                     </div>
 
-                    <div>
-                      <label className={`block text-xs font-bold uppercase mb-1.5 ${theme.textMuted}`}>Topup Coin Amount</label>
-                      <div className="grid grid-cols-3 gap-2">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <label className={`block text-xs font-bold uppercase ${theme.textMuted}`}>Type Bet Amount (₱)</label>
+                        <button
+                          type="button"
+                          onClick={() => setShowNbaKeypad((v) => !v)}
+                          className="text-[11px] font-bold text-orange-500 hover:underline"
+                        >
+                          {showNbaKeypad ? 'Hide Keypad' : 'Number Keypad'}
+                        </button>
+                      </div>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        value={topupAmount === 0 ? '' : String(topupAmount)}
+                        onFocus={() => setShowNbaKeypad(true)}
+                        onChange={(e) => setTopupAmount(Number(e.target.value.replace(/[^0-9]/g, '')) || 0)}
+                        placeholder="Type bet amount..."
+                        className={`w-full px-3.5 py-2.5 rounded-xl border ${theme.cardBorder} ${theme.cardBg} ${theme.textMain} font-mono text-lg font-black`}
+                      />
+
+                      {showNbaKeypad && (
+                        <div className="grid grid-cols-3 gap-1.5 pt-1">
+                          {['1', '2', '3', '4', '5', '6', '7', '8', '9', 'CLR', '0', 'BACK'].map((k) => (
+                            <button
+                              key={k}
+                              type="button"
+                              onClick={() => {
+                                if (k === 'CLR') setTopupAmount(0);
+                                else if (k === 'BACK') setTopupAmount((prev) => Math.floor(prev / 10));
+                                else setTopupAmount((prev) => Number(`${prev === 0 ? '' : prev}${k}`));
+                              }}
+                              className="h-10 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-orange-600 hover:text-white font-mono font-bold text-sm transition flex items-center justify-center"
+                            >
+                              {k === 'BACK' ? <Delete className="w-4 h-4" /> : k}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-3 gap-2 pt-1">
                         {[50, 100, 250, 500, 1000, 2500].map((amt) => (
                           <button
                             key={amt}
@@ -1259,19 +1626,30 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
                               topupAmount === amt ? 'bg-orange-600 text-white border-orange-600' : `${theme.cardBorder} ${theme.textMain} hover:bg-slate-100 dark:hover:bg-slate-800`
                             }`}
                           >
-                            {amt} Coins
+                            ₱{amt}
                           </button>
                         ))}
                       </div>
                     </div>
 
-                    <div className="pt-2">
+                    <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-[11px] space-y-1">
+                      <div className="flex justify-between font-bold text-amber-700 dark:text-amber-300">
+                        <span>Admin Kalas / Tong (₱2 per ₱100):</span>
+                        <span className="font-mono">₱{((topupAmount * 2) / 100).toFixed(2)}</span>
+                      </div>
+                      <div className={`flex justify-between font-semibold ${theme.textMuted}`}>
+                        <span>Net Match Pool Stake:</span>
+                        <span className="font-mono">₱{(topupAmount - (topupAmount * 2) / 100).toFixed(2)}</span>
+                      </div>
+                    </div>
+
+                    <div className="pt-1">
                       <button
                         type="submit"
                         className="w-full py-3 rounded-xl bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-700 hover:to-amber-700 text-white font-extrabold text-sm shadow-md transition flex items-center justify-center gap-2"
                       >
                         <Coins className="w-4 h-4" />
-                        Topup {topupAmount} Coins for {selectedTeam.name}
+                        Place ₱{topupAmount.toLocaleString()} Bet on {selectedTeam.name}
                       </button>
                     </div>
                   </form>
@@ -1283,7 +1661,7 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
                     Team Fan Leaderboard
                   </h3>
                   <div className="space-y-2">
-                    {teams.sort((a, b) => b.totalTopupCoins - a.totalTopupCoins).map((t, index) => (
+                    {[...teams].sort((a, b) => b.totalTopupCoins - a.totalTopupCoins).map((t, index) => (
                       <div key={t.id} className="flex items-center justify-between text-xs py-1.5 border-b border-slate-200 dark:border-slate-800 last:border-0">
                         <div className="flex items-center gap-2">
                           <span className="font-extrabold text-slate-400">#{index + 1}</span>
@@ -1457,6 +1835,22 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
             <p className={`text-sm ${theme.textMuted}`}>This NBA feature has been disabled by the administrator.</p>
           </div>
         )
+      )}
+
+      {/* 4. TONG-ITS TAB (COMING SOON · INTERACTIVE TABLE) */}
+      {activeSubTab === 'tongits' && (
+        <TongitsGamePanel
+          currentUser={currentUser}
+          playerCoins={score}
+          onCoinsChange={(delta, reason) => {
+            setScore((prev) => Math.max(0, Math.round((prev + delta) * 100) / 100));
+            setNotice(reason);
+            setTimeout(() => setNotice(null), 4000);
+          }}
+          onRecordAdminTong={(amount, source) => recordAdminTong(amount, `Tong-its: ${source}`)}
+          onOpenTopUp={onNavigatePaymentTerminal}
+          onExit={() => setActiveSubTab('arcade')}
+        />
       )}
     </div>
   );

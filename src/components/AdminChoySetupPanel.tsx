@@ -1370,158 +1370,506 @@ export const AdminChoySetupPanel: React.FC<AdminChoySetupPanelProps> = ({
       )}
 
       {/* TAB 4: BETTING & WINNER MONITOR */}
-      {subTab === 'betting_monitor' && (() => {
-        const [bets, setBets] = React.useState<Array<{
-          id: string;
-          userId: string;
-          userName: string;
-          gameType: 'swertres' | 'nba';
-          gameId: string;
-          gameTitle: string;
-          selection: string;
-          stake: number;
-          odds: number;
-          potentialWin: number;
-          status: 'Pending' | 'Won' | 'Lost';
-          createdAt: string;
-        }>>(() => {
-          const saved = localStorage.getItem('choy_real_bets');
-          if (saved) {
-            try { return JSON.parse(saved); } catch { return []; }
-          }
-          return [];
-        });
+      {subTab === 'betting_monitor' && (
+        <AdminBettingMonitorTab
+          authToken={authToken}
+          onOwnDashboardUpdated={onOwnDashboardUpdated}
+        />
+      )}
+    </div>
+  );
+};
 
-        const [declareGameId, setDeclareGameId] = React.useState('5:00 PM');
-        const [winningSelection, setWinningSelection] = React.useState('7-4-2');
+interface AdminBetRecord {
+  id: string;
+  userId: string;
+  userName: string;
+  gameType: 'swertres' | 'nba';
+  gameId: string;
+  gameTitle: string;
+  matchup?: string;
+  selection: string;
+  stake: number;
+  adminTong?: number;
+  odds: number;
+  potentialWin: number;
+  status: 'Pending' | 'Won' | 'Lost';
+  createdAt: string;
+}
 
-        const handleDeclare = (gameType: 'swertres' | 'nba', gameId: string, winningVal: string) => {
-          const updated = bets.map((bet) => {
-            if (bet.gameType === gameType && bet.gameId === gameId && bet.status === 'Pending') {
-              const isWin = bet.selection.trim().toLowerCase() === winningVal.trim().toLowerCase();
-              const nextStatus = isWin ? 'Won' : 'Lost';
-              if (isWin) {
-                const userCoinsKey = `choy_user_coins_${bet.userId}`;
-                const currentCoins = Number(localStorage.getItem(userCoinsKey) || '500');
-                localStorage.setItem(userCoinsKey, String(currentCoins + bet.potentialWin));
-              }
-              return { ...bet, status: nextStatus as 'Won' | 'Lost' };
+interface AdminTongLedgerEntry {
+  id: string;
+  source: 'NBA' | 'Tong-its' | 'Swertres' | string;
+  amount: number;
+  stake?: number;
+  detail: string;
+  createdAt: string;
+}
+
+const AdminBettingMonitorTab: React.FC<{
+  authToken?: string | null;
+  onOwnDashboardUpdated?: (next: UserDashboardData) => void;
+}> = ({ authToken, onOwnDashboardUpdated }) => {
+  const [bets, setBets] = useState<AdminBetRecord[]>(() => {
+    const saved = localStorage.getItem('choy_real_bets');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  });
+  const [tongLedger, setTongLedger] = useState<AdminTongLedgerEntry[]>(() => {
+    const saved = localStorage.getItem('choy_admin_tong_ledger');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  });
+  const [declareGameType, setDeclareGameType] = useState<'swertres' | 'nba'>('swertres');
+  const [declareGameId, setDeclareGameId] = useState('5:00 PM');
+  const [winningSelection, setWinningSelection] = useState('7-4-2');
+  const [autoPostBanner, setAutoPostBanner] = useState(true);
+  const [declaring, setDeclaring] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+
+  const reloadData = () => {
+    try {
+      const savedBets = localStorage.getItem('choy_real_bets');
+      if (savedBets) setBets(JSON.parse(savedBets));
+    } catch {
+      // ignore
+    }
+    try {
+      const savedTong = localStorage.getItem('choy_admin_tong_ledger');
+      if (savedTong) setTongLedger(JSON.parse(savedTong));
+    } catch {
+      // ignore
+    }
+  };
+
+  // Compute NBA Kalas/Tong (₱2 per ₱100 = 2%) & Tong-its Tong
+  const nbaBets = bets.filter((b) => b.gameType === 'nba');
+  const swertresBets = bets.filter((b) => b.gameType === 'swertres');
+
+  const nbaTongFromBets = nbaBets.reduce(
+    (sum, b) => sum + (typeof b.adminTong === 'number' ? b.adminTong : Math.round(((b.stake * 2) / 100) * 100) / 100),
+    0
+  );
+  const tongitsTong = tongLedger
+    .filter((t) => t.source.toLowerCase().includes('tong'))
+    .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+  const extraLedgerTong = tongLedger
+    .filter((t) => !t.source.toLowerCase().includes('tong') && !t.source.toLowerCase().includes('nba'))
+    .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+  const grandTotalAdminTong = Math.round((nbaTongFromBets + tongitsTong + extraLedgerTong) * 100) / 100;
+
+  // Group NBA bets by team for Team-vs-Team monitoring
+  const nbaTeamTotals = React.useMemo(() => {
+    const map = new Map<string, { team: string; totalBet: number; bettors: number; kalas: number; matchup: string }>();
+    for (const b of nbaBets) {
+      const team = b.selection || b.gameTitle;
+      const existing = map.get(team) || {
+        team,
+        totalBet: 0,
+        bettors: 0,
+        kalas: 0,
+        matchup: b.matchup || b.gameTitle,
+      };
+      const kalas = typeof b.adminTong === 'number' ? b.adminTong : Math.round(((b.stake * 2) / 100) * 100) / 100;
+      existing.totalBet += Number(b.stake || 0);
+      existing.bettors += 1;
+      existing.kalas = Math.round((existing.kalas + kalas) * 100) / 100;
+      map.set(team, existing);
+    }
+    return Array.from(map.values()).sort((a, b) => b.totalBet - a.totalBet);
+  }, [nbaBets]);
+
+  // Pre-defined matchups view comparing Team A vs Team B side-by-side
+  const nbaMatchupSummary = React.useMemo(() => {
+    const matchups = [
+      { id: 'lal-gsw', teamA: 'Los Angeles Lakers', teamB: 'Golden State Warriors' },
+      { id: 'bos-mia', teamA: 'Boston Celtics', teamB: 'Miami Heat' },
+      { id: 'chi-mil', teamA: 'Chicago Bulls', teamB: 'Milwaukee Bucks' },
+      { id: 'den-phx', teamA: 'Denver Nuggets', teamB: 'Phoenix Suns' },
+    ];
+    return matchups.map((m) => {
+      const aBets = nbaBets.filter((b) => b.selection.toLowerCase().includes(m.teamA.toLowerCase()));
+      const bBets = nbaBets.filter((b) => b.selection.toLowerCase().includes(m.teamB.toLowerCase()));
+      const aTotal = aBets.reduce((s, b) => s + Number(b.stake || 0), 0);
+      const bTotal = bBets.reduce((s, b) => s + Number(b.stake || 0), 0);
+      const matchKalas = Math.round((((aTotal + bTotal) * 2) / 100) * 100) / 100;
+      return {
+        ...m,
+        aTotal,
+        aCount: aBets.length,
+        bTotal,
+        bCount: bBets.length,
+        matchKalas,
+      };
+    });
+  }, [nbaBets]);
+
+  const handleDeclare = async () => {
+    if (!declareGameId.trim() || !winningSelection.trim()) return;
+    setDeclaring(true);
+    setStatusMessage(null);
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers.Authorization = `Bearer ${authToken}`;
+
+    let winnersCount = 0;
+    let totalCredited = 0;
+    const updated: AdminBetRecord[] = [];
+
+    for (const bet of bets) {
+      const matchesTarget =
+        bet.gameType === declareGameType &&
+        bet.status === 'Pending' &&
+        (bet.gameId.trim().toLowerCase() === declareGameId.trim().toLowerCase() ||
+          bet.gameTitle.toLowerCase().includes(declareGameId.trim().toLowerCase()) ||
+          declareGameType === 'nba');
+
+      if (matchesTarget && (declareGameType === 'swertres' || bet.selection.toLowerCase().includes(winningSelection.trim().toLowerCase()) || bet.gameId.toLowerCase() === declareGameId.trim().toLowerCase())) {
+        const isWin =
+          bet.selection.trim().toLowerCase() === winningSelection.trim().toLowerCase() ||
+          (declareGameType === 'nba' && bet.selection.toLowerCase().includes(winningSelection.trim().toLowerCase()));
+        if (isWin) {
+          winnersCount += 1;
+          totalCredited += bet.potentialWin;
+          const userCoinsKey = `choy_user_coins_${bet.userId}`;
+          const currentCoins = Number(localStorage.getItem(userCoinsKey) || '0');
+          localStorage.setItem(userCoinsKey, String(currentCoins + bet.potentialWin));
+
+          try {
+            const creditRes = await fetch('/api/choy/games/credit-win', {
+              method: 'POST',
+              credentials: 'include',
+              headers,
+              body: JSON.stringify({
+                targetUserId: bet.userId,
+                amountPhp: bet.potentialWin,
+                gameName: declareGameType === 'swertres' ? `Swertres ${declareGameId}` : `NBA ${winningSelection}`,
+                reference: `${bet.id}-${winningSelection}`,
+              }),
+            });
+            const creditData = await creditRes.json().catch(() => ({}));
+            if (creditRes.ok && creditData.userDashboard && onOwnDashboardUpdated) {
+              onOwnDashboardUpdated(creditData.userDashboard);
             }
-            return bet;
-          });
-          setBets(updated);
-          localStorage.setItem('choy_real_bets', JSON.stringify(updated));
-          alert(`Successfully declared winner "${winningVal}" for ${gameId}! Winnings distributed to winning users.`);
-        };
+          } catch {
+            // local coins already credited
+          }
+          updated.push({ ...bet, status: 'Won' });
+        } else if (bet.gameId.trim().toLowerCase() === declareGameId.trim().toLowerCase()) {
+          updated.push({ ...bet, status: 'Lost' });
+        } else {
+          updated.push(bet);
+        }
+      } else {
+        updated.push(bet);
+      }
+    }
 
-        return (
-          <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/60 rounded-2xl p-5 shadow-xs space-y-6">
-            <div className="flex items-center justify-between border-b border-emerald-200 dark:border-emerald-800 pb-3">
-              <div>
-                <h3 className="text-sm font-black text-emerald-950 dark:text-white flex items-center gap-2">
-                  <Trophy className="w-4 h-4 text-amber-500" />
-                  <span>Admin Real Betting &amp; Winner Monitor</span>
-                </h3>
-                <p className="text-xs text-emerald-700 dark:text-emerald-300 mt-0.5">
-                  Monitor all active player bets and declare official game winners to automatically payout user wallets.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  const saved = localStorage.getItem('choy_real_bets');
-                  if (saved) {
-                    try { setBets(JSON.parse(saved)); } catch {}
-                  }
-                }}
-                className="px-3 py-1.5 rounded-xl bg-emerald-100 dark:bg-emerald-800 text-emerald-900 dark:text-emerald-100 text-xs font-bold flex items-center gap-1.5"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                Refresh Bets
-              </button>
-            </div>
+    setBets(updated);
+    localStorage.setItem('choy_real_bets', JSON.stringify(updated));
 
-            {/* Declare Winner Form */}
-            <div className="p-4 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 space-y-3">
-              <h4 className="text-xs font-black uppercase text-emerald-900 dark:text-emerald-200">Declare Draw / Match Winner</h4>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div>
-                  <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-300 mb-1">Game / Draw ID</label>
-                  <input
-                    type="text"
-                    value={declareGameId}
-                    onChange={(e) => setDeclareGameId(e.target.value)}
-                    placeholder="e.g. 5:00 PM or lal"
-                    className="w-full p-2.5 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs font-bold text-emerald-950 dark:text-white"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-300 mb-1">Winning Combination / Team</label>
-                  <input
-                    type="text"
-                    value={winningSelection}
-                    onChange={(e) => setWinningSelection(e.target.value)}
-                    placeholder="e.g. 7-4-2 or Los Angeles Lakers"
-                    className="w-full p-2.5 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs font-bold text-emerald-950 dark:text-white"
-                  />
-                </div>
-                <div className="flex items-end">
-                  <button
-                    type="button"
-                    onClick={() => handleDeclare('swertres', declareGameId, winningSelection)}
-                    className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs shadow transition"
-                  >
-                    Declare Winner &amp; Pay Out
-                  </button>
-                </div>
-              </div>
-            </div>
+    // Auto-post Official Swertres Result Banner to Newsfeed
+    if (declareGameType === 'swertres' && autoPostBanner) {
+      try {
+        await fetch('/api/posts', {
+          method: 'POST',
+          credentials: 'include',
+          headers,
+          body: JSON.stringify({
+            text: `🎯 OFFICIAL SWERTRES LIVE RESULT (${declareGameId} Draw)\nWinning Combination: ${winningSelection}\nWinners Auto-Credited: ${winnersCount} player(s) · Total Payout: ₱${totalCredited.toLocaleString()}\n#SwertresLive #OfficialResult #ChoyChat`,
+            newsfeed: 'both',
+          }),
+        });
+      } catch {
+        // non-blocking
+      }
+    }
 
-            {/* All Bets Table */}
-            <div className="space-y-3">
-              <h4 className="text-xs font-black uppercase text-emerald-900 dark:text-emerald-200">All Placed Bets Ledger ({bets.length})</h4>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs">
-                  <thead>
-                    <tr className="border-b border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300">
-                      <th className="py-2 px-3">User</th>
-                      <th className="py-2 px-3">Game / Draw</th>
-                      <th className="py-2 px-3">Selection</th>
-                      <th className="py-2 px-3">Stake</th>
-                      <th className="py-2 px-3">Potential Win</th>
-                      <th className="py-2 px-3">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-emerald-100 dark:divide-emerald-900/50">
-                    {bets.length === 0 ? (
-                      <tr>
-                        <td colSpan={6} className="py-6 text-center text-emerald-600 dark:text-emerald-400">No bets placed yet.</td>
-                      </tr>
-                    ) : (
-                      bets.map((b) => (
-                        <tr key={b.id} className="text-emerald-950 dark:text-white">
-                          <td className="py-2.5 px-3 font-bold">{b.userName}</td>
-                          <td className="py-2.5 px-3 font-semibold">{b.gameTitle}</td>
-                          <td className="py-2.5 px-3 font-mono font-bold text-amber-600 dark:text-amber-400">{b.selection}</td>
-                          <td className="py-2.5 px-3">₱{b.stake}</td>
-                          <td className="py-2.5 px-3 font-extrabold text-emerald-600 dark:text-emerald-400">₱{b.potentialWin.toLocaleString()}</td>
-                          <td className="py-2.5 px-3">
-                            <span className={`px-2.5 py-1 rounded-full font-bold text-[10px] ${
-                              b.status === 'Won' ? 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/20' : b.status === 'Pending' ? 'bg-amber-500/10 text-amber-600 border border-amber-500/20' : 'bg-rose-500/10 text-rose-600 border border-rose-500/20'
-                            }`}>
-                              {b.status}
-                            </span>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+    setDeclaring(false);
+    setStatusMessage(
+      `Declared "${winningSelection}" for ${declareGameType.toUpperCase()} (${declareGameId}). ${winnersCount} winner(s) auto-credited ₱${totalCredited.toLocaleString()} to Wallet${declareGameType === 'swertres' && autoPostBanner ? ' & banner auto-posted to Newsfeed!' : '.'}`
+    );
+  };
+
+  return (
+    <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/60 rounded-2xl p-5 shadow-xs space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-emerald-200 dark:border-emerald-800 pb-3">
+        <div>
+          <h3 className="text-sm font-black text-emerald-950 dark:text-white flex items-center gap-2">
+            <Trophy className="w-4 h-4 text-amber-500" />
+            <span>Admin Real Betting, NBA Team Pool &amp; Kalas / Tong Monitor</span>
+          </h3>
+          <p className="text-xs text-emerald-700 dark:text-emerald-300 mt-0.5">
+            Track Team A vs Team B NBA wagers, Admin Kalas/Tong (₱2 per ₱100 NBA bet + Tong-its rake), and auto-credit winners.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={reloadData}
+          className="px-3 py-1.5 rounded-xl bg-emerald-100 dark:bg-emerald-800 text-emerald-900 dark:text-emerald-100 text-xs font-bold flex items-center gap-1.5"
+        >
+          <RefreshCw className="w-3.5 h-3.5" />
+          Refresh Ledger
+        </button>
+      </div>
+
+      {statusMessage && (
+        <div className="p-3 rounded-xl bg-emerald-500/15 border border-emerald-400/50 text-emerald-900 dark:text-emerald-100 text-xs font-bold">
+          {statusMessage}
+        </div>
+      )}
+
+      {/* Admin Total Earned Kalas / Tong KPI Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="p-4 rounded-2xl bg-gradient-to-br from-amber-500/15 to-orange-500/10 border border-amber-400/40 space-y-1">
+          <div className="text-[10px] font-black uppercase tracking-wider text-amber-700 dark:text-amber-300">
+            Admin Total Earned (Kalas / Tong)
           </div>
-        );
-      })()}
+          <div className="text-2xl font-black font-mono tabular-nums text-amber-700 dark:text-amber-300">
+            ₱{grandTotalAdminTong.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </div>
+          <div className="text-[11px] text-emerald-800 dark:text-emerald-200">
+            Combined NBA + Tong-its earnings
+          </div>
+        </div>
+
+        <div className="p-4 rounded-2xl bg-orange-50 dark:bg-emerald-950/60 border border-orange-200 dark:border-emerald-800 space-y-1">
+          <div className="text-[10px] font-black uppercase tracking-wider text-orange-700 dark:text-orange-300">
+            NBA Kalas (₱2 / ₱100 Bet)
+          </div>
+          <div className="text-xl font-black font-mono tabular-nums text-emerald-950 dark:text-white">
+            ₱{nbaTongFromBets.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </div>
+          <div className="text-[11px] text-emerald-700 dark:text-emerald-300">
+            From {nbaBets.length} NBA bet(s) (₱{nbaBets.reduce((s, b) => s + b.stake, 0).toLocaleString()} pool)
+          </div>
+        </div>
+
+        <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 space-y-1">
+          <div className="text-[10px] font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+            Tong-its Table Tong
+          </div>
+          <div className="text-xl font-black font-mono tabular-nums text-emerald-950 dark:text-white">
+            ₱{tongitsTong.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </div>
+          <div className="text-[11px] text-emerald-700 dark:text-emerald-300">
+            ₱0.50 (₱1–₱2) · ₱1.00 (₱3–₱5+)
+          </div>
+        </div>
+
+        <div className="p-4 rounded-2xl bg-indigo-50 dark:bg-emerald-950/60 border border-indigo-200 dark:border-emerald-800 space-y-1">
+          <div className="text-[10px] font-black uppercase tracking-wider text-indigo-700 dark:text-indigo-300">
+            Swertres Total Bets Pool
+          </div>
+          <div className="text-xl font-black font-mono tabular-nums text-emerald-950 dark:text-white">
+            ₱{swertresBets.reduce((s, b) => s + b.stake, 0).toLocaleString()}
+          </div>
+          <div className="text-[11px] text-emerald-700 dark:text-emerald-300">
+            {swertresBets.length} Swertres ticket(s) placed
+          </div>
+        </div>
+      </div>
+
+      {/* NBA Team-vs-Team Betting Pool Table */}
+      <div className="space-y-3">
+        <h4 className="text-xs font-black uppercase text-emerald-900 dark:text-emerald-200">
+          NBA Matchup Monitor — How Much Bet on Team A vs Team B
+        </h4>
+        <div className="overflow-x-auto rounded-xl border border-emerald-200 dark:border-emerald-800">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr className="bg-emerald-50 dark:bg-emerald-950/80 border-b border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 font-bold">
+                <th className="py-2.5 px-3">Team A (Home)</th>
+                <th className="py-2.5 px-3">Team A Total Bet</th>
+                <th className="py-2.5 px-3">Team B (Away)</th>
+                <th className="py-2.5 px-3">Team B Total Bet</th>
+                <th className="py-2.5 px-3">Admin Kalas (2%)</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-emerald-100 dark:divide-emerald-900/50">
+              {nbaMatchupSummary.map((m) => (
+                <tr key={m.id} className="text-emerald-950 dark:text-white">
+                  <td className="py-2.5 px-3 font-bold">{m.teamA}</td>
+                  <td className="py-2.5 px-3 font-mono font-black text-purple-600 dark:text-purple-300">
+                    ₱{m.aTotal.toLocaleString()} <span className="text-[10px] font-normal text-emerald-600 dark:text-emerald-400">({m.aCount})</span>
+                  </td>
+                  <td className="py-2.5 px-3 font-bold">{m.teamB}</td>
+                  <td className="py-2.5 px-3 font-mono font-black text-sky-600 dark:text-sky-300">
+                    ₱{m.bTotal.toLocaleString()} <span className="text-[10px] font-normal text-emerald-600 dark:text-emerald-400">({m.bCount})</span>
+                  </td>
+                  <td className="py-2.5 px-3 font-mono font-black text-amber-600 dark:text-amber-300">
+                    ₱{m.matchKalas.toFixed(2)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {nbaTeamTotals.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {nbaTeamTotals.map((t) => (
+              <div
+                key={t.team}
+                className="px-3 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800 text-[11px] font-bold text-emerald-900 dark:text-emerald-100"
+              >
+                {t.team}: <span className="text-orange-600 dark:text-orange-300">₱{t.totalBet.toLocaleString()}</span> ({t.bettors} bets · Kalas ₱{t.kalas.toFixed(2)})
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Declare Winner Form */}
+      <div className="p-4 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h4 className="text-xs font-black uppercase text-emerald-900 dark:text-emerald-200">
+            Declare Official Winner &amp; Auto-Credit Cash Wallet
+          </h4>
+          {declareGameType === 'swertres' && (
+            <label className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-800 dark:text-emerald-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={autoPostBanner}
+                onChange={(e) => setAutoPostBanner(e.target.checked)}
+                className="accent-emerald-600"
+              />
+              <span>Auto-Post Result Banner to Newsfeed</span>
+            </label>
+          )}
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+          <div>
+            <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-300 mb-1">Game Type</label>
+            <select
+              value={declareGameType}
+              onChange={(e) => {
+                const next = e.target.value as 'swertres' | 'nba';
+                setDeclareGameType(next);
+                if (next === 'swertres') {
+                  setDeclareGameId('5:00 PM');
+                  setWinningSelection('7-4-2');
+                } else {
+                  setDeclareGameId('lal');
+                  setWinningSelection('Los Angeles Lakers');
+                }
+              }}
+              className="w-full p-2.5 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs font-bold text-emerald-950 dark:text-white"
+            >
+              <option value="swertres">Swertres Live</option>
+              <option value="nba">NBA Live</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-300 mb-1">Game / Draw ID</label>
+            <input
+              type="text"
+              value={declareGameId}
+              onChange={(e) => setDeclareGameId(e.target.value)}
+              placeholder="e.g. 5:00 PM or lal"
+              className="w-full p-2.5 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs font-bold text-emerald-950 dark:text-white"
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-300 mb-1">Winning Combination / Team</label>
+            <input
+              type="text"
+              value={winningSelection}
+              onChange={(e) => setWinningSelection(e.target.value)}
+              placeholder="e.g. 7-4-2 or Los Angeles Lakers"
+              className="w-full p-2.5 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs font-bold text-emerald-950 dark:text-white"
+            />
+          </div>
+          <div className="flex items-end">
+            <button
+              type="button"
+              disabled={declaring}
+              onClick={() => void handleDeclare()}
+              className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs shadow transition disabled:opacity-50"
+            >
+              {declaring ? 'Crediting...' : 'Declare & Auto-Credit'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* All Bets Table */}
+      <div className="space-y-3">
+        <h4 className="text-xs font-black uppercase text-emerald-900 dark:text-emerald-200">
+          All Placed Bets Ledger ({bets.length})
+        </h4>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr className="border-b border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300">
+                <th className="py-2 px-3">User</th>
+                <th className="py-2 px-3">Game / Draw</th>
+                <th className="py-2 px-3">Selection</th>
+                <th className="py-2 px-3">Stake</th>
+                <th className="py-2 px-3">Admin Kalas</th>
+                <th className="py-2 px-3">Potential Win</th>
+                <th className="py-2 px-3">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-emerald-100 dark:divide-emerald-900/50">
+              {bets.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="py-6 text-center text-emerald-600 dark:text-emerald-400">
+                    No bets placed yet.
+                  </td>
+                </tr>
+              ) : (
+                bets.map((b) => {
+                  const kalas =
+                    b.gameType === 'nba'
+                      ? typeof b.adminTong === 'number'
+                        ? b.adminTong
+                        : Math.round(((b.stake * 2) / 100) * 100) / 100
+                      : 0;
+                  return (
+                    <tr key={b.id} className="text-emerald-950 dark:text-white">
+                      <td className="py-2.5 px-3 font-bold">{b.userName}</td>
+                      <td className="py-2.5 px-3 font-semibold">{b.gameTitle}</td>
+                      <td className="py-2.5 px-3 font-mono font-bold text-amber-600 dark:text-amber-400">{b.selection}</td>
+                      <td className="py-2.5 px-3 font-mono">₱{b.stake.toLocaleString()}</td>
+                      <td className="py-2.5 px-3 font-mono font-bold text-amber-600 dark:text-amber-300">
+                        {kalas > 0 ? `₱${kalas.toFixed(2)}` : '—'}
+                      </td>
+                      <td className="py-2.5 px-3 font-extrabold text-emerald-600 dark:text-emerald-400">
+                        ₱{b.potentialWin.toLocaleString()}
+                      </td>
+                      <td className="py-2.5 px-3">
+                        <span
+                          className={`px-2.5 py-1 rounded-full font-bold text-[10px] ${
+                            b.status === 'Won'
+                              ? 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/20'
+                              : b.status === 'Pending'
+                              ? 'bg-amber-500/10 text-amber-600 border border-amber-500/20'
+                              : 'bg-rose-500/10 text-rose-600 border border-rose-500/20'
+                          }`}
+                        >
+                          {b.status}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 };

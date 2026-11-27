@@ -302,6 +302,53 @@ export interface WalletTxItem {
 
 export type KycVerificationStatus = 'unsubmitted' | 'pending' | 'approved' | 'rejected';
 
+export interface UserMediaFolderItem {
+  id: string;
+  name: string;
+  category: 'photo' | 'video' | 'music';
+  items: Array<{
+    id: string;
+    title: string;
+    url: string;
+    createdAt: string;
+  }>;
+  createdAt: string;
+}
+
+export interface UserWithdrawalRequestItem {
+  id: string;
+  receiverName: string;
+  walletType: string;
+  accountNumber: string;
+  walletBalanceBefore: number;
+  amount: number;
+  status: 'pending' | 'completed' | 'rejected';
+  createdAt: string;
+}
+
+export interface UserDtrSubscription {
+  plan: 'starter' | 'pro' | 'enterprise';
+  status: 'none' | 'trialing' | 'active' | 'cancelled';
+  paymentMethod: 'stripe_card' | 'gcash';
+  paymentDetails: string;
+  trialStartedAt?: string;
+  trialEndsAt?: string;
+  nextBillingAt?: string;
+  autoDeduct: boolean;
+  lastBilledAt?: string;
+  cancelledAt?: string;
+}
+
+export interface UserDtrEmployeeRecord {
+  id: string;
+  completeName: string;
+  dateHired: string;
+  position?: string;
+  dailyRate: number;
+  months: Record<string, Record<string, Record<string, number>>>;
+  updatedAt: string;
+}
+
 export interface StoredUserDashboard {
   userId: string;
   publicShowName: boolean;
@@ -310,9 +357,19 @@ export interface StoredUserDashboard {
   choyProActive: boolean;
   choyProActivatedAt?: string;
   subscriptionPlan: 'free' | 'choy_pro_monthly' | 'choy_pro_annual' | 'vip_supporter';
-  subscriptionStatus: 'active' | 'inactive' | 'cancelled';
+  subscriptionStatus: 'active' | 'inactive' | 'cancelled' | 'trialing';
   subscriptionAutoRenew: boolean;
   subscriptionRenewAt?: string;
+  subscriptionPaymentMethod?: 'stripe_card' | 'gcash' | 'wallet' | 'choy_wallet';
+  subscriptionPaymentLabel?: string;
+  subscriptionTrialEndsAt?: string;
+  coverPhotoUrl?: string;
+  mediaFolders?: UserMediaFolderItem[];
+  withdrawalPinHash?: string;
+  hasWithdrawalPin?: boolean;
+  withdrawalRequests?: UserWithdrawalRequestItem[];
+  dtrSubscription?: UserDtrSubscription;
+  dtrEmployees?: UserDtrEmployeeRecord[];
   lastDailyClaimAt?: string;
   rulesAcceptedAt?: string;
   acknowledgmentSignedName?: string;
@@ -4763,7 +4820,9 @@ export class ChoyStore {
         ? raw.subscriptionPlan
         : 'free';
     const subStatus =
-      raw?.subscriptionStatus === 'active' || raw?.subscriptionStatus === 'cancelled'
+      raw?.subscriptionStatus === 'active' ||
+      raw?.subscriptionStatus === 'cancelled' ||
+      raw?.subscriptionStatus === 'trialing'
         ? raw.subscriptionStatus
         : plan === 'free'
         ? 'active'
@@ -4792,6 +4851,32 @@ export class ChoyStore {
       subscriptionStatus: subStatus,
       subscriptionAutoRenew: raw?.subscriptionAutoRenew !== false,
       subscriptionRenewAt: typeof raw?.subscriptionRenewAt === 'string' ? raw.subscriptionRenewAt : undefined,
+      subscriptionPaymentMethod:
+        raw?.subscriptionPaymentMethod === 'stripe_card' ||
+        raw?.subscriptionPaymentMethod === 'gcash' ||
+        raw?.subscriptionPaymentMethod === 'wallet' ||
+        raw?.subscriptionPaymentMethod === 'choy_wallet'
+          ? raw.subscriptionPaymentMethod
+          : undefined,
+      subscriptionPaymentLabel:
+        typeof raw?.subscriptionPaymentLabel === 'string'
+          ? raw.subscriptionPaymentLabel.trim().slice(0, 80)
+          : undefined,
+      subscriptionTrialEndsAt:
+        typeof raw?.subscriptionTrialEndsAt === 'string' ? raw.subscriptionTrialEndsAt : undefined,
+      coverPhotoUrl:
+        typeof raw?.coverPhotoUrl === 'string' && raw.coverPhotoUrl.trim()
+          ? raw.coverPhotoUrl.trim()
+          : undefined,
+      mediaFolders: Array.isArray(raw?.mediaFolders) ? raw.mediaFolders.slice(0, 50) : [],
+      withdrawalPinHash:
+        typeof raw?.withdrawalPinHash === 'string' && raw.withdrawalPinHash.trim()
+          ? raw.withdrawalPinHash.trim()
+          : undefined,
+      hasWithdrawalPin: Boolean(raw?.withdrawalPinHash),
+      withdrawalRequests: Array.isArray(raw?.withdrawalRequests) ? raw.withdrawalRequests.slice(0, 40) : [],
+      dtrSubscription: raw?.dtrSubscription && typeof raw.dtrSubscription === 'object' ? raw.dtrSubscription : undefined,
+      dtrEmployees: Array.isArray(raw?.dtrEmployees) ? raw.dtrEmployees.slice(0, 500) : [],
       lastDailyClaimAt: typeof raw?.lastDailyClaimAt === 'string' ? raw.lastDailyClaimAt : undefined,
       rulesAcceptedAt: typeof raw?.rulesAcceptedAt === 'string' ? raw.rulesAcceptedAt : undefined,
       acknowledgmentSignedName:

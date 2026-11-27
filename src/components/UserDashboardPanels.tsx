@@ -76,17 +76,53 @@ export interface UserWalletTx {
   createdAt: string;
 }
 
+export interface UserMediaFolderItem {
+  id: string;
+  name: string;
+  kind: 'photo' | 'video' | 'music' | 'file';
+  url: string;
+  createdAt: string;
+}
+
+export interface UserMediaFolder {
+  id: string;
+  name: string;
+  items: UserMediaFolderItem[];
+  createdAt: string;
+}
+
+export interface UserWithdrawalRequest {
+  id: string;
+  receiverName: string;
+  walletType: string;
+  accountNumber?: string;
+  withdrawalNumber?: string;
+  walletBalanceBefore: number;
+  amount: number;
+  status: 'pending' | 'completed' | 'rejected';
+  createdAt: string;
+}
+
 export interface UserDashboardData {
   userId: string;
   publicShowName: boolean;
+  coverPhotoUrl?: string;
+  mediaFolders?: UserMediaFolder[];
+  hasWithdrawalPin?: boolean;
+  withdrawalRequests?: UserWithdrawalRequest[];
   walletBalance: number;
   choyWalletBalance: number;
   choyProActive: boolean;
   choyProActivatedAt?: string;
   subscriptionPlan: 'free' | 'choy_pro_monthly' | 'choy_pro_annual' | 'vip_supporter';
-  subscriptionStatus: 'active' | 'inactive' | 'cancelled';
+  subscriptionStatus: 'active' | 'trialing' | 'inactive' | 'cancelled';
   subscriptionAutoRenew: boolean;
   subscriptionRenewAt?: string;
+  subscriptionTrialEndsAt?: string;
+  subscriptionPaymentMethod?: 'wallet' | 'choy_wallet' | 'stripe_card' | 'gcash';
+  subscriptionPaymentLabel?: string;
+  dtrSubscription?: Record<string, unknown>;
+  dtrEmployees?: Array<Record<string, unknown>>;
   lastDailyClaimAt?: string;
   rulesAcceptedAt?: string;
   acknowledgmentSignedName?: string;
@@ -199,7 +235,7 @@ export function buildAdminProfileCopyText(
   newsfeedLabel: string
 ): string {
   const handle = `@${user.name.toLowerCase().replace(/[^a-z0-9]+/g, '') || 'member'}`;
-  return [
+  const lines = [
     '=== CHOY CHAT PROFILE (ADMIN COPY) ===',
     `User ID: ${user.id}`,
     `Created Name (Public Show): ${user.name} (${handle})`,
@@ -207,7 +243,11 @@ export function buildAdminProfileCopyText(
     `Phone: ${user.phone}`,
     `Role: ${user.role.toUpperCase()}`,
     `Status: ${user.status.toUpperCase()}`,
-    `Newsfeed Channel: ${newsfeedLabel}`,
+  ];
+  if (user.role === 'admin') {
+    lines.push(`Newsfeed Channel: ${newsfeedLabel}`);
+  }
+  lines.push(
     `Choy Pro: ${dashboard.choyProActive ? 'ACTIVE' : 'STANDARD'}`,
     `Subscription: ${formatPlanLabel(dashboard.subscriptionPlan)} (${dashboard.subscriptionStatus.toUpperCase()})`,
     `Wallet Balance: PHP ${dashboard.walletBalance.toFixed(2)}`,
@@ -218,8 +258,9 @@ export function buildAdminProfileCopyText(
         ? `${dashboard.acknowledgmentSignedName || user.name} (${new Date(dashboard.acknowledgmentSignedAt).toLocaleString()})`
         : 'Pending'
     }`,
-    `Copied At: ${new Date().toLocaleString()}`,
-  ].join('\n');
+    `Copied At: ${new Date().toLocaleString()}`
+  );
+  return lines.join('\n');
 }
 
 export function formatPlanLabel(plan: UserDashboardData['subscriptionPlan']): string {
@@ -322,6 +363,21 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
 
   const [walletAmount, setWalletAmount] = useState('100');
   const [walletNote, setWalletNote] = useState('');
+  const [withdrawReceiverName, setWithdrawReceiverName] = useState(currentUser.name);
+  const [withdrawWalletType, setWithdrawWalletType] = useState('GCash');
+  const [withdrawAccountNumber, setWithdrawAccountNumber] = useState(currentUser.phone || '');
+  const [withdrawAmount, setWithdrawAmount] = useState('100');
+  const [withdrawPin, setWithdrawPin] = useState('');
+  const [newWithdrawalPin, setNewWithdrawalPin] = useState('');
+  const [confirmWithdrawalPin, setConfirmWithdrawalPin] = useState('');
+  const [showChangeWithdrawPin, setShowChangeWithdrawPin] = useState(false);
+
+  const [trialPlan, setTrialPlan] = useState<'choy_pro_monthly' | 'choy_pro_annual' | 'vip_supporter'>('choy_pro_monthly');
+  const [trialPayMethod, setTrialPayMethod] = useState<'stripe_card' | 'gcash'>('stripe_card');
+  const [trialCardHolder, setTrialCardHolder] = useState(currentUser.name);
+  const [trialCardLast4, setTrialCardLast4] = useState('');
+  const [trialGcashNum, setTrialGcashNum] = useState(currentUser.phone || '');
+
   const [transferRecipientId, setTransferRecipientId] = useState('');
   const [transferAmount, setTransferAmount] = useState('50');
   const [transferNote, setTransferNote] = useState('');
@@ -806,7 +862,7 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                   </span>
                 </div>
                 <div className="text-[11px] font-mono text-emerald-700 dark:text-emerald-300">
-                  {myHandle} · {newsfeedLabel}
+                  {myHandle}{currentUser.role === 'admin' ? ` · ${newsfeedLabel}` : ''}
                 </div>
               </div>
             </div>
@@ -1033,10 +1089,10 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Cash In / Cash Out */}
+          {/* Cash In */}
           <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/60 rounded-2xl p-4 space-y-3 shadow-xs">
             <h3 className="text-xs font-black uppercase tracking-wider text-emerald-900 dark:text-white">
-              Cash In &amp; Cash Out
+              Quick Cash In
             </h3>
             <div className="grid grid-cols-4 gap-1.5">
               {['100', '250', '500', '1000'].map((amt) => (
@@ -1056,6 +1112,7 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
             </div>
             <input
               type="number"
+              inputMode="decimal"
               min="1"
               step="1"
               value={walletAmount}
@@ -1070,38 +1127,21 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
               placeholder="Optional note (e.g., GCash / Maya ref)"
               className="w-full min-h-[38px] px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white focus:outline-none focus:border-emerald-500"
             />
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                disabled={isBusy}
-                onClick={() =>
-                  void onDashboardAction({
-                    action: 'wallet_topup',
-                    amount: Number(walletAmount),
-                    note: walletNote,
-                  })
-                }
-                className="py-2.5 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black inline-flex items-center justify-center gap-1.5 transition disabled:opacity-50"
-              >
-                <ArrowDownLeft className="w-3.5 h-3.5" />
-                <span>Cash In</span>
-              </button>
-              <button
-                type="button"
-                disabled={isBusy}
-                onClick={() =>
-                  void onDashboardAction({
-                    action: 'wallet_withdraw',
-                    amount: Number(walletAmount),
-                    note: walletNote,
-                  })
-                }
-                className="py-2.5 px-3 rounded-xl border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-100 dark:hover:bg-emerald-800 text-xs font-bold inline-flex items-center justify-center gap-1.5 transition disabled:opacity-50"
-              >
-                <ArrowUpRight className="w-3.5 h-3.5" />
-                <span>Cash Out</span>
-              </button>
-            </div>
+            <button
+              type="button"
+              disabled={isBusy}
+              onClick={() =>
+                void onDashboardAction({
+                  action: 'wallet_topup',
+                  amount: Number(walletAmount),
+                  note: walletNote,
+                })
+              }
+              className="w-full py-2.5 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black inline-flex items-center justify-center gap-1.5 transition disabled:opacity-50"
+            >
+              <ArrowDownLeft className="w-3.5 h-3.5" />
+              <span>Cash In ₱{walletAmount || '0'}</span>
+            </button>
           </div>
 
           {/* Send Money to Member */}
@@ -1155,6 +1195,244 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
               <span>Send Money</span>
             </button>
           </div>
+        </div>
+
+        {/* Cash Out / Withdrawal Details Form with Withdrawal PIN */}
+        <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/60 rounded-2xl p-5 space-y-4 shadow-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-emerald-200 dark:border-emerald-800 pb-3">
+            <div>
+              <h3 className="text-sm font-black text-emerald-950 dark:text-white flex items-center gap-2">
+                <ArrowUpRight className="w-4 h-4 text-emerald-500" />
+                <span>Cash Out / Withdrawal Request Form</span>
+              </h3>
+              <p className="text-[11px] text-emerald-700 dark:text-emerald-300 mt-0.5">
+                Protected by your personal Withdrawal PIN. Fill out receiver &amp; wallet details accurately.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowChangeWithdrawPin((prev) => !prev)}
+              className="px-3 py-1.5 rounded-xl border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950 text-[11px] font-bold text-emerald-900 dark:text-emerald-100"
+            >
+              {dashboard.hasWithdrawalPin
+                ? showChangeWithdrawPin
+                  ? 'Hide PIN Setup'
+                  : 'Change Withdrawal PIN'
+                : 'Set Withdrawal PIN'}
+            </button>
+          </div>
+
+          {(!dashboard.hasWithdrawalPin || showChangeWithdrawPin) && (
+            <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700/60 space-y-2.5">
+              <div className="text-xs font-black text-amber-900 dark:text-amber-200">
+                {dashboard.hasWithdrawalPin ? 'Update Your Withdrawal PIN' : 'Step 1: Add Withdrawal PIN (Required before Cash Out)'}
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={newWithdrawalPin}
+                  onChange={(e) => setNewWithdrawalPin(e.target.value.replace(/[^0-9]/g, ''))}
+                  placeholder="New 4-6 digit PIN"
+                  className="px-3 py-2 rounded-xl bg-white dark:bg-emerald-950 border border-amber-300 dark:border-amber-700 text-xs font-mono text-emerald-950 dark:text-white"
+                />
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={confirmWithdrawalPin}
+                  onChange={(e) => setConfirmWithdrawalPin(e.target.value.replace(/[^0-9]/g, ''))}
+                  placeholder="Confirm PIN"
+                  className="px-3 py-2 rounded-xl bg-white dark:bg-emerald-950 border border-amber-300 dark:border-amber-700 text-xs font-mono text-emerald-950 dark:text-white"
+                />
+                <button
+                  type="button"
+                  disabled={isBusy || newWithdrawalPin.length < 4 || newWithdrawalPin !== confirmWithdrawalPin}
+                  onClick={async () => {
+                    const ok = await onDashboardAction({
+                      action: 'set_withdrawal_pin',
+                      withdrawalPin: newWithdrawalPin,
+                    });
+                    if (ok) {
+                      setNewWithdrawalPin('');
+                      setConfirmWithdrawalPin('');
+                      setShowChangeWithdrawPin(false);
+                    }
+                  }}
+                  className="py-2 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs transition disabled:opacity-50"
+                >
+                  Save Withdrawal PIN
+                </button>
+              </div>
+              {newWithdrawalPin && confirmWithdrawalPin && newWithdrawalPin !== confirmWithdrawalPin && (
+                <div className="text-[11px] font-bold text-rose-600 dark:text-rose-300">PINs do not match.</div>
+              )}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-200 mb-1">
+                Name / Receiver
+              </label>
+              <input
+                type="text"
+                value={withdrawReceiverName}
+                onChange={(e) => setWithdrawReceiverName(e.target.value)}
+                placeholder="Full name of receiver"
+                className="w-full min-h-[38px] px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-200 mb-1">
+                Type of Wallet
+              </label>
+              <select
+                value={withdrawWalletType}
+                onChange={(e) => setWithdrawWalletType(e.target.value)}
+                className="w-full min-h-[38px] px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs font-bold text-emerald-950 dark:text-white"
+              >
+                <option value="GCash">GCash</option>
+                <option value="Maya">Maya</option>
+                <option value="BDO">BDO Bank Transfer</option>
+                <option value="BPI">BPI Bank Transfer</option>
+                <option value="UnionBank">UnionBank</option>
+                <option value="GoTyme">GoTyme Bank</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-200 mb-1">
+                Withdrawal Number / Account Number
+              </label>
+              <input
+                type="text"
+                inputMode="tel"
+                value={withdrawAccountNumber}
+                onChange={(e) => setWithdrawAccountNumber(e.target.value)}
+                placeholder="e.g. 09XX-XXX-XXXX"
+                className="w-full min-h-[38px] px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs font-mono text-emerald-950 dark:text-white"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-200 mb-1">
+                Total Amount of Wallet (Available)
+              </label>
+              <input
+                type="text"
+                readOnly
+                value={`₱${dashboard.walletBalance.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                className="w-full min-h-[38px] px-3 py-2 rounded-xl bg-slate-100 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 text-xs font-mono font-black text-emerald-700 dark:text-emerald-300"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-200 mb-1">
+                Total Amount of Withdrawal (PHP)
+              </label>
+              <input
+                type="number"
+                inputMode="decimal"
+                min="1"
+                step="1"
+                value={withdrawAmount}
+                onChange={(e) => setWithdrawAmount(e.target.value)}
+                placeholder="Amount to withdraw"
+                className="w-full min-h-[38px] px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs font-mono font-bold text-emerald-950 dark:text-white"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-200 mb-1">
+                Withdrawal PIN
+              </label>
+              <input
+                type="password"
+                inputMode="numeric"
+                maxLength={6}
+                value={withdrawPin}
+                onChange={(e) => setWithdrawPin(e.target.value.replace(/[^0-9]/g, ''))}
+                placeholder="Enter your 4-6 digit Withdrawal PIN"
+                className="w-full min-h-[38px] px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs font-mono text-emerald-950 dark:text-white"
+              />
+            </div>
+          </div>
+
+          <button
+            type="button"
+            disabled={
+              isBusy ||
+              !dashboard.hasWithdrawalPin ||
+              !withdrawReceiverName.trim() ||
+              !withdrawAccountNumber.trim() ||
+              !withdrawPin ||
+              Number(withdrawAmount) <= 0
+            }
+            onClick={async () => {
+              const ok = await onDashboardAction({
+                action: 'wallet_withdraw',
+                amount: Number(withdrawAmount),
+                receiverName: withdrawReceiverName.trim(),
+                walletType: withdrawWalletType,
+                withdrawalNumber: withdrawAccountNumber.trim(),
+                withdrawalPin: withdrawPin,
+                note: walletNote.trim(),
+              });
+              if (ok) {
+                setWithdrawPin('');
+              }
+            }}
+            className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black inline-flex items-center justify-center gap-2 shadow transition disabled:opacity-50"
+          >
+            <ArrowUpRight className="w-4 h-4" />
+            <span>Submit Withdrawal Request (₱{Number(withdrawAmount || 0).toLocaleString()})</span>
+          </button>
+
+          {/* Required Note Below Withdrawal Form */}
+          <div className="p-3.5 rounded-xl bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <p className="text-[11px] leading-relaxed text-sky-900 dark:text-sky-200 font-semibold">
+              Note: You can receive this withdrawal in <strong>10 minutes to 1 hour</strong>. If you do not receive your withdrawal, you can contact Admin directly.
+            </p>
+            <button
+              type="button"
+              onClick={() => onOpenChatRoom('Choy Admin')}
+              className="px-3.5 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-black inline-flex items-center justify-center gap-1.5 shrink-0 transition"
+            >
+              <MessageSquare className="w-3.5 h-3.5" />
+              <span>Contact Admin</span>
+            </button>
+          </div>
+
+          {Array.isArray(dashboard.withdrawalRequests) && dashboard.withdrawalRequests.length > 0 && (
+            <div className="space-y-1.5 pt-2 border-t border-emerald-200 dark:border-emerald-800">
+              <div className="text-[11px] font-black uppercase tracking-wider text-emerald-800 dark:text-emerald-200">
+                Recent Withdrawal Requests ({dashboard.withdrawalRequests.length})
+              </div>
+              <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                {dashboard.withdrawalRequests.map((req) => (
+                  <div
+                    key={req.id}
+                    className="p-2.5 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 flex items-center justify-between gap-2 text-xs"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-bold text-emerald-950 dark:text-white truncate">
+                        {req.receiverName} · {req.walletType} ({req.accountNumber || req.withdrawalNumber})
+                      </div>
+                      <div className="text-[10px] text-emerald-700 dark:text-emerald-300">
+                        {new Date(req.createdAt).toLocaleString()} · Status: {req.status.toUpperCase()}
+                      </div>
+                    </div>
+                    <div className="font-mono font-black text-rose-600 dark:text-rose-300 shrink-0">
+                      ₱{req.amount.toFixed(2)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Transaction History */}
@@ -1592,7 +1870,10 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
             </div>
             {dashboard.subscriptionRenewAt && (
               <div className="text-xs text-emerald-700 dark:text-emerald-300 mt-0.5">
-                Next renewal: {new Date(dashboard.subscriptionRenewAt).toLocaleDateString()}
+                {dashboard.subscriptionStatus === 'trialing'
+                  ? `Free Trial ends (Auto-Deduct starts): ${new Date(dashboard.subscriptionTrialEndsAt || dashboard.subscriptionRenewAt).toLocaleDateString()}`
+                  : `Next renewal: ${new Date(dashboard.subscriptionRenewAt).toLocaleDateString()}`}
+                {dashboard.subscriptionPaymentLabel ? ` · ${dashboard.subscriptionPaymentLabel}` : ''}
               </div>
             )}
           </div>
@@ -1603,18 +1884,131 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
               onClick={() => void onDashboardAction({ action: 'update_subscription', subAction: 'toggle_renew' })}
               className="px-3 py-1.5 rounded-xl border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950 text-xs font-bold text-emerald-900 dark:text-emerald-100"
             >
-              Auto-Renew: {dashboard.subscriptionAutoRenew ? 'ON' : 'OFF'}
+              Auto-Deduct: {dashboard.subscriptionAutoRenew ? 'ON' : 'OFF'}
             </button>
-            {dashboard.subscriptionPlan !== 'free' && dashboard.subscriptionStatus === 'active' && (
-              <button
-                type="button"
-                disabled={isBusy}
-                onClick={() => void onDashboardAction({ action: 'update_subscription', subAction: 'cancel' })}
-                className="px-3 py-1.5 rounded-xl bg-rose-100 dark:bg-rose-950 border border-rose-300 dark:border-rose-700 text-xs font-bold text-rose-700 dark:text-rose-200"
+            {dashboard.subscriptionPlan !== 'free' &&
+              (dashboard.subscriptionStatus === 'active' || dashboard.subscriptionStatus === 'trialing') && (
+                <button
+                  type="button"
+                  disabled={isBusy}
+                  onClick={() => void onDashboardAction({ action: 'update_subscription', subAction: 'cancel' })}
+                  className="px-3 py-1.5 rounded-xl bg-rose-100 dark:bg-rose-950 border border-rose-300 dark:border-rose-700 text-xs font-bold text-rose-700 dark:text-rose-200"
+                >
+                  Cancel Anytime (₱0)
+                </button>
+              )}
+          </div>
+        </div>
+
+        {/* 30-Day Free Trial with Stripe Card or GCash Auto-Deduct */}
+        <div className="bg-gradient-to-br from-emerald-50 to-teal-50 dark:from-emerald-950/80 dark:to-emerald-900/50 border-2 border-emerald-400/70 rounded-2xl p-4 sm:p-5 space-y-3 shadow-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="text-xs font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                30-Day Free Trial · Auto-Deduct After Trial
+              </div>
+              <h4 className="text-sm font-black text-emerald-950 dark:text-white">
+                Due Today: ₱0.00 — Fill Stripe Card or GCash to Activate Free Tier
+              </h4>
+            </div>
+            <span className="px-2.5 py-1 rounded-lg bg-emerald-500 text-slate-950 text-[11px] font-black">
+              DUE TODAY ₱0
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+            <div>
+              <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-200 mb-1">Select Plan</label>
+              <select
+                value={trialPlan}
+                onChange={(e) => setTrialPlan(e.target.value as 'choy_pro_monthly' | 'choy_pro_annual' | 'vip_supporter')}
+                className="w-full p-2.5 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs font-bold text-emerald-950 dark:text-white"
               >
-                Cancel Renewal
-              </button>
-            )}
+                <option value="choy_pro_monthly">Choy Pro Monthly (₱{proCfg.monthlyPhp}/mo)</option>
+                <option value="choy_pro_annual">Choy Pro Annual (₱{proCfg.annualPhp}/yr)</option>
+                <option value="vip_supporter">VIP Supporter (₱{proCfg.vipPhp}/mo)</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-200 mb-1">Payment Method</label>
+              <select
+                value={trialPayMethod}
+                onChange={(e) => setTrialPayMethod(e.target.value as 'stripe_card' | 'gcash')}
+                className="w-full p-2.5 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs font-bold text-emerald-950 dark:text-white"
+              >
+                <option value="stripe_card">Stripe Card (Visa / Mastercard)</option>
+                <option value="gcash">GCash (Auto-Open GCash App)</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-200 mb-1">
+                {trialPayMethod === 'stripe_card' ? 'Cardholder & Last 4 Digits' : 'GCash Mobile Number'}
+              </label>
+              {trialPayMethod === 'stripe_card' ? (
+                <div className="grid grid-cols-2 gap-1.5">
+                  <input
+                    type="text"
+                    value={trialCardHolder}
+                    onChange={(e) => setTrialCardHolder(e.target.value)}
+                    placeholder="Name"
+                    className="p-2.5 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white"
+                  />
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={4}
+                    value={trialCardLast4}
+                    onChange={(e) => setTrialCardLast4(e.target.value.replace(/[^0-9]/g, ''))}
+                    placeholder="Last 4"
+                    className="p-2.5 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs font-mono text-emerald-950 dark:text-white"
+                  />
+                </div>
+              ) : (
+                <input
+                  type="text"
+                  inputMode="tel"
+                  value={trialGcashNum}
+                  onChange={(e) => setTrialGcashNum(e.target.value)}
+                  placeholder="09XX-XXX-XXXX"
+                  className="w-full p-2.5 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs font-mono text-emerald-950 dark:text-white"
+                />
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
+            <p className="text-[11px] text-emerald-800 dark:text-emerald-200">
+              Due today is <strong>₱0.00</strong>. After 30 days, your chosen plan auto-deducts unless you cancel before trial ends.
+            </p>
+            <button
+              type="button"
+              disabled={isBusy}
+              onClick={async () => {
+                const paymentLabel =
+                  trialPayMethod === 'stripe_card'
+                    ? `Stripe Card (${trialCardHolder.trim() || currentUser.name} •••• ${trialCardLast4 || '4242'})`
+                    : `GCash (${trialGcashNum.trim() || currentUser.phone || 'Verified'})`;
+                const ok = await onDashboardAction({
+                  action: 'update_subscription',
+                  subAction: 'start_trial',
+                  plan: trialPlan,
+                  paymentMethod: trialPayMethod,
+                  paymentLabel,
+                });
+                if (ok && trialPayMethod === 'gcash' && typeof window !== 'undefined') {
+                  const ua = navigator.userAgent || '';
+                  if (/Android/i.test(ua)) {
+                    window.location.href =
+                      'intent://#Intent;scheme=gcash;package=com.globe.gcash.android;S.browser_fallback_url=https%3A%2F%2Fm.gcash.com%2Fgcash-login-web%2Findex.html;end';
+                  } else if (/iPhone|iPad|iPod/i.test(ua)) {
+                    window.location.href = 'gcash://';
+                  }
+                }
+              }}
+              className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black shrink-0 shadow transition disabled:opacity-50"
+            >
+              Start 30-Day Free Trial (₱0 Today)
+            </button>
           </div>
         </div>
 

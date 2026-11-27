@@ -98,6 +98,7 @@ import {
   Tag,
   QrCode,
   Gamepad2,
+  CalendarClock,
   Trophy,
   Ticket
 } from 'lucide-react';
@@ -163,6 +164,9 @@ import {
 import { PublicLandingPortal } from './components/PublicLandingPortal';
 import { AdminCommandDashboard } from './components/AdminCommandDashboard';
 import { GamesPanel } from './components/GamesPanel';
+import { EmployeeDtrPanel } from './components/EmployeeDtrPanel';
+import { ProfileCoverMediaBar } from './components/ProfileCoverMediaBar';
+import { playWelcomeToChoyChatVoice } from './utils/welcomeVoice';
 import { NbaHubPanel } from './components/NbaHubPanel';
 import { SwertresLivePanel } from './components/SwertresLivePanel';
 import { jsPDF } from 'jspdf';
@@ -363,7 +367,7 @@ interface RtcSignalPayload {
   ts?: number;
 }
 
-const DEFAULT_AVATAR = '/assets/aistudio/image_20261121_145253_f477cbfa.webp';
+const DEFAULT_AVATAR = '/pwa-512x512.png';
 const CHAT_ROOMS = ['VIP Group', 'Choy Admin'] as const;
 
 function getChannelsForNewsfeedClient(nf?: string): Set<'a' | 'b' | 'c'> {
@@ -624,6 +628,7 @@ export default function App() {
     | 'profile'
     | 'messages'
     | 'games'
+    | 'employee_dtr'
     | 'ledger'
     | 'analytics'
     | 'admin_dashboard'
@@ -637,7 +642,13 @@ export default function App() {
     | 'github'
     | 'people'
     | 'videos'
-  >('feed');
+  >(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.has('stripe_tx')) return 'payment_terminal';
+    }
+    return 'feed';
+  });
   const [adminChoySetupTab, setAdminChoySetupTab] = useState<AdminChoySetupTab>('choy_pro');
   const [paymentTerminalView, setPaymentTerminalView] = useState<PaymentTerminalView>('terminal');
   const [investView, setInvestView] = useState<InvestPanelView>('dashboard');
@@ -1651,6 +1662,7 @@ export default function App() {
     | 'profile'
     | 'messages'
     | 'games'
+    | 'employee_dtr'
     | 'ledger'
     | 'analytics'
     | 'admin_dashboard'
@@ -1792,6 +1804,8 @@ export default function App() {
     if (tab === 'people') return 'People';
     if (tab === 'videos') return 'Videos';
     if (tab === 'profile') return 'Profile';
+    if (tab === 'games') return 'Games & Entertainment';
+    if (tab === 'employee_dtr') return 'Employee DTR';
     if (tab === 'ledger') return 'Ledger';
     if (tab === 'analytics') return 'Analytics';
     if (tab === 'admin_dashboard') return 'Admin Dashboard';
@@ -4982,6 +4996,7 @@ export default function App() {
       setCurrentUser(data.user);
       setAuthPin('');
       setActiveTab(data.user?.role === 'admin' ? 'admin_dashboard' : 'feed');
+      void playWelcomeToChoyChatVoice(data.token);
       if (initialGpsRef.current && data.token) {
         fetch('/api/choy/gps/ping', {
           method: 'POST',
@@ -5018,6 +5033,7 @@ export default function App() {
       setCurrentUser(data.user);
       setAuthPin('');
       setActiveTab(data.user?.role === 'admin' ? 'admin_dashboard' : 'feed');
+      void playWelcomeToChoyChatVoice(data.token);
       if (initialGpsRef.current && data.token) {
         fetch('/api/choy/gps/ping', {
           method: 'POST',
@@ -7061,6 +7077,7 @@ export default function App() {
   });
 
   const getNewsfeedLabel = (nf?: PostNewsfeed) => {
+    if (!isAdmin) return 'Newsfeed';
     if (nf === 'feed_b') return newsfeedConfig.feedBTitle;
     if (nf === 'feed_c') return newsfeedConfig.feedCTitle;
     if (nf === 'feed_bc') return `B & C (${newsfeedConfig.feedBTitle} & ${newsfeedConfig.feedCTitle})`;
@@ -7961,6 +7978,7 @@ export default function App() {
               { id: 'profile' as const, label: 'Profile & PIN', icon: User },
               { id: 'user_created_name' as const, label: 'Created Name', icon: BadgeCheck },
               { id: 'games' as const, label: 'Games & Entertainment', icon: Gamepad2 },
+              { id: 'employee_dtr' as const, label: 'Employee DTR', icon: CalendarClock },
               { id: 'rules' as const, label: 'Rules and regulations', icon: BookOpen },
             ].map((item) => {
               const Icon = item.icon;
@@ -8301,10 +8319,35 @@ export default function App() {
 
       {/* MAIN VIEW */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* TOP BAR — CENTERED CHOY CHAT BANNER WITH NAVIGATION CONTROLS */}
+        {/* TOP BAR — 3-DOTS SIDEBAR ON LEFT, CHOY CHAT CENTERED, BACK BUTTON ON RIGHT */}
         <header className={`relative z-30 flex items-center justify-between px-3 sm:px-5 py-2 border-b ${theme.topHeaderBg} shrink-0 gap-2 transition-colors`}>
-          {/* Left: App Back Button + Mobile Navigation Menu button */}
+          {/* Left: 3-dots Sidebar / Menu Button */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 min-w-[72px] sm:min-w-[96px]">
+            <button
+              type="button"
+              onClick={() => setIsMenuDrawerOpen(true)}
+              className={`min-h-[38px] sm:min-h-[40px] p-2 sm:px-3 sm:py-1.5 border rounded-xl transition shadow-xs flex items-center gap-1.5 text-xs font-bold whitespace-nowrap shrink-0 ${theme.searchButton}`}
+              title="Open Menu & Settings"
+              aria-label="Open Menu and Settings"
+              aria-expanded={isMenuDrawerOpen}
+            >
+              <MoreVertical className="w-4 h-4 shrink-0" />
+              <span className="hidden sm:inline text-[11px] sm:text-xs">Menu</span>
+            </button>
+          </div>
+
+          {/* Center: Centered CHOY CHAT App Name */}
+          <div className="flex-1 flex flex-col items-center justify-center text-center min-w-0">
+            <h1 className={`font-black uppercase tracking-[0.2em] text-sm sm:text-lg bg-gradient-to-r ${theme.heroWordmark} bg-clip-text text-transparent truncate`}>
+              CHOY CHAT
+            </h1>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300 truncate">
+              • {getTabDisplayName(activeTab, feedCategoryFilter)}
+            </span>
+          </div>
+
+          {/* Right: App Back Button (Opposite 3-dots Sidebar Button) */}
+          <div className="flex items-center justify-end gap-1.5 sm:gap-2 shrink-0 min-w-[72px] sm:min-w-[96px]">
             <button
               type="button"
               onClick={goBackInApp}
@@ -8319,41 +8362,6 @@ export default function App() {
             >
               <ArrowLeft className="w-4 h-4 shrink-0" />
               <span className="text-[11px] sm:text-xs">Back</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setIsMenuDrawerOpen(true)}
-              className={`min-h-[38px] p-2 border rounded-xl transition shadow-xs flex items-center justify-center text-xs font-bold whitespace-nowrap shrink-0 md:hidden ${theme.searchButton}`}
-              title="Open Navigation Menu"
-              aria-label="Open Navigation Menu"
-            >
-              <Menu className="w-4 h-4 shrink-0" />
-              <span className="sr-only">Menu</span>
-            </button>
-          </div>
-
-          {/* Center: Centered CHOY CHAT App Name */}
-          <div className="flex-1 flex flex-col items-center justify-center text-center min-w-0">
-            <h1 className={`font-black uppercase tracking-[0.2em] text-sm sm:text-lg bg-gradient-to-r ${theme.heroWordmark} bg-clip-text text-transparent truncate`}>
-              CHOY CHAT
-            </h1>
-            <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300 truncate">
-              • {getTabDisplayName(activeTab, feedCategoryFilter)}
-            </span>
-          </div>
-
-          {/* Right: 3-dots Menu Button */}
-          <div className="flex items-center justify-end gap-1.5 sm:gap-2 shrink-0 min-w-[72px] sm:min-w-[96px]">
-            <button
-              type="button"
-              onClick={() => setIsMenuDrawerOpen(true)}
-              className={`min-h-[38px] sm:min-h-[40px] p-2 sm:px-3 sm:py-1.5 border rounded-xl transition shadow-xs flex items-center gap-1.5 text-xs font-bold whitespace-nowrap shrink-0 ${theme.searchButton}`}
-              title="Open Menu & Settings"
-              aria-label="Open Menu and Settings"
-              aria-expanded={isMenuDrawerOpen}
-            >
-              <MoreVertical className="w-4 h-4 shrink-0" />
-              <span className="hidden sm:inline text-[11px] sm:text-xs">More</span>
             </button>
           </div>
         </header>
@@ -8395,13 +8403,13 @@ export default function App() {
                         <h2 className="text-base sm:text-lg font-extrabold text-emerald-950 dark:text-white tracking-tight truncate">
                           Newsfeed Dashboard
                         </h2>
-                        <span className="px-2 py-0.5 rounded-md bg-emerald-100 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-[10px] font-bold text-emerald-800 dark:text-emerald-200">
-                          {isAdmin
-                            ? adminNewsfeedFilter === 'all'
+                        {isAdmin && (
+                          <span className="px-2 py-0.5 rounded-md bg-emerald-100 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-[10px] font-bold text-emerald-800 dark:text-emerald-200">
+                            {adminNewsfeedFilter === 'all'
                               ? 'All Channels'
-                              : getNewsfeedLabel(adminNewsfeedFilter)
-                            : getNewsfeedLabel(currentUser.newsfeed)}
-                        </span>
+                              : getNewsfeedLabel(adminNewsfeedFilter)}
+                          </span>
+                        )}
                       </div>
                       <p className="text-xs text-emerald-700 dark:text-emerald-300/85 truncate mt-0.5">
                         {filteredPosts.length} posts · {imageFeedPosts.length} photos · {videoFeedPosts.length + mediaLongVideos.length} videos · {mediaMusicTracks.length} MP3s · {feedPeopleList.length} members
@@ -9954,6 +9962,35 @@ export default function App() {
                 textMuted: resolvedTheme === 'dark' ? 'text-slate-400' : 'text-slate-500',
               }}
               featureToggles={featureToggles}
+              authToken={authToken}
+              onOwnDashboardUpdated={(next) => setUserDashboardData(next)}
+              onNavigatePaymentTerminal={() => setActiveTab('payment_terminal')}
+              onPostSwertresBanner={async (bannerText) => {
+                try {
+                  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+                  if (authToken) headers.Authorization = `Bearer ${authToken}`;
+                  const res = await fetch('/api/posts', {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers,
+                    body: JSON.stringify({ text: bannerText, newsfeed: 'both' }),
+                  });
+                  const data = await res.json().catch(() => ({}));
+                  if (res.ok && data.post) {
+                    setPosts((prev) => [data.post, ...prev.filter((p) => p.id !== data.post.id)]);
+                  }
+                } catch {
+                  // non-blocking
+                }
+              }}
+            />
+          )}
+
+          {activeTab === 'employee_dtr' && (
+            <EmployeeDtrPanel
+              currentUser={currentUser}
+              authToken={authToken}
+              onOwnDashboardUpdated={(next) => setUserDashboardData(next)}
             />
           )}
 
@@ -9976,6 +10013,18 @@ export default function App() {
 
               return (
                 <div className="max-w-2xl mx-auto space-y-5">
+                  {/* Facebook-style Cover Photo & User Dashboard Media Categories */}
+                  <ProfileCoverMediaBar
+                    currentUserName={currentUser.name}
+                    avatarUrl={myAvatar}
+                    isCustomAvatar={hasCustomPhoto}
+                    dashboard={{ ...userDashboardData, userId: currentUser.id }}
+                    authToken={authToken}
+                    onTriggerProfilePic={() => profileAvatarInputRef.current?.click()}
+                    onDashboardAction={handleUserDashboardAction}
+                    onZoomImage={(img) => setZoomedImage(img)}
+                  />
+
                   {/* Clean Account Identity Card */}
                   <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl overflow-hidden shadow-sm">
                     <div className="p-5 sm:p-6 flex flex-col sm:flex-row items-center sm:items-start gap-5">
@@ -14163,6 +14212,7 @@ export default function App() {
                   { id: 'profile' as const, label: 'Profile & PIN', icon: User },
                   { id: 'user_created_name' as const, label: 'Created Name', icon: BadgeCheck },
                   { id: 'games' as const, label: 'Games & Entertainment', icon: Gamepad2 },
+                  { id: 'employee_dtr' as const, label: 'Employee DTR', icon: CalendarClock },
                   { id: 'rules' as const, label: 'Rules and regulations', icon: BookOpen },
                 ].map((item) => {
                   const Icon = item.icon;

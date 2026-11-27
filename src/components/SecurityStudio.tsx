@@ -69,6 +69,7 @@ import {
   runFirebaseDiagnostic,
   type FirebaseDiagnosticResult,
 } from '../services/firebaseCloudSync';
+import { ProjectCodeExplorerPanel } from './ProjectCodeExplorerPanel';
 
 export type StudioNewsfeedChannel = 'feed_a' | 'feed_b' | 'feed_c' | 'feed_bc';
 export type StudioAnnouncementTarget = 'all' | 'feed_a' | 'feed_b' | 'feed_c' | 'feed_bc';
@@ -267,7 +268,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   knowledgeCount,
   emojiLinks: propEmojiLinks,
   onEmojiLinksChanged,
-  defaultAppIcon = '/assets/aistudio/image_20261121_145253_f477cbfa.webp',
+  defaultAppIcon = '/pwa-512x512.png',
   syncTick = 0,
   newsfeedConfig,
   onNewsfeedConfigChanged,
@@ -509,6 +510,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   // 9. Active Dashboard Module & Type Notes
   const [activeStudioModule, setActiveStudioModule] = useState<
     | 'home'
+    | 'project_code'
     | 'type_notes'
     | 'emoji_links'
     | 'quick_links'
@@ -2301,6 +2303,16 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
       accent: 'border-amber-300 dark:border-amber-500/60 hover:border-amber-400',
     },
     {
+      id: 'project_code' as const,
+      title: 'AI Studio Code & .env Guide',
+      fullTitle: 'AI Studio Categorized Code & .env Key-Value Guide',
+      subtitle: 'Auto-synced folders (.aistudio, dist, public, src, server, config) + folder instructions & .env guide',
+      badge: 'Auto-Synced',
+      navIcon: Code2,
+      icon: <Code2 className="w-5 h-5 text-emerald-600 dark:text-emerald-300" />,
+      accent: 'border-emerald-400 dark:border-emerald-500/70 hover:border-emerald-500',
+    },
+    {
       id: 'keys_env' as const,
       title: 'Keys & .env Vault',
       fullTitle: 'Keys & .env Code Vault',
@@ -2772,6 +2784,11 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
             ))}
           </div>
         </div>
+      )}
+
+      {/* AI STUDIO CATEGORIZED PROJECT CODE & .ENV GUIDE */}
+      {activeStudioModule === 'project_code' && (
+        <ProjectCodeExplorerPanel authToken={authToken} />
       )}
 
       {/* TYPE NOTES: AI FEATURE PLANNER & AUTO-SUMMARISE NOTEBOOK */}

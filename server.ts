@@ -22,6 +22,7 @@ import {
   normalizeAnnouncementTone,
   signSessionToken,
   verifySessionToken,
+  hashPin,
   verifyPin,
   timingSafeStringEqual,
   normalizePhone,
@@ -541,7 +542,14 @@ function requireAdmin(req: AuthedRequest, res: Response, next: NextFunction) {
 
 const app = express();
 app.set('trust proxy', 1);
-app.use(express.json({ limit: '15mb' }));
+app.use(
+  express.json({
+    limit: '15mb',
+    verify: (req, _res, buf) => {
+      (req as Request & { rawBody?: Buffer }).rawBody = buf;
+    },
+  })
+);
 app.use('/api', (_req, res, next) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
@@ -2527,7 +2535,7 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
       store.getNewsfeedConfig(),
       store.listAnnouncements(),
       store.listChatGroupsForUser(user.id, isAdmin),
-      store.getUserDashboard(user.id),
+      processDueTrialAutoDeduct(user.id),
       store.listUserDashboardMeta(),
       store.getChoyProgramsConfig(),
       store.listMusicTracks(),
@@ -2624,7 +2632,10 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
       choyProgramsConfig,
       announcements: visibleAnnouncements,
       onlineUsers: getOnlineUserNames(),
-      userDashboard,
+      userDashboard: (() => {
+        const { withdrawalPinHash: _hidden, ...safeDash } = userDashboard;
+        return safeDash;
+      })(),
       userDashboardMeta,
       musicTracks,
       longVideos,
@@ -3153,26 +3164,131 @@ app.post('/api/choy/user-dashboard/action', requireAuth, async (req: AuthedReque
       return res.json({ ok: true, userDashboard: saved });
     }
 
+    if (action === 'set_withdrawal_pin') {
+      const newPin = String(req.body?.withdrawalPin || '').trim();
+      if (!/^\d{4,6}$/.test(newPin)) {
+        return res.status(400).json({ error: 'Withdrawal PIN must be 4 to 6 numeric digits.' });
+      }
+      dash.withdrawalPinHash = hashPin(newPin);
+      dash.hasWithdrawalPin = true;
+      const saved = await store.saveUserDashboard(dash);
+      const { withdrawalPinHash: _hidden, ...safeDash } = saved;
+      return res.json({ ok: true, userDashboard: { ...safeDash, hasWithdrawalPin: true } });
+    }
+
+    if (action === 'update_cover_photo') {
+      const rawCover = typeof req.body?.coverPhotoUrl === 'string' ? req.body.coverPhotoUrl.trim() : '';
+      const cleanCover = rawCover ? sanitizeMediaUrl(rawCover) : '';
+      dash.coverPhotoUrl = cleanCover || undefined;
+      const saved = await store.saveUserDashboard(dash);
+      broadcastSync('users');
+      const { withdrawalPinHash: _hidden, ...safeDash } = saved;
+      return res.json({ ok: true, userDashboard: safeDash });
+    }
+
+    if (action === 'save_media_folders') {
+      const rawFolders = Array.isArray(req.body?.mediaFolders) ? req.body.mediaFolders : [];
+      const sanitizedFolders = rawFolders.slice(0, 50).map((f: Record<string, unknown>, idx: number) => {
+        const cat = f?.category === 'video' || f?.category === 'music' ? f.category : 'photo';
+        const items = Array.isArray(f?.items)
+          ? (f.items as Array<Record<string, unknown>>)
+              .slice(0, 60)
+              .map((it, iIdx) => ({
+                id: String(it?.id || `item_${Date.now()}_${iIdx}`).slice(0, 64),
+                title: String(it?.title || 'Untitled File').trim().slice(0, 100),
+                url: sanitizeMediaUrl(String(it?.url || '')) || '',
+                createdAt: typeof it?.createdAt === 'string' ? it.createdAt : now,
+              }))
+              .filter((it) => Boolean(it.url))
+          : [];
+        return {
+          id: String(f?.id || `fld_${Date.now()}_${idx}`).slice(0, 64),
+          name: String(f?.name || 'My Folder').trim().slice(0, 80),
+          category: cat as 'photo' | 'video' | 'music',
+          items,
+          createdAt: typeof f?.createdAt === 'string' ? f.createdAt : now,
+        };
+      });
+      dash.mediaFolders = sanitizedFolders;
+      const saved = await store.saveUserDashboard(dash);
+      const { withdrawalPinHash: _hidden, ...safeDash } = saved;
+      return res.json({ ok: true, userDashboard: safeDash });
+    }
+
     if (action === 'wallet_withdraw') {
       const amount = Math.round(Number(req.body?.amount) * 100) / 100;
-      const note = typeof req.body?.note === 'string' ? req.body.note.trim().slice(0, 120) : '';
+      const receiverName =
+        typeof req.body?.receiverName === 'string' && req.body.receiverName.trim()
+          ? req.body.receiverName.trim().slice(0, 100)
+          : user.name;
+      const walletType =
+        typeof req.body?.walletType === 'string' && req.body.walletType.trim()
+          ? req.body.walletType.trim().slice(0, 50)
+          : 'GCash';
+      const rawAccountNum =
+        typeof req.body?.accountNumber === 'string' && req.body.accountNumber.trim()
+          ? req.body.accountNumber
+          : typeof req.body?.withdrawalNumber === 'string'
+          ? req.body.withdrawalNumber
+          : '';
+      const accountNumber = rawAccountNum.trim().slice(0, 60);
+      const withdrawalPin = String(req.body?.withdrawalPin || '').trim();
+      const note = typeof req.body?.note === 'string' ? req.body.note.trim().slice(0, 160) : '';
+
       if (!Number.isFinite(amount) || amount <= 0) {
         return res.status(400).json({ error: 'Enter a valid cash-out amount.' });
+      }
+      if (!receiverName || !accountNumber) {
+        return res.status(400).json({ error: 'Enter Receiver Name and Withdrawal Number / Account Number.' });
+      }
+      if (!withdrawalPin) {
+        return res.status(400).json({ error: 'Enter your Withdrawal PIN to confirm cash-out.' });
+      }
+      if (dash.withdrawalPinHash) {
+        if (!verifyPin(withdrawalPin, dash.withdrawalPinHash)) {
+          return res.status(403).json({ error: 'Incorrect Withdrawal PIN. Please try again.' });
+        }
+      } else {
+        const storedUser = await store.getUserById(user.id);
+        if (!storedUser || !verifyPin(withdrawalPin, storedUser.pinHash)) {
+          return res.status(403).json({
+            error: 'Incorrect PIN. Use your account login PIN or set a custom Withdrawal PIN first.',
+          });
+        }
       }
       if (dash.walletBalance < amount) {
         return res.status(400).json({ error: 'Insufficient Wallet balance.' });
       }
+      const balanceBefore = dash.walletBalance;
       dash.walletBalance = Math.round((dash.walletBalance - amount) * 100) / 100;
+      const reqId = `wd_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`;
+      dash.withdrawalRequests = [
+        {
+          id: reqId,
+          receiverName,
+          walletType,
+          accountNumber,
+          walletBalanceBefore: balanceBefore,
+          amount,
+          status: 'pending' as const,
+          createdAt: now,
+        },
+        ...(dash.withdrawalRequests || []),
+      ].slice(0, 40);
       dash.transactions = prependTx(dash.transactions, {
         id: makeTxId(),
         walletType: 'wallet',
         kind: 'withdraw',
         amount: -amount,
-        note: note || 'Wallet Cash-Out Request',
+        note:
+          note ||
+          `Cash-Out (${walletType} • ${accountNumber} • Receiver: ${receiverName}) — Est. 10 mins to 1 hr`,
         createdAt: now,
       });
       const saved = await store.saveUserDashboard(dash);
-      return res.json({ ok: true, userDashboard: saved });
+      broadcastSync('users');
+      const { withdrawalPinHash: _hidden, ...safeDash } = saved;
+      return res.json({ ok: true, userDashboard: safeDash, withdrawalId: reqId });
     }
 
     if (action === 'wallet_transfer') {
@@ -3393,7 +3509,44 @@ app.post('/api/choy/user-dashboard/action', requireAuth, async (req: AuthedReque
         dash.subscriptionStatus = 'cancelled';
         dash.subscriptionAutoRenew = false;
         const saved = await store.saveUserDashboard(dash);
-        return res.json({ ok: true, userDashboard: saved });
+        const { withdrawalPinHash: _hidden, ...safeDash } = saved;
+        return res.json({ ok: true, userDashboard: safeDash });
+      }
+      if (subAction === 'start_trial') {
+        const rawTrialPlan = req.body?.plan;
+        const trialPlan: 'choy_pro_monthly' | 'choy_pro_annual' | 'vip_supporter' =
+          rawTrialPlan === 'choy_pro_annual' || rawTrialPlan === 'vip_supporter'
+            ? rawTrialPlan
+            : 'choy_pro_monthly';
+        const pm: 'stripe_card' | 'gcash' = req.body?.paymentMethod === 'gcash' ? 'gcash' : 'stripe_card';
+        const paymentLabel = String(req.body?.paymentLabel || '').trim().slice(0, 80);
+        if (!paymentLabel) {
+          return res.status(400).json({
+            error: 'Please enter your Stripe Card holder/last-4 or GCash number to start your free trial.',
+          });
+        }
+        const trialEndIso = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+        dash.subscriptionPlan = trialPlan;
+        dash.subscriptionStatus = 'trialing';
+        dash.subscriptionAutoRenew = true;
+        dash.subscriptionPaymentMethod = pm;
+        dash.subscriptionPaymentLabel = paymentLabel;
+        dash.subscriptionTrialEndsAt = trialEndIso;
+        dash.subscriptionRenewAt = trialEndIso;
+        dash.choyProActive = true;
+        if (!dash.choyProActivatedAt) dash.choyProActivatedAt = now;
+        dash.transactions = prependTx(dash.transactions, {
+          id: makeTxId(),
+          walletType: 'wallet',
+          kind: 'subscription',
+          amount: 0,
+          note: `Started 30-Day Free Trial (${trialPlan}, Due Today ₱0, Auto-Deduct via ${pm === 'gcash' ? 'GCash' : 'Stripe Card'})`,
+          createdAt: now,
+        });
+        const saved = await store.saveUserDashboard(dash);
+        broadcastSync('users');
+        const { withdrawalPinHash: _hidden, ...safeDash } = saved;
+        return res.json({ ok: true, userDashboard: safeDash });
       }
       const programsCfg = await store.getChoyProgramsConfig();
       type SubPlan = 'free' | 'choy_pro_monthly' | 'choy_pro_annual' | 'vip_supporter';
@@ -7017,42 +7170,99 @@ app.post('/api/admin/error-logs/:id/resolve', requireAuth, requireAdmin, async (
   }
 });
 
-// Stripe Webhook endpoint — verifies signature when STRIPE_WEBHOOK_SECRET is configured, logs failures to Admin Error Log
+// Stripe Webhook endpoint — strictly verifies HMAC-SHA256 signature & timestamp freshness when STRIPE_WEBHOOK_SECRET is configured,
+// logs failures to Admin Error Log, and auto-credits verified Stripe Checkout Terminal transactions.
 app.post('/api/webhooks/stripe', express.raw({ type: 'application/json', limit: '2mb' }), async (req: Request, res: Response) => {
   try {
     const webhookSecret = (process.env.STRIPE_WEBHOOK_SECRET || '').trim();
     const sigHeader = String(req.headers['stripe-signature'] || '');
-    const rawBody = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : JSON.stringify(req.body || {});
+    const rawBuf = (req as Request & { rawBody?: Buffer }).rawBody || (Buffer.isBuffer(req.body) ? req.body : null);
+    const rawBody = rawBuf ? rawBuf.toString('utf8') : typeof req.body === 'string' ? req.body : JSON.stringify(req.body || {});
 
-    if (webhookSecret) {
-      const parts = Object.fromEntries(
-        sigHeader.split(',').map((kv) => {
-          const idx = kv.indexOf('=');
-          return idx > 0 ? [kv.slice(0, idx).trim(), kv.slice(idx + 1).trim()] : ['', ''];
-        })
-      );
-      const timestamp = parts.t || '';
-      const expectedSig = parts.v1 || '';
-      const computed = crypto
-        .createHmac('sha256', webhookSecret)
-        .update(`${timestamp}.${rawBody}`)
-        .digest('hex');
+    if (!webhookSecret) {
+      await store.appendErrorLog({
+        source: 'stripe_webhook',
+        severity: 'warning',
+        message: 'Stripe webhook received while STRIPE_WEBHOOK_SECRET is not configured; ignoring unverified payload.',
+      });
+      return res.status(503).json({ error: 'Stripe webhook secret is not configured.' });
+    }
 
-      if (!timestamp || !expectedSig || !timingSafeStringEqual(computed, expectedSig)) {
-        await store.appendErrorLog({
-          source: 'stripe_webhook',
-          severity: 'critical',
-          message: 'Stripe webhook signature verification failed (possible spoofing or mismatched STRIPE_WEBHOOK_SECRET).',
-        });
-        return res.status(400).json({ error: 'Invalid Stripe signature.' });
+    const segments = sigHeader.split(',').map((s) => s.trim()).filter(Boolean);
+    let timestamp = '';
+    const v1Signatures: string[] = [];
+    for (const seg of segments) {
+      const idx = seg.indexOf('=');
+      if (idx <= 0) continue;
+      const key = seg.slice(0, idx).trim();
+      const val = seg.slice(idx + 1).trim();
+      if (key === 't') timestamp = val;
+      if (key === 'v1' && val) v1Signatures.push(val);
+    }
+
+    const tsNum = Number(timestamp);
+    const nowSec = Math.floor(Date.now() / 1000);
+    const timestampValid = Number.isFinite(tsNum) && Math.abs(nowSec - tsNum) <= 300;
+    const computed = timestamp
+      ? crypto.createHmac('sha256', webhookSecret).update(`${timestamp}.${rawBody}`).digest('hex')
+      : '';
+    const sigValid =
+      timestampValid &&
+      v1Signatures.length > 0 &&
+      v1Signatures.some((sig) => timingSafeStringEqual(computed, sig));
+
+    if (!sigValid) {
+      await store.appendErrorLog({
+        source: 'stripe_webhook',
+        severity: 'critical',
+        message: 'Stripe webhook signature verification failed (possible spoofing, expired timestamp, or mismatched STRIPE_WEBHOOK_SECRET).',
+      });
+      return res.status(400).json({ error: 'Invalid Stripe signature.' });
+    }
+
+    const evt = JSON.parse(rawBody || '{}') as {
+      type?: string;
+      id?: string;
+      data?: {
+        object?: {
+          id?: string;
+          payment_status?: string;
+          amount_total?: number;
+          currency?: string;
+          metadata?: Record<string, string>;
+        };
+      };
+    };
+
+    if (
+      (evt.type === 'checkout.session.completed' || evt.type === 'checkout.session.async_payment_succeeded') &&
+      evt.data?.object?.payment_status === 'paid'
+    ) {
+      const sessionObj = evt.data.object;
+      const metaTxId = String(sessionObj.metadata?.txId || '').trim();
+      const metaUserId = String(sessionObj.metadata?.userId || '').trim();
+      if (metaTxId) {
+        const existing = await store.getPaymentTerminalTransactionById(metaTxId);
+        const expectedAmountCentavos = existing ? Math.round(existing.totalPhp * 100) : -1;
+        const paidAmount = Number(sessionObj.amount_total ?? -1);
+        const currencyOk = String(sessionObj.currency || '').toLowerCase() === 'php';
+        if (
+          existing &&
+          existing.status === 'pending' &&
+          !existing.creditedAt &&
+          metaUserId === existing.userId &&
+          currencyOk &&
+          paidAmount === expectedAmountCentavos
+        ) {
+          await finalizePaymentTerminalTransaction(existing.id, 'approved', 'Stripe Webhook');
+        }
       }
     }
 
-    const evt = JSON.parse(rawBody || '{}') as { type?: string; id?: string };
     await store.appendActivityLog({
       category: 'payment',
       actor: 'Stripe Webhook',
-      message: `Processed Stripe event ${evt.type || 'unknown'} (${evt.id || 'no-id'}).`,
+      message: `Processed verified Stripe event ${evt.type || 'unknown'} (${evt.id || 'no-id'}).`,
     });
     return res.json({ received: true });
   } catch (err: unknown) {
@@ -7776,11 +7986,140 @@ app.delete('/api/choy/admin/invest/products/:id', requireAuth, requireAdmin, asy
   }
 });
 
+async function finalizePaymentTerminalTransaction(
+  txId: string,
+  nextStatus: 'approved' | 'rejected',
+  actorName: string,
+  rejectionReason?: string,
+  requestingUserId?: string
+): Promise<{
+  ok: true;
+  transaction: StoredPaymentTerminalTx;
+  ownDashboard?: Awaited<ReturnType<typeof store.getUserDashboard>>;
+} | {
+  ok: false;
+  statusCode: number;
+  error: string;
+}> {
+  if (terminalReviewInFlight.has(txId)) {
+    return { ok: false, statusCode: 409, error: 'Transaction is currently being processed. Please wait.' };
+  }
+  terminalReviewInFlight.add(txId);
+  try {
+    const existing = await store.getPaymentTerminalTransactionById(txId);
+    if (!existing) {
+      return { ok: false, statusCode: 404, error: 'Payment transaction not found.' };
+    }
+    if (existing.status !== 'pending' || existing.creditedAt) {
+      return { ok: false, statusCode: 400, error: 'This transaction has already been finalized.' };
+    }
+
+    const now = new Date().toISOString();
+    const updatedTx: StoredPaymentTerminalTx = {
+      ...existing,
+      status: nextStatus,
+      reviewedBy: actorName,
+      reviewedAt: now,
+      rejectionReason: nextStatus === 'rejected' ? rejectionReason || 'Rejected by Admin' : undefined,
+    };
+
+    let updatedOwnDashboard: Awaited<ReturnType<typeof store.getUserDashboard>> | undefined = undefined;
+
+    if (nextStatus === 'approved' && (existing.purpose === 'wallet_topup' || existing.purpose === 'choy_coins')) {
+      const targetDash = await store.getUserDashboard(existing.userId);
+      const makeWalletTxId = () => `tx_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`;
+      const prependTx = (list: WalletTxItem[], item: WalletTxItem): WalletTxItem[] => [item, ...list].slice(0, 60);
+
+      if (existing.purpose === 'wallet_topup') {
+        targetDash.walletBalance = Math.round((targetDash.walletBalance + existing.amountPhp) * 100) / 100;
+        targetDash.transactions = prependTx(targetDash.transactions, {
+          id: makeWalletTxId(),
+          walletType: 'wallet',
+          kind: 'topup',
+          amount: existing.amountPhp,
+          note: `Payment Terminal Top-Up (${existing.referenceCode})`,
+          createdAt: now,
+        });
+      } else if (existing.purpose === 'choy_coins') {
+        const programs = await store.getChoyProgramsConfig();
+        const coinsToCredit =
+          existing.choyCoinsPreview > 0
+            ? existing.choyCoinsPreview
+            : Math.round(existing.amountPhp * (programs.choyWallet?.conversionRate || 2) * 100) / 100;
+        targetDash.choyWalletBalance = Math.round((targetDash.choyWalletBalance + coinsToCredit) * 100) / 100;
+        targetDash.transactions = prependTx(targetDash.transactions, {
+          id: makeWalletTxId(),
+          walletType: 'choy_wallet',
+          kind: 'topup',
+          amount: coinsToCredit,
+          note: `Payment Terminal CHOY Coins (${existing.referenceCode})`,
+          createdAt: now,
+        });
+      }
+
+      const savedDash = await store.saveUserDashboard(targetDash);
+      updatedTx.creditedAt = now;
+      if (requestingUserId && existing.userId === requestingUserId) {
+        updatedOwnDashboard = savedDash;
+      }
+    }
+
+    await store.savePaymentTerminalTransaction(updatedTx);
+    broadcastSync('payment_terminal');
+    broadcastSync('users');
+
+    return { ok: true, transaction: updatedTx, ownDashboard: updatedOwnDashboard };
+  } finally {
+    terminalReviewInFlight.delete(txId);
+  }
+}
+
+function resolveTrustedAppBaseUrl(req: Request): string {
+  const configured = (process.env.APP_URL || '').trim().replace(/\/$/, '');
+  if (configured.startsWith('https://') || configured.startsWith('http://')) {
+    return configured;
+  }
+  const forwardedHost = String(req.headers['x-forwarded-host'] || req.headers.host || '')
+    .split(',')[0]
+    .trim();
+  if (forwardedHost && /^[a-zA-Z0-9.-]+(:\d+)?$/.test(forwardedHost)) {
+    const forwardedProto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https')
+      .split(',')[0]
+      .trim()
+      .toLowerCase();
+    const proto = forwardedProto === 'http' ? 'http' : 'https';
+    return `${proto}://${forwardedHost}`;
+  }
+  return 'http://localhost:3000';
+}
+
 app.get('/api/choy/payment-terminal/config', requireAuth, async (_req: AuthedRequest, res: Response) => {
   try {
     const config = await store.getPaymentTerminalConfig();
+    const stripeKey = (process.env.STRIPE_SECRET_KEY || '').trim();
+    const stripeConfigured = Boolean(stripeKey);
+    const stripeConfigIdConfigured = Boolean((process.env.STRIPE_CONFIG_ID || '').trim());
+    const stripePublishableKeyConfigured = Boolean(
+      (process.env.VITE_STRIPE_PUBLISHABLE_KEY || process.env.STRIPE_PUBLISHABLE_KEY || '').trim()
+    );
+    const stripeWebhookConfigured = Boolean((process.env.STRIPE_WEBHOOK_SECRET || '').trim());
+    const stripeMode = stripeKey.startsWith('sk_live_')
+      ? 'live'
+      : stripeKey.startsWith('sk_test_')
+      ? 'test'
+      : stripeConfigured
+      ? 'custom'
+      : 'unconfigured';
     const paymongoConfigured = Boolean((process.env.PAYMONGO_SECRET_KEY || '').trim());
-    return res.json({ config, paymongoConfigured });
+    return res.json({
+      config,
+      stripeConfigured,
+      stripeConfigIdConfigured,
+      stripePublishableKeyConfigured,
+      stripeWebhookConfigured,
+      stripeMode,
+      paymongoConfigured,
+    });
   } catch (err: unknown) {
     return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load payment terminal config' });
   }
@@ -7855,7 +8194,7 @@ app.post('/api/choy/payment-terminal/charge', requireAuth, async (req: AuthedReq
     const conversionRate = programs.choyWallet?.conversionRate || 2;
     const choyCoinsPreview = purpose === 'choy_coins' ? Math.round(amountPhp * conversionRate * 100) / 100 : 0;
 
-    const payerReference =
+    let payerReference =
       typeof req.body?.payerReference === 'string' ? req.body.payerReference.trim().slice(0, 80) : '';
     const customerName =
       typeof req.body?.customerName === 'string' && req.body.customerName.trim()
@@ -7881,66 +8220,85 @@ app.post('/api/choy/payment-terminal/charge', requireAuth, async (req: AuthedReq
 
     let checkoutUrl: string | undefined;
     let gatewayNotice: string | undefined;
-    const paymongoKey = (process.env.PAYMONGO_SECRET_KEY || '').trim();
+    const stripeKey = (process.env.STRIPE_SECRET_KEY || '').trim();
+    const stripeConfigId = (process.env.STRIPE_CONFIG_ID || '').trim();
 
-    if (channel === 'online_card' && paymongoKey) {
+    if (channel === 'online_card' && stripeKey) {
       try {
-        const authHeader = `Basic ${Buffer.from(`${paymongoKey}:`).toString('base64')}`;
         const purposeLabels: Record<PaymentTerminalPurpose, string> = {
           wallet_topup: 'Choy Cash Wallet Top-Up',
           choy_coins: 'Choy Coins Purchase',
           order_payment: 'Choy Marketplace Order Payment',
           pos_payment: 'Choy POS Direct Payment',
         };
-        const appUrl = (process.env.APP_URL || '').trim().replace(/\/$/, '');
-        const paymongoPayload = {
-          data: {
-            attributes: {
-              billing: {
-                name: customerName,
-                phone: customerContact || undefined,
-              },
-              send_email_receipt: false,
-              show_description: true,
-              show_line_items: true,
-              description: `${purposeLabels[purpose]} (${referenceCode})`,
-              reference_number: referenceCode,
-              line_items: [
-                {
-                  currency: 'PHP',
-                  amount: Math.round(totalPhp * 100),
-                  name: purposeLabels[purpose],
-                  quantity: 1,
-                },
-              ],
-              payment_method_types: ['card', 'gcash', 'paymaya', 'qrph'],
-              ...(appUrl.startsWith('https://')
-                ? { success_url: `${appUrl}/?payment_ref=${encodeURIComponent(referenceCode)}`, cancel_url: appUrl }
-                : {}),
-            },
-          },
-        };
-        const pmRes = await fetch('https://api.paymongo.com/v1/checkout_sessions', {
+        const appUrl = resolveTrustedAppBaseUrl(req);
+        const unitAmountCentavos = Math.round(totalPhp * 100);
+
+        const params = new URLSearchParams();
+        params.set('mode', 'payment');
+        params.set('client_reference_id', referenceCode);
+        params.set(
+          'success_url',
+          `${appUrl}/?stripe_tx=${encodeURIComponent(txId)}&stripe_session_id={CHECKOUT_SESSION_ID}`
+        );
+        params.set('cancel_url', `${appUrl}/?stripe_cancelled=1&stripe_tx=${encodeURIComponent(txId)}`);
+        params.set('line_items[0][price_data][currency]', 'php');
+        params.set('line_items[0][price_data][unit_amount]', String(unitAmountCentavos));
+        params.set('line_items[0][price_data][product_data][name]', `${purposeLabels[purpose]} (${referenceCode})`);
+        params.set(
+          'line_items[0][price_data][product_data][description]',
+          note ? `${config.merchantName} • ${note}` : `${config.merchantName} • Terminal ${config.terminalId}`
+        );
+        params.set('line_items[0][quantity]', '1');
+        params.set('metadata[txId]', txId);
+        params.set('metadata[referenceCode]', referenceCode);
+        params.set('metadata[userId]', user.id);
+        params.set('metadata[purpose]', purpose);
+        params.set('metadata[customerName]', customerName);
+
+        if (stripeConfigId.startsWith('pmc_')) {
+          params.set('payment_method_configuration', stripeConfigId);
+        } else {
+          params.set('payment_method_types[0]', 'card');
+        }
+
+        const stripeRes = await fetch('https://api.stripe.com/v1/checkout/sessions', {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json',
-            Authorization: authHeader,
+            Authorization: `Bearer ${stripeKey}`,
+            'Content-Type': 'application/x-www-form-urlencoded',
           },
-          body: JSON.stringify(paymongoPayload),
+          body: params.toString(),
         });
-        if (pmRes.ok) {
-          const pmData = (await pmRes.json()) as {
-            data?: { attributes?: { checkout_url?: string } };
-          };
-          const rawUrl = pmData?.data?.attributes?.checkout_url;
-          if (typeof rawUrl === 'string' && rawUrl.startsWith('https://')) {
-            checkoutUrl = rawUrl;
+
+        const stripeData = (await stripeRes.json().catch(() => ({}))) as {
+          id?: string;
+          url?: string;
+          error?: { message?: string };
+        };
+
+        if (stripeRes.ok && typeof stripeData.url === 'string' && stripeData.url.startsWith('https://')) {
+          checkoutUrl = stripeData.url;
+          if (typeof stripeData.id === 'string' && /^cs_(test|live)_[a-zA-Z0-9_]+$/.test(stripeData.id)) {
+            payerReference = stripeData.id;
           }
+          gatewayNotice = 'Stripe Checkout session ready! Open Stripe Checkout to complete your secure payment.';
         } else {
-          gatewayNotice = 'Online gateway checkout session could not be created; payment logged as pending for verification.';
+          const reason = stripeData.error?.message || `HTTP ${stripeRes.status}`;
+          await store.appendErrorLog({
+            source: 'stripe_webhook',
+            severity: 'error',
+            message: `Stripe Checkout session creation failed for ${referenceCode}: ${reason}`,
+          });
+          gatewayNotice = `Stripe Checkout could not be initialized (${reason}); payment logged as pending for verification.`;
         }
-      } catch {
-        gatewayNotice = 'Online gateway unreachable right now; payment logged as pending for manual verification.';
+      } catch (err: unknown) {
+        await store.appendErrorLog({
+          source: 'stripe_webhook',
+          severity: 'error',
+          message: `Stripe API unreachable for ${referenceCode}: ${err instanceof Error ? err.message : 'Network error'}`,
+        });
+        gatewayNotice = 'Stripe gateway unreachable right now; payment logged as pending for manual verification.';
       }
     }
 
@@ -7980,6 +8338,111 @@ app.post('/api/choy/payment-terminal/charge', requireAuth, async (req: AuthedReq
 });
 
 app.post(
+  '/api/choy/payment-terminal/transactions/:id/verify-stripe',
+  requireAuth,
+  async (req: AuthedRequest, res: Response) => {
+    try {
+      const user = req.choyUser!;
+      const txId = String(req.params.id || '').trim();
+      if (!txId) {
+        return res.status(400).json({ error: 'Transaction ID is required.' });
+      }
+      const stripeKey = (process.env.STRIPE_SECRET_KEY || '').trim();
+      if (!stripeKey) {
+        return res.status(503).json({ error: 'Stripe is not configured on the server.' });
+      }
+
+      const existing = await store.getPaymentTerminalTransactionById(txId);
+      if (!existing) {
+        return res.status(404).json({ error: 'Payment transaction not found.' });
+      }
+      if (existing.userId !== user.id && user.role !== 'admin') {
+        return res.status(403).json({ error: 'Not authorized to verify this transaction.' });
+      }
+      if (existing.status === 'approved') {
+        const ownDashboard = existing.userId === user.id ? await store.getUserDashboard(user.id) : undefined;
+        return res.json({ ok: true, paid: true, transaction: existing, ownDashboard });
+      }
+      if (existing.status === 'rejected') {
+        return res.status(400).json({ error: 'This transaction was already rejected.' });
+      }
+
+      const candidateSessionId = String(existing.payerReference || req.body?.sessionId || '').trim();
+      if (!/^cs_(test|live)_[a-zA-Z0-9_]+$/.test(candidateSessionId)) {
+        return res.status(400).json({ error: 'No valid Stripe Checkout Session is linked to this transaction.' });
+      }
+
+      const stripeRes = await fetch(
+        `https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(candidateSessionId)}`,
+        {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${stripeKey}`,
+          },
+        }
+      );
+      const sessionData = (await stripeRes.json().catch(() => ({}))) as {
+        id?: string;
+        payment_status?: string;
+        status?: string;
+        amount_total?: number;
+        currency?: string;
+        metadata?: Record<string, string>;
+        error?: { message?: string };
+      };
+
+      if (!stripeRes.ok) {
+        return res.status(502).json({
+          error: sessionData.error?.message || 'Could not retrieve Stripe Checkout Session status.',
+        });
+      }
+
+      const metaTxId = String(sessionData.metadata?.txId || '').trim();
+      const metaUserId = String(sessionData.metadata?.userId || '').trim();
+      const expectedCentavos = Math.round(existing.totalPhp * 100);
+      const currencyOk = String(sessionData.currency || '').toLowerCase() === 'php';
+
+      if (metaTxId !== existing.id || metaUserId !== existing.userId || !currencyOk) {
+        return res.status(400).json({ error: 'Stripe Checkout Session does not match this payment transaction.' });
+      }
+
+      if (sessionData.payment_status === 'paid' && Number(sessionData.amount_total) === expectedCentavos) {
+        const result = await finalizePaymentTerminalTransaction(
+          existing.id,
+          'approved',
+          'Stripe Checkout',
+          undefined,
+          user.id
+        );
+        if (!result.ok) {
+          const refreshed = await store.getPaymentTerminalTransactionById(existing.id);
+          if (refreshed?.status === 'approved') {
+            const ownDashboard = refreshed.userId === user.id ? await store.getUserDashboard(user.id) : undefined;
+            return res.json({ ok: true, paid: true, transaction: refreshed, ownDashboard });
+          }
+          return res.status(result.statusCode).json({ error: result.error });
+        }
+        return res.json({
+          ok: true,
+          paid: true,
+          transaction: result.transaction,
+          ownDashboard: result.ownDashboard,
+        });
+      }
+
+      return res.json({
+        ok: true,
+        paid: false,
+        paymentStatus: sessionData.payment_status || sessionData.status || 'unpaid',
+        transaction: existing,
+      });
+    } catch (err: unknown) {
+      return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to verify Stripe payment.' });
+    }
+  }
+);
+
+app.post(
   '/api/choy/admin/payment-terminal/transactions/:id/status',
   requireAuth,
   requireAdmin,
@@ -7988,10 +8451,6 @@ app.post(
     if (!txId) {
       return res.status(400).json({ error: 'Transaction ID is required.' });
     }
-    if (terminalReviewInFlight.has(txId)) {
-      return res.status(409).json({ error: 'Transaction is currently being processed. Please wait.' });
-    }
-    terminalReviewInFlight.add(txId);
     try {
       const admin = req.choyUser!;
       const nextStatus = req.body?.status === 'approved' ? 'approved' : req.body?.status === 'rejected' ? 'rejected' : '';
@@ -8001,80 +8460,789 @@ app.post(
       const rejectionReason =
         typeof req.body?.rejectionReason === 'string' ? req.body.rejectionReason.trim().slice(0, 200) : '';
 
-      const existing = await store.getPaymentTerminalTransactionById(txId);
-      if (!existing) {
-        return res.status(404).json({ error: 'Payment transaction not found.' });
+      const result = await finalizePaymentTerminalTransaction(
+        txId,
+        nextStatus,
+        admin.name,
+        rejectionReason,
+        admin.id
+      );
+      if (!result.ok) {
+        return res.status(result.statusCode).json({ error: result.error });
       }
-      if (existing.status !== 'pending' || existing.creditedAt) {
-        return res.status(400).json({ error: 'This transaction has already been finalized.' });
-      }
-
-      const now = new Date().toISOString();
-      const updatedTx: StoredPaymentTerminalTx = {
-        ...existing,
-        status: nextStatus,
-        reviewedBy: admin.name,
-        reviewedAt: now,
-        rejectionReason: nextStatus === 'rejected' ? rejectionReason || 'Rejected by Admin' : undefined,
-      };
-
-      let updatedOwnDashboard = undefined;
-
-      if (nextStatus === 'approved' && (existing.purpose === 'wallet_topup' || existing.purpose === 'choy_coins')) {
-        const targetDash = await store.getUserDashboard(existing.userId);
-        const makeWalletTxId = () => `tx_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`;
-        const prependTx = (list: WalletTxItem[], item: WalletTxItem): WalletTxItem[] => [item, ...list].slice(0, 60);
-
-        if (existing.purpose === 'wallet_topup') {
-          targetDash.walletBalance = Math.round((targetDash.walletBalance + existing.amountPhp) * 100) / 100;
-          targetDash.transactions = prependTx(targetDash.transactions, {
-            id: makeWalletTxId(),
-            walletType: 'wallet',
-            kind: 'topup',
-            amount: existing.amountPhp,
-            note: `Payment Terminal Top-Up (${existing.referenceCode})`,
-            createdAt: now,
-          });
-        } else if (existing.purpose === 'choy_coins') {
-          const programs = await store.getChoyProgramsConfig();
-          const coinsToCredit =
-            existing.choyCoinsPreview > 0
-              ? existing.choyCoinsPreview
-              : Math.round(existing.amountPhp * (programs.choyWallet?.conversionRate || 2) * 100) / 100;
-          targetDash.choyWalletBalance = Math.round((targetDash.choyWalletBalance + coinsToCredit) * 100) / 100;
-          targetDash.transactions = prependTx(targetDash.transactions, {
-            id: makeWalletTxId(),
-            walletType: 'choy_wallet',
-            kind: 'topup',
-            amount: coinsToCredit,
-            note: `Payment Terminal CHOY Coins (${existing.referenceCode})`,
-            createdAt: now,
-          });
-        }
-
-        const savedDash = await store.saveUserDashboard(targetDash);
-        updatedTx.creditedAt = now;
-        if (existing.userId === admin.id) {
-          updatedOwnDashboard = savedDash;
-        }
-      }
-
-      await store.savePaymentTerminalTransaction(updatedTx);
-      broadcastSync('payment_terminal');
-      broadcastSync('users');
 
       return res.json({
         ok: true,
-        transaction: updatedTx,
-        ownDashboard: updatedOwnDashboard,
+        transaction: result.transaction,
+        ownDashboard: result.ownDashboard,
       });
     } catch (err: unknown) {
       return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update payment status' });
-    } finally {
-      terminalReviewInFlight.delete(txId);
     }
   }
 );
+
+// ============================================================================
+// WELCOME GREETING VOICE TTS ("WELCOME TO CHOY CHAT")
+// ============================================================================
+let cachedWelcomeWav: Buffer | null = null;
+
+app.get('/api/tts/welcome', requireAuth, async (_req: AuthedRequest, res: Response) => {
+  try {
+    if (cachedWelcomeWav) {
+      res.setHeader('Content-Type', 'audio/wav');
+      res.setHeader('Cache-Control', 'private, max-age=86400');
+      return res.send(cachedWelcomeWav);
+    }
+    const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+    if (!apiKey) {
+      return res.status(503).json({ error: 'Voice synthesis API key not configured; use browser speech fallback.' });
+    }
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash-lite-tts',
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            {
+              text: 'Welcome to Choy Chat!',
+              speechMetadata: {
+                style: 'Warm, cheerful, upbeat, welcoming host greeting',
+              },
+            },
+          ],
+        },
+      ],
+      config: {
+        responseModalities: ['AUDIO'],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName: 'Kore' },
+          },
+        },
+      },
+    });
+    const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    if (!base64Audio) {
+      return res.status(502).json({ error: 'TTS response returned empty audio.' });
+    }
+    cachedWelcomeWav = Buffer.from(base64Audio, 'base64');
+    res.setHeader('Content-Type', 'audio/wav');
+    res.setHeader('Cache-Control', 'private, max-age=86400');
+    return res.send(cachedWelcomeWav);
+  } catch (err: unknown) {
+    return res.status(502).json({
+      error: err instanceof Error ? err.message : 'Could not synthesize welcome voice.',
+    });
+  }
+});
+
+// ============================================================================
+// GAMES AUTO-CREDIT WINNER WALLET & SETTLEMENT SYNC
+// ============================================================================
+app.post('/api/choy/games/credit-win', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const actor = req.choyUser!;
+    const requestedTargetId =
+      actor.role === 'admin' && typeof req.body?.targetUserId === 'string' && req.body.targetUserId.trim()
+        ? req.body.targetUserId.trim()
+        : actor.id;
+    const amountPhp = Math.round(Number(req.body?.amountPhp) * 100) / 100;
+    const gameLabel = String(req.body?.gameLabel || 'Game Win').trim().slice(0, 80);
+    const note = String(req.body?.note || '').trim().slice(0, 180);
+
+    if (!Number.isFinite(amountPhp) || amountPhp <= 0 || amountPhp > 500000) {
+      return res.status(400).json({ error: 'Invalid payout amount.' });
+    }
+
+    const dash = await store.getUserDashboard(requestedTargetId);
+    const now = new Date().toISOString();
+    dash.walletBalance = Math.round((dash.walletBalance + amountPhp) * 100) / 100;
+    dash.transactions = [
+      {
+        id: `gwin_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`,
+        walletType: 'wallet' as const,
+        kind: 'reward' as const,
+        amount: amountPhp,
+        note: note || `${gameLabel} Auto-Credit Payout`,
+        createdAt: now,
+      },
+      ...dash.transactions,
+    ].slice(0, 60);
+
+    const saved = await store.saveUserDashboard(dash);
+    broadcastSync('users');
+    const { withdrawalPinHash: _hidden, ...safeDash } = saved;
+    return res.json({
+      ok: true,
+      creditedUserId: requestedTargetId,
+      ownDashboard: requestedTargetId === actor.id ? safeDash : undefined,
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to credit game payout.' });
+  }
+});
+
+// ============================================================================
+// EMPLOYEE DTR SUBSCRIPTION (30-DAY FREE TRIAL + AUTO-DEDUCT) & WORKSPACE APIs
+// ============================================================================
+const DTR_PLAN_CATALOG = {
+  starter: { label: 'Starter Plan', pricePhp: 299, maxEmployees: 20 },
+  pro: { label: 'Pro Plan', pricePhp: 799, maxEmployees: 50 },
+  enterprise: { label: 'Enterprise Plan', pricePhp: 1299, maxEmployees: Infinity },
+} as const;
+
+async function processDueTrialAutoDeduct(userId: string) {
+  const dash = await store.getUserDashboard(userId);
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  let changed = false;
+
+  // Check General Choy Subscription trial auto-deduct
+  if (
+    dash.subscriptionStatus === 'trialing' &&
+    dash.subscriptionAutoRenew &&
+    dash.subscriptionTrialEndsAt &&
+    Date.parse(dash.subscriptionTrialEndsAt) <= nowMs
+  ) {
+    const programsCfg = await store.getChoyProgramsConfig();
+    const pricePhp =
+      dash.subscriptionPlan === 'choy_pro_annual'
+        ? programsCfg.choyPro.annualPhp
+        : dash.subscriptionPlan === 'vip_supporter'
+        ? programsCfg.choyPro.vipPhp
+        : programsCfg.choyPro.monthlyPhp;
+    if (dash.walletBalance >= pricePhp) {
+      dash.walletBalance = Math.round((dash.walletBalance - pricePhp) * 100) / 100;
+      dash.subscriptionStatus = 'active';
+      dash.subscriptionRenewAt = new Date(nowMs + 30 * 24 * 60 * 60 * 1000).toISOString();
+      dash.transactions = [
+        {
+          id: `sub_auto_${Date.now().toString(36)}`,
+          walletType: 'wallet' as const,
+          kind: 'subscription' as const,
+          amount: -pricePhp,
+          note: `Auto-Deduct after Free Trial (${dash.subscriptionPlan})`,
+          createdAt: nowIso,
+        },
+        ...dash.transactions,
+      ].slice(0, 60);
+      changed = true;
+    }
+  }
+
+  // Check Employee DTR 30-day free trial auto-deduct
+  const dtrSub = dash.dtrSubscription;
+  if (
+    dtrSub &&
+    dtrSub.status === 'trialing' &&
+    dtrSub.autoDeduct &&
+    dtrSub.trialEndsAt &&
+    Date.parse(dtrSub.trialEndsAt) <= nowMs
+  ) {
+    const meta = DTR_PLAN_CATALOG[dtrSub.plan] || DTR_PLAN_CATALOG.starter;
+    if (dash.walletBalance >= meta.pricePhp) {
+      dash.walletBalance = Math.round((dash.walletBalance - meta.pricePhp) * 100) / 100;
+      dash.dtrSubscription = {
+        ...dtrSub,
+        status: 'active',
+        lastBilledAt: nowIso,
+        nextBillingAt: new Date(nowMs + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      };
+      dash.transactions = [
+        {
+          id: `dtr_auto_${Date.now().toString(36)}`,
+          walletType: 'wallet' as const,
+          kind: 'subscription' as const,
+          amount: -meta.pricePhp,
+          note: `Employee DTR Auto-Deduct after 30-Day Free Trial (${meta.label})`,
+          createdAt: nowIso,
+        },
+        ...dash.transactions,
+      ].slice(0, 60);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    return store.saveUserDashboard(dash);
+  }
+  return dash;
+}
+
+app.get('/api/choy/dtr/state', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const dash = await processDueTrialAutoDeduct(user.id);
+    const { withdrawalPinHash: _hidden, ...safeDash } = dash;
+    return res.json({
+      ok: true,
+      dtrSubscription: dash.dtrSubscription || null,
+      dtrEmployees: dash.dtrEmployees || [],
+      ownDashboard: safeDash,
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load Employee DTR state.' });
+  }
+});
+
+app.post('/api/choy/dtr/subscription', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const rawPlan = String(req.body?.plan || 'starter').trim();
+    const plan: 'starter' | 'pro' | 'enterprise' =
+      rawPlan === 'pro' || rawPlan === 'enterprise' ? rawPlan : 'starter';
+    const paymentMethod: 'stripe_card' | 'gcash' = req.body?.paymentMethod === 'gcash' ? 'gcash' : 'stripe_card';
+    const paymentDetails = String(req.body?.paymentDetails || '').trim().slice(0, 100);
+    if (!paymentDetails) {
+      return res.status(400).json({
+        error: 'Please fill up your Card or GCash payment details before starting your 30-day free trial.',
+      });
+    }
+
+    const dash = await store.getUserDashboard(user.id);
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const trialEndsIso = new Date(nowMs + 30 * 24 * 60 * 60 * 1000).toISOString();
+    const meta = DTR_PLAN_CATALOG[plan];
+
+    dash.dtrSubscription = {
+      plan,
+      status: 'trialing',
+      paymentMethod,
+      paymentDetails,
+      trialStartedAt: nowIso,
+      trialEndsAt: trialEndsIso,
+      nextBillingAt: trialEndsIso,
+      autoDeduct: true,
+    };
+    dash.transactions = [
+      {
+        id: `dtr_trial_${Date.now().toString(36)}`,
+        walletType: 'wallet' as const,
+        kind: 'subscription' as const,
+        amount: 0,
+        note: `Employee DTR ${meta.label} 30-Day Free Trial (Due Today ₱0 • ₱${meta.pricePhp}/mo after trial via ${paymentMethod === 'gcash' ? 'GCash' : 'Stripe Card'})`,
+        createdAt: nowIso,
+      },
+      ...dash.transactions,
+    ].slice(0, 60);
+
+    const saved = await store.saveUserDashboard(dash);
+    const { withdrawalPinHash: _hidden, ...safeDash } = saved;
+    return res.json({
+      ok: true,
+      dtrSubscription: saved.dtrSubscription,
+      ownDashboard: safeDash,
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to start DTR trial.' });
+  }
+});
+
+app.post('/api/choy/dtr/cancel', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const dash = await store.getUserDashboard(user.id);
+    const nowIso = new Date().toISOString();
+    if (dash.dtrSubscription) {
+      dash.dtrSubscription = {
+        ...dash.dtrSubscription,
+        status: 'cancelled',
+        autoDeduct: false,
+        cancelledAt: nowIso,
+      };
+    }
+    const saved = await store.saveUserDashboard(dash);
+    const { withdrawalPinHash: _hidden, ...safeDash } = saved;
+    return res.json({
+      ok: true,
+      dtrSubscription: saved.dtrSubscription || null,
+      ownDashboard: safeDash,
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to cancel DTR subscription.' });
+  }
+});
+
+app.post('/api/choy/dtr/save', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const dash = await store.getUserDashboard(user.id);
+    const sub = dash.dtrSubscription;
+    const isAllowed = user.role === 'admin' || (sub && (sub.status === 'trialing' || sub.status === 'active'));
+    if (!isAllowed) {
+      return res.status(403).json({ error: 'Start your 30-day Employee DTR free trial first to save records.' });
+    }
+    const rawEmployees = Array.isArray(req.body?.employees) ? req.body.employees : [];
+    const maxAllowed =
+      user.role === 'admin'
+        ? Infinity
+        : DTR_PLAN_CATALOG[sub?.plan || 'starter']?.maxEmployees ?? 20;
+    if (rawEmployees.length > maxAllowed) {
+      return res.status(400).json({
+        error: `Your current plan allows up to ${maxAllowed} employees. Upgrade to Pro (50) or Enterprise (Unlimited).`,
+      });
+    }
+
+    const nowIso = new Date().toISOString();
+    const sanitizedEmployees = rawEmployees.slice(0, 500).map((emp: Record<string, unknown>, idx: number) => {
+      const completeName = String(emp?.completeName || '').trim().slice(0, 120);
+      const dateHired = String(emp?.dateHired || '').trim().slice(0, 30);
+      const position = String(emp?.position || '').trim().slice(0, 80);
+      const dailyRateRaw = Number(emp?.dailyRate);
+      const dailyRate = Number.isFinite(dailyRateRaw) && dailyRateRaw > 0 && dailyRateRaw <= 50000 ? dailyRateRaw : 435;
+      const monthsObj =
+        emp?.months && typeof emp.months === 'object' && !Array.isArray(emp.months)
+          ? (emp.months as Record<string, Record<string, Record<string, number>>>)
+          : {};
+      return {
+        id: String(emp?.id || `emp_${Date.now()}_${idx}`).slice(0, 64),
+        completeName: completeName || `Employee ${idx + 1}`,
+        dateHired: dateHired || nowIso.slice(0, 10),
+        position: position || undefined,
+        dailyRate,
+        months: monthsObj,
+        updatedAt: nowIso,
+      };
+    });
+
+    dash.dtrEmployees = sanitizedEmployees;
+    const saved = await store.saveUserDashboard(dash);
+    return res.json({
+      ok: true,
+      dtrEmployees: saved.dtrEmployees || [],
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save DTR data.' });
+  }
+});
+
+// ============================================================================
+// ADMIN SECURITY STUDIO: AUTO-SYNCED PROJECT CODE EXPLORER & .ENV KEY GUIDE
+// ============================================================================
+const PROJECT_ROOT_DIR = path.resolve(process.cwd());
+const CODE_EXPLORER_DENY_NAMES = new Set([
+  '.env',
+  '.env.local',
+  '.env.production',
+  '.env.development',
+  '.git',
+  'node_modules',
+]);
+
+function isSafeProjectRelativePath(relPath: string): boolean {
+  const norm = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!norm || norm.includes('..') || norm.includes('\0')) return false;
+  const parts = norm.split('/');
+  for (const part of parts) {
+    if (CODE_EXPLORER_DENY_NAMES.has(part.toLowerCase())) return false;
+    if (part.toLowerCase().startsWith('.env') && part.toLowerCase() !== '.env.example') return false;
+    if (/\.(pem|key|p12|pfx|crt)$/i.test(part)) return false;
+  }
+  const resolved = path.resolve(PROJECT_ROOT_DIR, norm);
+  return resolved === PROJECT_ROOT_DIR || resolved.startsWith(PROJECT_ROOT_DIR + path.sep);
+}
+
+function scanCategoryFiles(dirRel: string, maxFiles = 120): string[] {
+  const absDir = path.resolve(PROJECT_ROOT_DIR, dirRel);
+  if (!absDir.startsWith(PROJECT_ROOT_DIR + path.sep) && absDir !== PROJECT_ROOT_DIR) return [];
+  if (!fs.existsSync(absDir)) return [];
+  const results: string[] = [];
+  const walk = (currAbs: string, currRel: string, depth: number) => {
+    if (depth > 4 || results.length >= maxFiles) return;
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(currAbs, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (results.length >= maxFiles) break;
+      const lower = entry.name.toLowerCase();
+      if (CODE_EXPLORER_DENY_NAMES.has(lower)) continue;
+      if (lower.startsWith('.env') && lower !== '.env.example') continue;
+      const nextRel = currRel ? `${currRel}/${entry.name}` : entry.name;
+      const nextAbs = path.join(currAbs, entry.name);
+      if (entry.isDirectory()) {
+        walk(nextAbs, nextRel, depth + 1);
+      } else if (entry.isFile()) {
+        results.push(nextRel);
+      }
+    }
+  };
+  walk(absDir, dirRel, 0);
+  return results;
+}
+
+app.get('/api/admin/project-code/tree', requireAuth, requireAdmin, async (_req: AuthedRequest, res: Response) => {
+  try {
+    const rootKnownFiles = [
+      '.env.example',
+      '.gitignore',
+      '.npmrc',
+      'bun.lock',
+      'Dockerfile',
+      'eslint.config.js',
+      'firebase-applet-config.json',
+      'firebase-blueprint.json',
+      'firestore.rules',
+      'index.html',
+      'metadata.json',
+      'package-lock.json',
+      'package.json',
+      'render.yaml',
+      'security.spec.md',
+      'server.ts',
+      'server.js',
+      'tsconfig.json',
+      'vite.config.ts',
+    ];
+    const existingRootEntries = fs
+      .readdirSync(PROJECT_ROOT_DIR, { withFileTypes: true })
+      .filter((e) => e.isFile())
+      .map((e) => e.name)
+      .filter((name) => isSafeProjectRelativePath(name))
+      .sort();
+
+    const srcRootFiles = fs.existsSync(path.join(PROJECT_ROOT_DIR, 'src'))
+      ? fs
+          .readdirSync(path.join(PROJECT_ROOT_DIR, 'src'), { withFileTypes: true })
+          .filter((e) => e.isFile())
+          .map((e) => `src/${e.name}`)
+          .sort()
+      : [];
+
+    const categories = [
+      {
+        id: 'aistudio',
+        label: '.aistudio / Metadata & Specs',
+        folderPath: 'metadata.json',
+        purpose:
+          'Nagkupot sa AI Studio app identity, permissions, security specs, ug Firebase blueprints (para asa: configuration sa AI Studio workspace ug app metadata).',
+        files: existingRootEntries.filter((f) =>
+          ['metadata.json', 'firebase-applet-config.json', 'firebase-blueprint.json', 'firestore.rules', 'security.spec.md'].includes(f)
+        ),
+      },
+      {
+        id: 'dev_dist',
+        label: 'dist / Build Output',
+        folderPath: 'dist',
+        purpose:
+          'Compiled production bundle gikan sa `npm run build` (para asa: diri gikuha sa Express server ang optimized HTML/JS/CSS inig deploy sa Render o live server).',
+        files: scanCategoryFiles('dist', 40),
+      },
+      {
+        id: 'public',
+        label: 'public / Static & PWA Assets',
+        folderPath: 'public',
+        purpose:
+          'Static files nga direkta ma-access sa browser sama sa PWA icons (`pwa-512x512.png`, `pwa-192x192.png`, `apple-touch-icon.png`, `favicon.ico`) ug static images.',
+        files: scanCategoryFiles('public', 60),
+      },
+      {
+        id: 'src_root',
+        label: 'src / Core App Entry (App.tsx, firebase.ts, sw.ts)',
+        folderPath: 'src',
+        purpose:
+          'Main frontend source files: `App.tsx` (main layout & navigation), `main.tsx` (React bootstrap & PWA register), `index.css` (Tailwind styles), `firebase.ts` (Firebase SDK), `sw.ts` (Service Worker), ug `themePresets.ts` (dark/light themes).',
+        files: srcRootFiles,
+      },
+      {
+        id: 'src_assets',
+        label: 'src/assets / Generated Visuals',
+        folderPath: 'src/assets',
+        purpose:
+          'High-resolution generated banners, PWA source graphics, table felt textures, ug cover photos nga gi-bundle ug gi-copy ngadto sa `dist/src/assets`.',
+        files: scanCategoryFiles('src/assets', 40),
+      },
+      {
+        id: 'src_components',
+        label: 'src/components / UI Feature Modules',
+        folderPath: 'src/components',
+        purpose:
+          'Tanan modular screens sa Choy Chat: Newsfeed, Payment Terminal, Games (Swertres/NBA/Tong-its), Employee DTR, User Dashboard, Admin Setup, ug Security Studio.',
+        files: scanCategoryFiles('src/components', 80),
+      },
+      {
+        id: 'src_data',
+        label: 'src/data / Static Datasets',
+        folderPath: 'src/data',
+        purpose:
+          'Structured reference data lists (episodes, presets, initial catalogs) nga gigamit sa UI components.',
+        files: scanCategoryFiles('src/data', 40),
+      },
+      {
+        id: 'src_hooks',
+        label: 'src/hooks / Reusable React Hooks',
+        folderPath: 'src/hooks',
+        purpose:
+          'Custom React hooks sama sa `usePWAInstall.ts` (install prompt & standalone detection) ug online/offline monitors.',
+        files: scanCategoryFiles('src/hooks', 40),
+      },
+      {
+        id: 'src_server',
+        label: 'src/server / Database & Cloud Storage Drivers',
+        folderPath: 'src/server',
+        purpose:
+          'Server-side database store (`choyStore.ts` para sa PostgreSQL/memory sync), Supabase storage (`supabaseStorage.ts`), ug Cloudflare R2 vault drivers.',
+        files: scanCategoryFiles('src/server', 40),
+      },
+      {
+        id: 'src_services_utils',
+        label: 'src/services & src/utils / Helpers & Sync',
+        folderPath: 'src/utils',
+        purpose:
+          'Helper utilities sama sa Welcome Voice greeting (`welcomeVoice.ts`), Emoji Link Share, ug Firebase Cloud Sync (`src/services`).',
+        files: [...scanCategoryFiles('src/utils', 40), ...scanCategoryFiles('src/services', 40)],
+      },
+      {
+        id: 'supabase_drizzle',
+        label: 'Supabase / Database & Migrations',
+        folderPath: 'supabase',
+        purpose:
+          'Database schema definitions, SQL migrations, o Supabase project configurations kung gigamit ang Supabase Postgres & Storage.',
+        files: [...scanCategoryFiles('supabase', 40), ...scanCategoryFiles('drizzle', 40)],
+      },
+      {
+        id: 'root_config',
+        label: 'Root Config & Deployment (server.ts, Dockerfile, render.yaml, package.json)',
+        folderPath: '.',
+        purpose:
+          'Server entry (`server.ts`), build/runtime config (`package.json`, `vite.config.ts`, `tsconfig.json`, `eslint.config.js`), Docker & Render deployment (`Dockerfile`, `render.yaml`), ug `.env.example` template.',
+        files: existingRootEntries.filter(
+          (f) =>
+            rootKnownFiles.includes(f) ||
+            /\.(ts|js|json|yaml|yml|md|html)$/i.test(f) ||
+            f === '.env.example' ||
+            f === '.gitignore' ||
+            f === '.npmrc' ||
+            f === 'Dockerfile' ||
+            f === 'bun.lock'
+        ),
+      },
+    ];
+
+    return res.json({
+      ok: true,
+      syncedAt: new Date().toISOString(),
+      categories,
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to scan project code tree.' });
+  }
+});
+
+app.get('/api/admin/project-code/file', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const relPath = String(req.query.path || '').trim();
+    if (!isSafeProjectRelativePath(relPath)) {
+      return res.status(403).json({ error: 'Access to this file path is restricted for security.' });
+    }
+    const absPath = path.resolve(PROJECT_ROOT_DIR, relPath);
+    if (!fs.existsSync(absPath) || !fs.statSync(absPath).isFile()) {
+      return res.status(404).json({ error: 'File not found in workspace.' });
+    }
+    const stat = fs.statSync(absPath);
+    if (/\.(png|jpg|jpeg|webp|gif|ico|woff|woff2|mp3|wav|mp4)$/i.test(absPath)) {
+      return res.json({
+        ok: true,
+        path: relPath,
+        isBinary: true,
+        sizeBytes: stat.size,
+        content: `[Binary asset file: ${relPath} (${(stat.size / 1024).toFixed(1)} KB)]`,
+      });
+    }
+    const raw = fs.readFileSync(absPath, 'utf8');
+    const truncated = raw.length > 65000;
+    return res.json({
+      ok: true,
+      path: relPath,
+      isBinary: false,
+      sizeBytes: stat.size,
+      truncated,
+      content: truncated ? `${raw.slice(0, 65000)}\n\n... [Truncated at 65 KB for fast preview]` : raw,
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to read file.' });
+  }
+});
+
+app.get('/api/admin/project-code/env-guide', requireAuth, requireAdmin, async (_req: AuthedRequest, res: Response) => {
+  try {
+    const envGuide = [
+      {
+        key: 'INTERNAL_DATABASE_URL',
+        category: 'Database (Render PostgreSQL)',
+        sample: 'postgresql://user:pass@dpg-xxxx-a/choychat_db',
+        isSet: Boolean((process.env.INTERNAL_DATABASE_URL || '').trim()),
+        purpose:
+          'Internal PostgreSQL connection string sulod sa Render network — mas paspas ug libre nga internal traffic tali sa Render Web Service ug Render Postgres DB.',
+      },
+      {
+        key: 'DATABASE_URL',
+        category: 'Database (PostgreSQL Primary)',
+        sample: 'postgresql://user:pass@host:5432/dbname?sslmode=require',
+        isSet: Boolean((process.env.DATABASE_URL || '').trim()),
+        purpose:
+          'Primary cloud database URI diin gi-save tanan users, chats, newsfeed posts, wallets, DTR records, ug payment transactions para real-time cloud sync.',
+      },
+      {
+        key: 'APP_URL',
+        category: 'App Domain & Redirects',
+        sample: 'https://chat-9-si9x.onrender.com',
+        isSet: Boolean((process.env.APP_URL || '').trim()),
+        purpose:
+          'Official public URL sa imong Choy Chat website. Gigamit kini sa Stripe Checkout return URLs (`success_url`/`cancel_url`), share links, ug PWA metadata.',
+      },
+      {
+        key: 'R2_PUBLIC_URL',
+        category: 'Cloudflare R2 Storage',
+        sample: 'https://pub-xxxxxxxx.r2.dev',
+        isSet: Boolean((process.env.R2_PUBLIC_URL || '').trim()),
+        purpose:
+          'Public CDN domain sa imong Cloudflare R2 bucket para paspas mo-load ang gi-upload nga photos, videos, ug music nga walay egress fee.',
+      },
+      {
+        key: 'R2_ACCOUNT_ID',
+        category: 'Cloudflare R2 Storage',
+        sample: 'a1b2c3d4e5f6g7h8i9j0...',
+        isSet: Boolean((process.env.R2_ACCOUNT_ID || '').trim()),
+        purpose:
+          'Account ID gikan sa Cloudflare Dashboard -> R2 Overview. Kinahanglan para makakonek ang server sa saktong Cloudflare R2 endpoint.',
+      },
+      {
+        key: 'R2_ACCESS_KEY_ID',
+        category: 'Cloudflare R2 Storage',
+        sample: 'r2_access_key_id_here',
+        isSet: Boolean((process.env.R2_ACCESS_KEY_ID || '').trim()),
+        purpose:
+          'S3-compatible Access Key ID gikan sa Cloudflare R2 API Tokens para maka-upload ug maka-backup ang Choy Chat ngadto sa R2.',
+      },
+      {
+        key: 'R2_SECRET_ACCESS_KEY',
+        category: 'Cloudflare R2 Storage',
+        sample: 'r2_secret_access_key_here (Server Secret)',
+        isSet: Boolean((process.env.R2_SECRET_ACCESS_KEY || '').trim()),
+        purpose:
+          'Private secret token kauban sa R2_ACCESS_KEY_ID para sa secure server-side upload ug encrypted vault backup sa Cloudflare R2.',
+      },
+      {
+        key: 'SUPABASE_URL',
+        category: 'Supabase Storage & KYC',
+        sample: 'https://xxxxx.supabase.co',
+        isSet: Boolean((process.env.SUPABASE_URL || '').trim()),
+        purpose:
+          'Project URL sa imong Supabase workspace (Project Settings -> API). Gigamit para sa media bucket ug private KYC bucket uploads.',
+      },
+      {
+        key: 'SUPABASE_ANON_KEY',
+        category: 'Supabase Storage & KYC',
+        sample: 'eyJhbGciOiJIUzI1NiIs...',
+        isSet: Boolean((process.env.SUPABASE_ANON_KEY || '').trim()),
+        purpose:
+          'Public anon API key sa Supabase para sa standard authenticated storage operations ug public bucket access.',
+      },
+      {
+        key: 'SUPABASE_SERVICE_ROLE_KEY',
+        category: 'Supabase Storage & KYC',
+        sample: 'eyJhbGciOiJIUzI1NiIs... (Server Secret)',
+        isSet: Boolean((process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim()),
+        purpose:
+          'Admin server-only Supabase key para sa secure upload/download sa private KYC ID photos nga admin ra ang makatan-aw.',
+      },
+      {
+        key: 'SUPABASE_PRIVATE_KYC_BUCKET',
+        category: 'Supabase Storage & KYC',
+        sample: 'choychat-private-kyc',
+        isSet: Boolean((process.env.SUPABASE_PRIVATE_KYC_BUCKET || '').trim()),
+        purpose:
+          'Ngalan sa private Supabase Storage bucket diin gitipigan ang sensitive Valid ID uploads sa customer verification.',
+      },
+      {
+        key: 'ADMIN_MOBILE / ADMIN_PHONE',
+        category: 'Admin Access Control',
+        sample: '09XXXXXXXXX',
+        isSet: Boolean((process.env.ADMIN_MOBILE || process.env.ADMIN_PHONE || '').trim()),
+        purpose:
+          'Official mobile number sa Admin account. Kung naka-set kini sa server env, awtomatikong gi-protect ang admin login credentials.',
+      },
+      {
+        key: 'ADMIN_PIN',
+        category: 'Admin Access Control',
+        sample: '6-digit secret PIN (Server Secret)',
+        isSet: Boolean((process.env.ADMIN_PIN || '').trim()),
+        purpose:
+          'Secret PIN sa Admin login. Gi-verify kini sa server-side lamang ug dili gyud ipakita sa browser code.',
+      },
+      {
+        key: 'STRIPE_SECRET_KEY',
+        category: 'Stripe Payment Terminal',
+        sample: 'sk_live_... or sk_test_... (Server Secret)',
+        isSet: Boolean((process.env.STRIPE_SECRET_KEY || '').trim()),
+        purpose:
+          'Private Stripe API key sa server para maghimo og secure Stripe Checkout sessions ug mo-verify sa bayad sa Online Payment Terminal ug DTR subscriptions.',
+      },
+      {
+        key: 'VITE_STRIPE_PUBLISHABLE_KEY',
+        category: 'Stripe Payment Terminal',
+        sample: 'pk_live_... or pk_test_...',
+        isSet: Boolean((process.env.VITE_STRIPE_PUBLISHABLE_KEY || '').trim()),
+        purpose:
+          'Public browser key sa Stripe nga safe ipakita sa frontend para sa Stripe Checkout ug client payment status.',
+      },
+      {
+        key: 'STRIPE_CONFIG_ID',
+        category: 'Stripe Payment Terminal',
+        sample: 'pmc_xxxxxxxxxxxx',
+        isSet: Boolean((process.env.STRIPE_CONFIG_ID || '').trim()),
+        purpose:
+          'Optional Stripe Payment Method Configuration ID (`pmc_...`) para i-activate ang imong naka-enable nga payment methods sa Stripe Dashboard.',
+      },
+      {
+        key: 'STRIPE_WEBHOOK_SECRET',
+        category: 'Stripe Payment Terminal',
+        sample: 'whsec_xxxxxxxxxxxx (Server Secret)',
+        isSet: Boolean((process.env.STRIPE_WEBHOOK_SECRET || '').trim()),
+        purpose:
+          'Signing secret para ma-verify sa `/api/webhooks/stripe` nga tinuod gikan sa Stripe ang payment event una i-auto-credit ang wallet.',
+      },
+      {
+        key: 'GEMINI_API_KEY',
+        category: 'Choy AI & Welcome Voice',
+        sample: 'AIza... (Server Secret)',
+        isSet: Boolean((process.env.GEMINI_API_KEY || '').trim()),
+        purpose:
+          'Server-side Gemini API key para sa Choy AI Assistant ug Welcome Voice greeting synthesis (`WELCOME TO CHOY CHAT`).',
+      },
+      {
+        key: 'KYC_ENCRYPTION_KEY',
+        category: 'Privacy & Encryption',
+        sample: '32-char high-entropy secret (Server Secret)',
+        isSet: Boolean((process.env.KYC_ENCRYPTION_KEY || '').trim()),
+        purpose:
+          'AES-256 encryption key para i-encrypt ang tinuod nga pangalan ug sensitive KYC details sa database.',
+      },
+    ];
+
+    return res.json({
+      ok: true,
+      syncedAt: new Date().toISOString(),
+      envGuide,
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load env guide.' });
+  }
+});
 
 startServer();
 
