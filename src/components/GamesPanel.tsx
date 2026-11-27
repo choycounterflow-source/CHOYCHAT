@@ -205,7 +205,7 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
   const [spinning, setSpinning] = useState<boolean>(false);
   const [score, setScore] = useState<number>(() => {
     const saved = localStorage.getItem(`choy_user_coins_${currentUser.id}`);
-    return saved ? Number(saved) : 500;
+    return saved ? Number(saved) : 0;
   });
 
   React.useEffect(() => {
