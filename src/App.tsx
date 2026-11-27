@@ -9990,7 +9990,7 @@ export default function App() {
             <EmployeeDtrPanel
               currentUser={currentUser}
               authToken={authToken}
-              onOwnDashboardUpdated={(next) => setUserDashboardData(next)}
+              onOwnDashboardUpdated={setUserDashboardData}
             />
           )}
 

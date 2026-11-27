@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CalendarClock,
@@ -127,6 +127,39 @@ function formatPhp(n: number): string {
   })}`;
 }
 
+function computeEmployeeMonthPayroll(emp: DtrEmployeeRecord | null, monthKey: string) {
+  const hourlyRate = (emp?.dailyRate || CARAGA_DEFAULT_DAILY_RATE) / 8;
+  const monthGrid = emp?.months?.[monthKey] || {};
+  const categoryHours: Record<string, number> = {};
+  const categoryPay: Record<string, number> = {};
+  const dayTotals: Record<string, number> = {};
+  let totalManhours = 0;
+  let grossWagePhp = 0;
+
+  for (const day of DAYS_31) {
+    let daySum = 0;
+    for (const cat of DTR_CATEGORIES) {
+      daySum += Number(monthGrid[day]?.[cat.key] || 0);
+    }
+    dayTotals[day] = Math.round(daySum * 100) / 100;
+  }
+
+  for (const cat of DTR_CATEGORIES) {
+    let sumHrs = 0;
+    for (const day of DAYS_31) {
+      sumHrs += Number(monthGrid[day]?.[cat.key] || 0);
+    }
+    const roundedHrs = Math.round(sumHrs * 100) / 100;
+    const pay = Math.round(roundedHrs * hourlyRate * cat.multiplier * 100) / 100;
+    categoryHours[cat.key] = roundedHrs;
+    categoryPay[cat.key] = pay;
+    totalManhours = Math.round((totalManhours + roundedHrs) * 100) / 100;
+    grossWagePhp = Math.round((grossWagePhp + pay) * 100) / 100;
+  }
+
+  return { hourlyRate, categoryHours, categoryPay, dayTotals, totalManhours, grossWagePhp };
+}
+
 export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
   currentUser,
   authToken,
@@ -135,6 +168,8 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
   const isAdmin = currentUser.role === 'admin';
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [showPlanModalView, setShowPlanModalView] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -164,9 +199,17 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
   >(null);
   const [eraseConfirmInput, setEraseConfirmInput] = useState('');
 
+  // Keep latest callback in a ref so parent re-renders NEVER trigger a refetch loop
+  const onOwnDashboardUpdatedRef = useRef(onOwnDashboardUpdated);
+  useEffect(() => {
+    onOwnDashboardUpdatedRef.current = onOwnDashboardUpdated;
+  }, [onOwnDashboardUpdated]);
+
   const getHeaders = useCallback(
     (json = false): Record<string, string> => {
-      const h: Record<string, string> = {};
+      const h: Record<string, string> = {
+        'X-Requested-With': 'XMLHttpRequest',
+      };
       if (json) h['Content-Type'] = 'application/json';
       if (authToken) h.Authorization = `Bearer ${authToken}`;
       return h;
@@ -176,40 +219,54 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
 
   const loadState = useCallback(async () => {
     setLoading(true);
+    setErrorMsg(null);
     try {
       const res = await fetch('/api/choy/dtr/state', {
         credentials: 'include',
         headers: getHeaders(),
       });
-      if (res.ok) {
-        const data = await res.json();
-        setSubscription(data.dtrSubscription || null);
-        const list: DtrEmployeeRecord[] = Array.isArray(data.dtrEmployees) ? data.dtrEmployees : [];
-        setEmployees(list);
-        if (list.length > 0 && !selectedEmpId) {
-          const sorted = [...list].sort((a, b) => a.completeName.localeCompare(b.completeName));
-          setSelectedEmpId(sorted[0].id);
-        }
-        if (data.ownDashboard && onOwnDashboardUpdated) {
-          onOwnDashboardUpdated(data.ownDashboard);
-        }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || `Could not load Employee DTR (HTTP ${res.status}).`);
       }
-    } catch {
-      setErrorMsg('Could not load Employee DTR data.');
+      const nextSub: DtrSubscriptionState | null = data.dtrSubscription || null;
+      const list: DtrEmployeeRecord[] = Array.isArray(data.dtrEmployees) ? data.dtrEmployees : [];
+      setSubscription(nextSub);
+      if (nextSub?.plan) {
+        setChosenPlan(nextSub.plan);
+      }
+      setEmployees(list);
+      setHasUnsavedChanges(false);
+      setSelectedEmpId((prev) => {
+        if (prev && list.some((e) => e.id === prev)) return prev;
+        if (list.length === 0) return '';
+        const sorted = [...list].sort((a, b) => a.completeName.localeCompare(b.completeName));
+        return sorted[0].id;
+      });
+      if (data.ownDashboard && onOwnDashboardUpdatedRef.current) {
+        onOwnDashboardUpdatedRef.current(data.ownDashboard);
+      }
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Could not load Employee DTR data.');
     } finally {
       setLoading(false);
     }
-  }, [getHeaders, onOwnDashboardUpdated, selectedEmpId]);
+  }, [getHeaders]);
 
   useEffect(() => {
     void loadState();
-  }, [loadState]);
+  }, [loadState, currentUser.id]);
 
   const hasActiveAccess =
     isAdmin || (subscription !== null && (subscription.status === 'trialing' || subscription.status === 'active'));
 
-  const currentPlanMeta =
-    DTR_PLANS.find((p) => p.id === (subscription?.plan || chosenPlan)) || DTR_PLANS[0];
+  const activePlanId =
+    subscription && (subscription.status === 'trialing' || subscription.status === 'active')
+      ? subscription.plan
+      : chosenPlan;
+
+  const currentPlanMeta = DTR_PLANS.find((p) => p.id === activePlanId) || DTR_PLANS[0];
+  const selectedPlanMeta = DTR_PLANS.find((p) => p.id === chosenPlan) || DTR_PLANS[0];
 
   const sortedEmployees = useMemo(
     () => [...employees].sort((a, b) => a.completeName.localeCompare(b.completeName)),
@@ -221,7 +278,7 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
     [sortedEmployees, selectedEmpId]
   );
 
-  const persistEmployees = async (nextList: DtrEmployeeRecord[], successText: string) => {
+  const persistEmployees = async (nextList: DtrEmployeeRecord[], successText: string): Promise<boolean> => {
     setSaving(true);
     setErrorMsg(null);
     setNotice(null);
@@ -232,14 +289,17 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
         headers: getHeaders(true),
         body: JSON.stringify({ employees: nextList }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.error || 'Failed to save Employee DTR.');
       }
       setEmployees(Array.isArray(data.dtrEmployees) ? data.dtrEmployees : nextList);
+      setHasUnsavedChanges(false);
       setNotice(successText);
+      return true;
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to save Employee DTR.');
+      return false;
     } finally {
       setSaving(false);
     }
@@ -269,14 +329,15 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
           paymentDetails: paymentDetails.trim(),
         }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Failed to activate 30-day free trial.');
       setSubscription(data.dtrSubscription || null);
-      if (data.ownDashboard && onOwnDashboardUpdated) {
-        onOwnDashboardUpdated(data.ownDashboard);
+      setShowPlanModalView(false);
+      if (data.ownDashboard && onOwnDashboardUpdatedRef.current) {
+        onOwnDashboardUpdatedRef.current(data.ownDashboard);
       }
       setNotice(
-        `30-Day Free Trial activated for ${currentPlanMeta.name}! Due today: ₱0.00. You can cancel anytime before trial ends.`
+        `30-Day Free Trial activated for ${selectedPlanMeta.name}! Due today: ₱0.00. You can cancel anytime before trial ends.`
       );
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Could not activate free trial.');
@@ -295,11 +356,11 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
         credentials: 'include',
         headers: getHeaders(true),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Could not cancel subscription.');
       setSubscription(data.dtrSubscription || null);
-      if (data.ownDashboard && onOwnDashboardUpdated) {
-        onOwnDashboardUpdated(data.ownDashboard);
+      if (data.ownDashboard && onOwnDashboardUpdatedRef.current) {
+        onOwnDashboardUpdatedRef.current(data.ownDashboard);
       }
       setNotice('Employee DTR subscription cancelled. ₱0.00 will be billed.');
     } catch (err: unknown) {
@@ -336,16 +397,18 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
       updatedAt: new Date().toISOString(),
     };
     const nextList = [...employees, emp];
-    setEmployees(nextList);
-    setSelectedEmpId(emp.id);
-    setNewName('');
-    setNewPosition('');
-    await persistEmployees(nextList, `Added ${cleanName} (sorted alphabetically) and saved to cloud.`);
+    const ok = await persistEmployees(nextList, `Added ${cleanName} (sorted alphabetically) and saved to cloud.`);
+    if (ok) {
+      setSelectedEmpId(emp.id);
+      setNewName('');
+      setNewPosition('');
+    }
   };
 
   const handleHourCellChange = (day: string, catKey: string, rawVal: string) => {
     if (!activeEmployee) return;
     const parsed = rawVal === '' ? 0 : Math.max(0, Math.min(24, Number(rawVal) || 0));
+    setHasUnsavedChanges(true);
     setEmployees((prev) =>
       prev.map((emp) => {
         if (emp.id !== activeEmployee.id) return emp;
@@ -372,10 +435,44 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
     );
   };
 
+  const handleQuickFillRegularHours = () => {
+    if (!activeEmployee) return;
+    setHasUnsavedChanges(true);
+    setEmployees((prev) =>
+      prev.map((emp) => {
+        if (emp.id !== activeEmployee.id) return emp;
+        const currMonth = { ...(emp.months[selectedMonth] || {}) };
+        const [yrStr, moStr] = selectedMonth.split('-');
+        const yr = Number(yrStr);
+        const mo = Number(moStr);
+        const daysInMonth = Number.isFinite(yr) && Number.isFinite(mo) ? new Date(yr, mo, 0).getDate() : 30;
+        for (let d = 1; d <= daysInMonth; d++) {
+          const dow = new Date(yr, mo - 1, d).getDay();
+          if (dow === 0) continue; // Skip Sundays (Rest Day)
+          const key = String(d);
+          currMonth[key] = {
+            ...(currMonth[key] || {}),
+            RH: 8,
+          };
+        }
+        return {
+          ...emp,
+          months: {
+            ...emp.months,
+            [selectedMonth]: currMonth,
+          },
+          updatedAt: new Date().toISOString(),
+        };
+      })
+    );
+    setNotice(`Filled 8 hrs Regular Hours (Mon–Sat) for ${activeEmployee.completeName} in ${selectedMonth}. Click Save DTR to keep changes.`);
+  };
+
   const handleUpdateEmployeeRate = (rawRate: string) => {
     if (!activeEmployee) return;
     const n = Number(rawRate);
     if (!Number.isFinite(n) || n < 0) return;
+    setHasUnsavedChanges(true);
     setEmployees((prev) =>
       prev.map((emp) => (emp.id === activeEmployee.id ? { ...emp, dailyRate: n } : emp))
     );
@@ -412,29 +509,33 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
   };
 
   // Auto-calculate totals per category + Caraga wages for active employee & selected month
-  const payrollCalc = useMemo(() => {
-    const hourlyRate = (activeEmployee?.dailyRate || CARAGA_DEFAULT_DAILY_RATE) / 8;
-    const monthGrid = activeEmployee?.months?.[selectedMonth] || {};
-    const categoryHours: Record<string, number> = {};
-    const categoryPay: Record<string, number> = {};
-    let totalManhours = 0;
-    let grossWagePhp = 0;
+  const payrollCalc = useMemo(
+    () => computeEmployeeMonthPayroll(activeEmployee, selectedMonth),
+    [activeEmployee, selectedMonth]
+  );
 
-    for (const cat of DTR_CATEGORIES) {
-      let sumHrs = 0;
-      for (const day of DAYS_31) {
-        sumHrs += Number(monthGrid[day]?.[cat.key] || 0);
-      }
-      const roundedHrs = Math.round(sumHrs * 100) / 100;
-      const pay = Math.round(roundedHrs * hourlyRate * cat.multiplier * 100) / 100;
-      categoryHours[cat.key] = roundedHrs;
-      categoryPay[cat.key] = pay;
-      totalManhours = Math.round((totalManhours + roundedHrs) * 100) / 100;
-      grossWagePhp = Math.round((grossWagePhp + pay) * 100) / 100;
-    }
+  const allEmployeesSummary = useMemo(
+    () =>
+      sortedEmployees.map((emp) => {
+        const calc = computeEmployeeMonthPayroll(emp, selectedMonth);
+        return {
+          emp,
+          totalManhours: calc.totalManhours,
+          rhHours: calc.categoryHours.RH || 0,
+          otHours: calc.categoryHours.OT || 0,
+          grossWagePhp: calc.grossWagePhp,
+        };
+      }),
+    [sortedEmployees, selectedMonth]
+  );
 
-    return { hourlyRate, categoryHours, categoryPay, totalManhours, grossWagePhp };
-  }, [activeEmployee, selectedMonth]);
+  const totalCompanyPayrollPhp = useMemo(
+    () =>
+      Math.round(
+        allEmployeesSummary.reduce((sum, item) => sum + item.grossWagePhp, 0) * 100
+      ) / 100,
+    [allEmployeesSummary]
+  );
 
   if (loading) {
     return (
@@ -461,12 +562,23 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
             Alphabetical Employee Roster · Caraga Rate Auto-Compute · 30-Day Free Trial (₱0 Due Today)
           </p>
         </div>
-        {subscription && (subscription.status === 'trialing' || subscription.status === 'active') && (
-          <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {subscription && (subscription.status === 'trialing' || subscription.status === 'active') && (
             <div className="px-3 py-1.5 rounded-xl bg-white/10 text-xs font-mono">
               {currentPlanMeta.name} ({subscription.status === 'trialing' ? '30-Day Free Trial' : 'Active'}) ·{' '}
               {employees.length}/{currentPlanMeta.maxEmployees === Infinity ? '∞' : currentPlanMeta.maxEmployees}
             </div>
+          )}
+          {hasActiveAccess && (
+            <button
+              type="button"
+              onClick={() => setShowPlanModalView((v) => !v)}
+              className="px-3 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 text-white text-xs font-bold"
+            >
+              {showPlanModalView ? 'Back to DTR Sheet' : 'Plans & 30-Day Trial'}
+            </button>
+          )}
+          {subscription && (subscription.status === 'trialing' || subscription.status === 'active') && (
             <button
               type="button"
               disabled={cancellingSub}
@@ -475,8 +587,8 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
             >
               {cancellingSub ? 'Cancelling...' : 'Cancel Subscription Anytime'}
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {notice && (
@@ -497,7 +609,7 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
       )}
 
       {/* SUBSCRIPTION & 30-DAY FREE TRIAL GATE */}
-      {!hasActiveAccess && (
+      {(!hasActiveAccess || showPlanModalView) && (
         <div className="space-y-5">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {DTR_PLANS.map((plan) => {
@@ -535,7 +647,7 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-emerald-200 dark:border-emerald-800 pb-3">
               <div>
                 <h3 className="text-base font-extrabold text-emerald-950 dark:text-white">
-                  Start 30-Day Free Trial — {currentPlanMeta.name}
+                  Start 30-Day Free Trial — {selectedPlanMeta.name}
                 </h3>
                 <p className="text-xs text-emerald-700 dark:text-emerald-300 mt-0.5">
                   Fill up your Card or GCash payment method first. Due today is <strong>₱0.00</strong>.
@@ -611,7 +723,7 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
             <div className="rounded-xl bg-emerald-50 dark:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-800 p-3 text-xs text-emerald-800 dark:text-emerald-200 leading-relaxed">
               <ShieldCheck className="w-4 h-4 inline mr-1 text-emerald-600 dark:text-emerald-400" />
               <strong>Due today is ₱0.00.</strong> After your 30-day free trial ends, you will be billed{' '}
-              <strong>₱{currentPlanMeta.pricePhp.toLocaleString()}/month</strong> automatically unless you cancel.{' '}
+              <strong>₱{selectedPlanMeta.pricePhp.toLocaleString()}/month</strong> automatically unless you cancel.{' '}
               <strong>You can cancel anytime — no payment needed if you cancel before trial ends.</strong>
             </div>
 
@@ -628,7 +740,7 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
       )}
 
       {/* ACTIVE DTR WORKSPACE */}
-      {hasActiveAccess && (
+      {hasActiveAccess && !showPlanModalView && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
           {/* Left Panel: Add Employee + Alphabetical Roster */}
           <div className="lg:col-span-3 space-y-4">
@@ -800,6 +912,13 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
                       </div>
                       <button
                         type="button"
+                        onClick={handleQuickFillRegularHours}
+                        className="px-3 py-2 rounded-xl bg-emerald-100 dark:bg-emerald-900/70 hover:bg-emerald-200 dark:hover:bg-emerald-800 text-emerald-900 dark:text-emerald-100 text-xs font-bold"
+                      >
+                        Quick Fill 8h RH
+                      </button>
+                      <button
+                        type="button"
                         disabled={saving}
                         onClick={() =>
                           persistEmployees(
@@ -807,10 +926,14 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
                             `Saved ${activeEmployee.completeName}'s ${selectedMonth} DTR safely to cloud!`
                           )
                         }
-                        className="px-4 py-2 rounded-xl bg-[#0E4B1D] hover:bg-[#145e27] text-white text-xs font-extrabold flex items-center gap-1.5 shadow disabled:opacity-50"
+                        className={`px-4 py-2 rounded-xl text-white text-xs font-extrabold flex items-center gap-1.5 shadow disabled:opacity-50 ${
+                          hasUnsavedChanges
+                            ? 'bg-[#FF5A1F] hover:bg-[#e54f18]'
+                            : 'bg-[#0E4B1D] hover:bg-[#145e27]'
+                        }`}
                       >
                         {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-                        Save DTR
+                        {hasUnsavedChanges ? 'Save DTR *' : 'Save DTR'}
                       </button>
                       <button
                         type="button"
@@ -861,12 +984,12 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
 
                 {/* 31-Day All-In-One Month Spreadsheet Grid */}
                 <div className="rounded-2xl bg-white dark:bg-emerald-950/80 border border-emerald-200 dark:border-emerald-800 overflow-hidden">
-                  <div className="px-4 py-2.5 bg-emerald-50 dark:bg-emerald-900/50 border-b border-emerald-200 dark:border-emerald-800 flex items-center justify-between text-xs">
+                  <div className="px-4 py-2.5 bg-emerald-50 dark:bg-emerald-900/50 border-b border-emerald-200 dark:border-emerald-800 flex flex-wrap items-center justify-between gap-2 text-xs">
                     <span className="font-bold text-emerald-950 dark:text-white">
                       31-Day Manhour Matrix ({selectedMonth}) — Scroll horizontally for all 27 categories
                     </span>
                     <span className="text-[11px] text-emerald-700 dark:text-emerald-300">
-                      Click Save DTR after editing
+                      {hasUnsavedChanges ? 'Unsaved changes — click Save DTR' : 'All changes synced'}
                     </span>
                   </div>
 
@@ -876,6 +999,9 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
                         <tr>
                           <th className="sticky left-0 z-30 bg-emerald-950 px-3 py-2 text-left font-bold border-r border-emerald-800 whitespace-nowrap">
                             Day
+                          </th>
+                          <th className="px-2 py-2 text-center font-bold border-r border-emerald-800 whitespace-nowrap bg-emerald-950/90 text-amber-300">
+                            Day Hrs
                           </th>
                           {DTR_CATEGORIES.map((cat) => (
                             <th
@@ -894,6 +1020,7 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
                       <tbody className="divide-y divide-emerald-100 dark:divide-emerald-900">
                         {DAYS_31.map((day) => {
                           const dayRow = activeEmployee.months?.[selectedMonth]?.[day] || {};
+                          const dayTotal = payrollCalc.dayTotals[day] || 0;
                           return (
                             <tr
                               key={day}
@@ -901,6 +1028,9 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
                             >
                               <td className="sticky left-0 z-10 bg-emerald-50 dark:bg-emerald-950 px-3 py-1.5 font-mono font-bold text-emerald-950 dark:text-emerald-100 border-r border-emerald-200 dark:border-emerald-800 whitespace-nowrap">
                                 Day {day}
+                              </td>
+                              <td className="px-2 py-1.5 text-center font-mono font-bold text-emerald-800 dark:text-amber-300 bg-emerald-50/50 dark:bg-emerald-900/30 border-r border-emerald-200 dark:border-emerald-800 tabular-nums">
+                                {dayTotal > 0 ? dayTotal.toFixed(1) : '—'}
                               </td>
                               {DTR_CATEGORIES.map((cat) => {
                                 const val = dayRow[cat.key];
@@ -932,6 +1062,9 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
                           <td className="sticky left-0 z-30 bg-emerald-950 px-3 py-2 font-bold border-r border-emerald-800 whitespace-nowrap">
                             TOTAL HRS
                           </td>
+                          <td className="px-2 py-2 text-center font-bold text-amber-300 border-r border-emerald-800 tabular-nums">
+                            {payrollCalc.totalManhours.toFixed(1)}
+                          </td>
                           {DTR_CATEGORIES.map((cat) => (
                             <td
                               key={cat.key}
@@ -944,6 +1077,9 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
                         <tr className="bg-emerald-900">
                           <td className="sticky left-0 z-30 bg-emerald-900 px-3 py-2 font-bold border-r border-emerald-800 whitespace-nowrap">
                             TOTAL ₱
+                          </td>
+                          <td className="px-2 py-2 text-center font-bold text-amber-300 border-r border-emerald-800 tabular-nums whitespace-nowrap">
+                            {formatPhp(payrollCalc.grossWagePhp)}
                           </td>
                           {DTR_CATEGORIES.map((cat) => (
                             <td
@@ -984,6 +1120,56 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
                     ))}
                   </div>
                 </div>
+
+                {/* Alphabetical All-Employees Payroll Summary */}
+                {allEmployeesSummary.length > 0 && (
+                  <div className="rounded-2xl bg-white dark:bg-emerald-950/80 border border-emerald-200 dark:border-emerald-800 p-4 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-xs font-extrabold text-emerald-950 dark:text-white">
+                        Alphabetical Monthly Payroll Summary ({selectedMonth})
+                      </div>
+                      <div className="text-xs font-mono font-black text-emerald-900 dark:text-amber-300">
+                        Total Payroll: {formatPhp(totalCompanyPayrollPhp)}
+                      </div>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b border-emerald-200 dark:border-emerald-800 text-left text-[11px] text-emerald-700 dark:text-emerald-300">
+                            <th className="py-1.5 pr-3">Employee (A–Z)</th>
+                            <th className="py-1.5 px-2">Date Hired</th>
+                            <th className="py-1.5 px-2 text-right">Daily Rate</th>
+                            <th className="py-1.5 px-2 text-right">RH Hrs</th>
+                            <th className="py-1.5 px-2 text-right">OT Hrs</th>
+                            <th className="py-1.5 px-2 text-right">Total Hrs</th>
+                            <th className="py-1.5 pl-2 text-right">Gross Wage</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-emerald-100 dark:divide-emerald-900">
+                          {allEmployeesSummary.map((row) => (
+                            <tr
+                              key={row.emp.id}
+                              onClick={() => setSelectedEmpId(row.emp.id)}
+                              className={`cursor-pointer hover:bg-emerald-50 dark:hover:bg-emerald-900/40 ${
+                                activeEmployee?.id === row.emp.id ? 'bg-emerald-50/90 dark:bg-emerald-900/50 font-bold' : ''
+                              }`}
+                            >
+                              <td className="py-1.5 pr-3 text-emerald-950 dark:text-white">{row.emp.completeName}</td>
+                              <td className="py-1.5 px-2 font-mono text-emerald-700 dark:text-emerald-300">{row.emp.dateHired}</td>
+                              <td className="py-1.5 px-2 text-right font-mono">{formatPhp(row.emp.dailyRate)}</td>
+                              <td className="py-1.5 px-2 text-right font-mono">{row.rhHours.toFixed(1)}</td>
+                              <td className="py-1.5 px-2 text-right font-mono">{row.otHours.toFixed(1)}</td>
+                              <td className="py-1.5 px-2 text-right font-mono">{row.totalManhours.toFixed(1)}</td>
+                              <td className="py-1.5 pl-2 text-right font-mono font-bold text-[#FF5A1F] dark:text-amber-300">
+                                {formatPhp(row.grossWagePhp)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
               </>
             )}
           </div>
