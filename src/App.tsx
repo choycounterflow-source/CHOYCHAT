@@ -96,7 +96,10 @@ import {
   ChevronUp,
   ShoppingBag,
   Tag,
-  QrCode
+  QrCode,
+  Gamepad2,
+  Trophy,
+  Ticket
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -159,6 +162,9 @@ import {
 } from './components/ProfileKycPanel';
 import { PublicLandingPortal } from './components/PublicLandingPortal';
 import { AdminCommandDashboard } from './components/AdminCommandDashboard';
+import { GamesPanel } from './components/GamesPanel';
+import { NbaHubPanel } from './components/NbaHubPanel';
+import { SwertresLivePanel } from './components/SwertresLivePanel';
 import type { CustomerRegistrationPayload } from './components/CustomerRegistrationForm';
 import {
   type EmojiLinkItem,
@@ -616,6 +622,9 @@ export default function App() {
     | 'feed'
     | 'profile'
     | 'messages'
+    | 'games'
+    | 'nba_hub'
+    | 'swertres_live'
     | 'ledger'
     | 'analytics'
     | 'admin_dashboard'
@@ -1633,6 +1642,9 @@ export default function App() {
     | 'feed'
     | 'profile'
     | 'messages'
+    | 'games'
+    | 'nba_hub'
+    | 'swertres_live'
     | 'ledger'
     | 'analytics'
     | 'admin_dashboard'
@@ -7892,6 +7904,9 @@ export default function App() {
               { id: 'acknowledgment' as const, label: 'Acknowledgement', icon: FileCheck2 },
               { id: 'profile' as const, label: 'Profile & PIN', icon: User },
               { id: 'user_created_name' as const, label: 'Created Name', icon: BadgeCheck },
+              { id: 'games' as const, label: 'Games', icon: Gamepad2 },
+              { id: 'nba_hub' as const, label: 'NBA Live & Team Topup', icon: Trophy },
+              { id: 'swertres_live' as const, label: 'Swertres Live (1₱=400)', icon: Ticket },
               { id: 'rules' as const, label: 'Rules and regulations', icon: BookOpen },
             ].map((item) => {
               const Icon = item.icon;
@@ -9836,6 +9851,41 @@ export default function App() {
               onOpenAdminChoySetup={(subTab) => {
                 setAdminChoySetupTab(subTab);
                 setActiveTab('admin_choy_setup');
+              }}
+            />
+          )}
+
+          {activeTab === 'games' && (
+            <GamesPanel
+              theme={{
+                cardBg: resolvedTheme === 'dark' ? 'bg-slate-900' : 'bg-white',
+                cardBorder: resolvedTheme === 'dark' ? 'border-slate-800' : 'border-slate-200',
+                textMain: resolvedTheme === 'dark' ? 'text-slate-100' : 'text-slate-900',
+                textMuted: resolvedTheme === 'dark' ? 'text-slate-400' : 'text-slate-500',
+              }}
+            />
+          )}
+
+          {activeTab === 'nba_hub' && (
+            <NbaHubPanel
+              currentUser={currentUser}
+              theme={{
+                cardBg: resolvedTheme === 'dark' ? 'bg-slate-900' : 'bg-white',
+                cardBorder: resolvedTheme === 'dark' ? 'border-slate-800' : 'border-slate-200',
+                textMain: resolvedTheme === 'dark' ? 'text-slate-100' : 'text-slate-900',
+                textMuted: resolvedTheme === 'dark' ? 'text-slate-400' : 'text-slate-500',
+              }}
+            />
+          )}
+
+          {activeTab === 'swertres_live' && (
+            <SwertresLivePanel
+              currentUser={currentUser}
+              theme={{
+                cardBg: resolvedTheme === 'dark' ? 'bg-slate-900' : 'bg-white',
+                cardBorder: resolvedTheme === 'dark' ? 'border-slate-800' : 'border-slate-200',
+                textMain: resolvedTheme === 'dark' ? 'text-slate-100' : 'text-slate-900',
+                textMuted: resolvedTheme === 'dark' ? 'text-slate-400' : 'text-slate-500',
               }}
             />
           )}
@@ -14038,6 +14088,9 @@ export default function App() {
                   { id: 'acknowledgment' as const, label: 'Acknowledgement', icon: FileCheck2 },
                   { id: 'profile' as const, label: 'Profile & PIN', icon: User },
                   { id: 'user_created_name' as const, label: 'Created Name', icon: BadgeCheck },
+                  { id: 'games' as const, label: 'Games', icon: Gamepad2 },
+                  { id: 'nba_hub' as const, label: 'NBA Live & Team Topup', icon: Trophy },
+                  { id: 'swertres_live' as const, label: 'Swertres Live (1₱=400)', icon: Ticket },
                   { id: 'rules' as const, label: 'Rules and regulations', icon: BookOpen },
                 ].map((item) => {
                   const Icon = item.icon;
