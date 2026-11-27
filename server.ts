@@ -31,6 +31,7 @@ import {
   type NewsfeedChannel,
   type StoredAnnouncement,
   type StoredChatGroup,
+  type WalletTxItem,
 } from './src/server/choyStore.ts';
 import {
   getSupabaseStorageStatus,
@@ -1868,7 +1869,7 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
     const user = req.choyUser!;
     touchUserPresence(user.name);
     const isAdmin = user.role === 'admin';
-    const [posts, allMessages, allUsers, knowledge, leaderboard, emojiLinks, newsfeedConfig, allAnnouncements, rawChatGroups] = await Promise.all([
+    const [posts, allMessages, allUsers, knowledge, leaderboard, emojiLinks, newsfeedConfig, allAnnouncements, rawChatGroups, userDashboard, userDashboardMeta] = await Promise.all([
       store.listPosts(),
       store.listMessages(),
       store.listUsers(isAdmin),
@@ -1878,6 +1879,8 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
       store.getNewsfeedConfig(),
       store.listAnnouncements(),
       store.listChatGroupsForUser(user.id, isAdmin),
+      store.getUserDashboard(user.id),
+      store.listUserDashboardMeta(),
     ]);
     const activeEmojiLink = emojiLinks.find((l) => l.pinnedToAppIcon) || emojiLinks[0] || null;
 
@@ -1969,6 +1972,8 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
       newsfeedConfig,
       announcements: visibleAnnouncements,
       onlineUsers: getOnlineUserNames(),
+      userDashboard,
+      userDashboardMeta,
       ...(isAdmin ? { ledger, settings } : {}),
     });
   } catch (err: unknown) {
@@ -2456,6 +2461,321 @@ app.put('/api/choy/blocked-users', requireAuth, async (req: AuthedRequest, res: 
     return res.json({ blockedUsers: updated });
   } catch (err: unknown) {
     return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update blocked users' });
+  }
+});
+
+app.post('/api/choy/user-dashboard/action', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const action = typeof req.body?.action === 'string' ? req.body.action.trim() : '';
+    const dash = await store.getUserDashboard(user.id);
+    const now = new Date().toISOString();
+    const makeTxId = () => `tx_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+    const prependTx = (list: WalletTxItem[], item: WalletTxItem): WalletTxItem[] => [item, ...list].slice(0, 60);
+
+    if (action === 'toggle_public_name') {
+      dash.publicShowName = Boolean(req.body?.publicShowName);
+      const saved = await store.saveUserDashboard(dash);
+      broadcastSync('users');
+      return res.json({ ok: true, userDashboard: saved });
+    }
+
+    if (action === 'wallet_topup') {
+      const amount = Math.round(Number(req.body?.amount) * 100) / 100;
+      const note = typeof req.body?.note === 'string' ? req.body.note.trim().slice(0, 120) : '';
+      if (!Number.isFinite(amount) || amount <= 0 || amount > 100000) {
+        return res.status(400).json({ error: 'Enter a valid cash-in amount (₱1 – ₱100,000).' });
+      }
+      dash.walletBalance = Math.round((dash.walletBalance + amount) * 100) / 100;
+      dash.transactions = prependTx(dash.transactions, {
+        id: makeTxId(),
+        walletType: 'wallet',
+        kind: 'topup',
+        amount,
+        note: note || 'Wallet Cash-In Deposit',
+        createdAt: now,
+      });
+      const saved = await store.saveUserDashboard(dash);
+      return res.json({ ok: true, userDashboard: saved });
+    }
+
+    if (action === 'wallet_withdraw') {
+      const amount = Math.round(Number(req.body?.amount) * 100) / 100;
+      const note = typeof req.body?.note === 'string' ? req.body.note.trim().slice(0, 120) : '';
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return res.status(400).json({ error: 'Enter a valid cash-out amount.' });
+      }
+      if (dash.walletBalance < amount) {
+        return res.status(400).json({ error: 'Insufficient Wallet balance.' });
+      }
+      dash.walletBalance = Math.round((dash.walletBalance - amount) * 100) / 100;
+      dash.transactions = prependTx(dash.transactions, {
+        id: makeTxId(),
+        walletType: 'wallet',
+        kind: 'withdraw',
+        amount: -amount,
+        note: note || 'Wallet Cash-Out Request',
+        createdAt: now,
+      });
+      const saved = await store.saveUserDashboard(dash);
+      return res.json({ ok: true, userDashboard: saved });
+    }
+
+    if (action === 'wallet_transfer') {
+      const walletType: 'wallet' | 'choy_wallet' =
+        req.body?.walletType === 'choy_wallet' ? 'choy_wallet' : 'wallet';
+      const recipientId = typeof req.body?.recipientId === 'string' ? req.body.recipientId.trim() : '';
+      const amount = Math.round(Number(req.body?.amount) * 100) / 100;
+      const note = typeof req.body?.note === 'string' ? req.body.note.trim().slice(0, 120) : '';
+      if (!recipientId || recipientId === user.id) {
+        return res.status(400).json({ error: 'Select a valid member to transfer to.' });
+      }
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return res.status(400).json({ error: 'Enter a valid transfer amount.' });
+      }
+      const allUsers = await store.listUsers(true);
+      const recipient = allUsers.find((u) => u.id === recipientId);
+      if (!recipient) {
+        return res.status(404).json({ error: 'Recipient user not found.' });
+      }
+      if (walletType === 'wallet') {
+        if (dash.walletBalance < amount) {
+          return res.status(400).json({ error: 'Insufficient Wallet balance.' });
+        }
+        dash.walletBalance = Math.round((dash.walletBalance - amount) * 100) / 100;
+      } else {
+        if (dash.choyWalletBalance < amount) {
+          return res.status(400).json({ error: 'Insufficient Choy Wallet balance.' });
+        }
+        dash.choyWalletBalance = Math.round((dash.choyWalletBalance - amount) * 100) / 100;
+      }
+      dash.transactions = prependTx(dash.transactions, {
+        id: makeTxId(),
+        walletType,
+        kind: 'transfer_out',
+        amount: -amount,
+        note: note || `Sent to ${recipient.name}`,
+        counterparty: recipient.name,
+        createdAt: now,
+      });
+      const saved = await store.saveUserDashboard(dash);
+
+      const recipientDash = await store.getUserDashboard(recipient.id);
+      if (walletType === 'wallet') {
+        recipientDash.walletBalance = Math.round((recipientDash.walletBalance + amount) * 100) / 100;
+      } else {
+        recipientDash.choyWalletBalance = Math.round((recipientDash.choyWalletBalance + amount) * 100) / 100;
+      }
+      recipientDash.transactions = prependTx(recipientDash.transactions, {
+        id: makeTxId(),
+        walletType,
+        kind: 'transfer_in',
+        amount,
+        note: note || `Received from ${user.name}`,
+        counterparty: user.name,
+        createdAt: now,
+      });
+      await store.saveUserDashboard(recipientDash);
+      return res.json({ ok: true, userDashboard: saved });
+    }
+
+    if (action === 'choy_wallet_claim_daily') {
+      if (dash.lastDailyClaimAt) {
+        const lastMs = new Date(dash.lastDailyClaimAt).getTime();
+        if (Number.isFinite(lastMs) && Date.now() - lastMs < 20 * 60 * 60 * 1000) {
+          return res.status(400).json({ error: 'Daily Choy Coins reward already claimed today. Come back tomorrow!' });
+        }
+      }
+      const reward = dash.choyProActive ? 50 : 25;
+      dash.choyWalletBalance = Math.round((dash.choyWalletBalance + reward) * 100) / 100;
+      dash.lastDailyClaimAt = now;
+      dash.transactions = prependTx(dash.transactions, {
+        id: makeTxId(),
+        walletType: 'choy_wallet',
+        kind: 'reward',
+        amount: reward,
+        note: dash.choyProActive ? 'Daily Choy Pro Reward (+50 CHOY)' : 'Daily Check-In Reward (+25 CHOY)',
+        createdAt: now,
+      });
+      const saved = await store.saveUserDashboard(dash);
+      return res.json({ ok: true, userDashboard: saved });
+    }
+
+    if (action === 'choy_wallet_convert') {
+      const phpAmount = Math.round(Number(req.body?.amount) * 100) / 100;
+      if (!Number.isFinite(phpAmount) || phpAmount <= 0) {
+        return res.status(400).json({ error: 'Enter a valid Wallet amount to convert.' });
+      }
+      if (dash.walletBalance < phpAmount) {
+        return res.status(400).json({ error: 'Insufficient Cash Wallet balance.' });
+      }
+      const choyCoins = Math.round(phpAmount * 2 * 100) / 100;
+      dash.walletBalance = Math.round((dash.walletBalance - phpAmount) * 100) / 100;
+      dash.choyWalletBalance = Math.round((dash.choyWalletBalance + choyCoins) * 100) / 100;
+      dash.transactions = [
+        {
+          id: makeTxId(),
+          walletType: 'choy_wallet' as const,
+          kind: 'convert' as const,
+          amount: choyCoins,
+          note: `Converted ₱${phpAmount.toFixed(2)} → +${choyCoins} CHOY`,
+          createdAt: now,
+        },
+        {
+          id: makeTxId(),
+          walletType: 'wallet' as const,
+          kind: 'convert' as const,
+          amount: -phpAmount,
+          note: `Converted to ${choyCoins} CHOY`,
+          createdAt: now,
+        },
+        ...dash.transactions,
+      ].slice(0, 60);
+      const saved = await store.saveUserDashboard(dash);
+      return res.json({ ok: true, userDashboard: saved });
+    }
+
+    if (action === 'activate_choy_pro') {
+      const paymentMethod: 'wallet' | 'choy_wallet' =
+        req.body?.paymentMethod === 'choy_wallet' ? 'choy_wallet' : 'wallet';
+      if (dash.choyProActive) {
+        return res.json({ ok: true, userDashboard: dash });
+      }
+      if (paymentMethod === 'wallet') {
+        const fee = 199;
+        if (dash.walletBalance < fee) {
+          return res.status(400).json({ error: 'Need ₱199 in Cash Wallet (or pay with 250 CHOY).' });
+        }
+        dash.walletBalance = Math.round((dash.walletBalance - fee) * 100) / 100;
+        dash.transactions = prependTx(dash.transactions, {
+          id: makeTxId(),
+          walletType: 'wallet',
+          kind: 'choy_pro',
+          amount: -fee,
+          note: 'Activated Choy Pro Membership',
+          createdAt: now,
+        });
+      } else {
+        const fee = 250;
+        if (dash.choyWalletBalance < fee) {
+          return res.status(400).json({ error: 'Need 250 CHOY in Choy Wallet (or pay ₱199 via Wallet).' });
+        }
+        dash.choyWalletBalance = Math.round((dash.choyWalletBalance - fee) * 100) / 100;
+        dash.transactions = prependTx(dash.transactions, {
+          id: makeTxId(),
+          walletType: 'choy_wallet',
+          kind: 'choy_pro',
+          amount: -fee,
+          note: 'Activated Choy Pro with CHOY Coins',
+          createdAt: now,
+        });
+      }
+      dash.choyProActive = true;
+      dash.choyProActivatedAt = now;
+      if (dash.subscriptionPlan === 'free') {
+        dash.subscriptionPlan = 'choy_pro_monthly';
+        dash.subscriptionStatus = 'active';
+        dash.subscriptionRenewAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      }
+      const saved = await store.saveUserDashboard(dash);
+      broadcastSync('users');
+      return res.json({ ok: true, userDashboard: saved });
+    }
+
+    if (action === 'update_subscription') {
+      const subAction = req.body?.subAction;
+      if (subAction === 'toggle_renew') {
+        dash.subscriptionAutoRenew = !dash.subscriptionAutoRenew;
+        const saved = await store.saveUserDashboard(dash);
+        return res.json({ ok: true, userDashboard: saved });
+      }
+      if (subAction === 'cancel') {
+        dash.subscriptionStatus = 'cancelled';
+        dash.subscriptionAutoRenew = false;
+        const saved = await store.saveUserDashboard(dash);
+        return res.json({ ok: true, userDashboard: saved });
+      }
+      type SubPlan = 'free' | 'choy_pro_monthly' | 'choy_pro_annual' | 'vip_supporter';
+      const rawPlan = req.body?.plan;
+      const plan: SubPlan =
+        rawPlan === 'choy_pro_monthly' ||
+        rawPlan === 'choy_pro_annual' ||
+        rawPlan === 'vip_supporter'
+          ? rawPlan
+          : 'free';
+      const paymentMethod: 'wallet' | 'choy_wallet' =
+        req.body?.paymentMethod === 'choy_wallet' ? 'choy_wallet' : 'wallet';
+      const planTable: Record<SubPlan, { php: number; choy: number; days: number; label: string }> = {
+        free: { php: 0, choy: 0, days: 0, label: 'Free Starter Plan' },
+        choy_pro_monthly: { php: 199, choy: 250, days: 30, label: 'Choy Pro Monthly' },
+        choy_pro_annual: { php: 1499, choy: 1800, days: 365, label: 'Choy Pro Annual' },
+        vip_supporter: { php: 499, choy: 600, days: 30, label: 'VIP Supporter Pass' },
+      };
+      const planMeta = planTable[plan];
+
+      if (plan !== 'free') {
+        if (paymentMethod === 'wallet') {
+          if (dash.walletBalance < planMeta.php) {
+            return res.status(400).json({ error: `Need ₱${planMeta.php} in Cash Wallet for ${planMeta.label}.` });
+          }
+          dash.walletBalance = Math.round((dash.walletBalance - planMeta.php) * 100) / 100;
+          dash.transactions = prependTx(dash.transactions, {
+            id: makeTxId(),
+            walletType: 'wallet',
+            kind: 'subscription',
+            amount: -planMeta.php,
+            note: `Subscribed: ${planMeta.label}`,
+            createdAt: now,
+          });
+        } else {
+          if (dash.choyWalletBalance < planMeta.choy) {
+            return res.status(400).json({ error: `Need ${planMeta.choy} CHOY in Choy Wallet for ${planMeta.label}.` });
+          }
+          dash.choyWalletBalance = Math.round((dash.choyWalletBalance - planMeta.choy) * 100) / 100;
+          dash.transactions = prependTx(dash.transactions, {
+            id: makeTxId(),
+            walletType: 'choy_wallet',
+            kind: 'subscription',
+            amount: -planMeta.choy,
+            note: `Subscribed: ${planMeta.label}`,
+            createdAt: now,
+          });
+        }
+        dash.choyProActive = true;
+        if (!dash.choyProActivatedAt) dash.choyProActivatedAt = now;
+        dash.subscriptionRenewAt = new Date(Date.now() + planMeta.days * 24 * 60 * 60 * 1000).toISOString();
+      } else {
+        dash.subscriptionRenewAt = undefined;
+      }
+
+      dash.subscriptionPlan = plan;
+      dash.subscriptionStatus = 'active';
+      dash.subscriptionAutoRenew = plan !== 'free';
+      const saved = await store.saveUserDashboard(dash);
+      broadcastSync('users');
+      return res.json({ ok: true, userDashboard: saved });
+    }
+
+    if (action === 'accept_rules') {
+      dash.rulesAcceptedAt = now;
+      const saved = await store.saveUserDashboard(dash);
+      return res.json({ ok: true, userDashboard: saved });
+    }
+
+    if (action === 'sign_acknowledgment') {
+      const signedName =
+        typeof req.body?.signedName === 'string' && req.body.signedName.trim()
+          ? req.body.signedName.trim().slice(0, 80)
+          : user.name;
+      dash.acknowledgmentSignedName = signedName;
+      dash.acknowledgmentSignedAt = now;
+      const saved = await store.saveUserDashboard(dash);
+      return res.json({ ok: true, userDashboard: saved });
+    }
+
+    return res.status(400).json({ error: 'Unknown dashboard action.' });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update user dashboard' });
   }
 });
 
@@ -3775,11 +4095,23 @@ app.post('/api/github/intelligence', requireAuth, async (req: AuthedRequest, res
     const defaultBranch = typeof repoJson.default_branch === 'string' ? repoJson.default_branch : 'main';
     const targetBranch = requestedBranch || parsedRepo.branchFromUrl || defaultBranch;
 
-    const [branchesRes, langsRes, treeRes, commitsRes, readmeRes, repoContributorsRes] = await Promise.all([
+    const nowUtc = new Date();
+    const todayMidnightUtcMs = Date.UTC(nowUtc.getUTCFullYear(), nowUtc.getUTCMonth(), nowUtc.getUTCDate());
+    const current30dStartMs = todayMidnightUtcMs - 29 * 86_400_000;
+    const prev30dStartMs = todayMidnightUtcMs - 59 * 86_400_000;
+    const prevSinceIso = new Date(prev30dStartMs).toISOString();
+    const prevUntilIso = new Date(current30dStartMs - 1).toISOString();
+
+    const commitFetchCount = Math.max(commitLimit, 100);
+    const [branchesRes, langsRes, treeRes, commitsRes, commitsPrevRes, readmeRes, repoContributorsRes] = await Promise.all([
       fetch(`${baseApi}/branches?per_page=25`, { headers: ghHeaders }),
       fetch(`${baseApi}/languages`, { headers: ghHeaders }),
       fetch(`${baseApi}/git/trees/${encodeURIComponent(targetBranch)}?recursive=1`, { headers: ghHeaders }),
-      fetch(`${baseApi}/commits?sha=${encodeURIComponent(targetBranch)}&per_page=${commitLimit}`, { headers: ghHeaders }),
+      fetch(`${baseApi}/commits?sha=${encodeURIComponent(targetBranch)}&per_page=${commitFetchCount}`, { headers: ghHeaders }),
+      fetch(
+        `${baseApi}/commits?sha=${encodeURIComponent(targetBranch)}&since=${encodeURIComponent(prevSinceIso)}&until=${encodeURIComponent(prevUntilIso)}&per_page=100`,
+        { headers: ghHeaders }
+      ),
       fetch(`${baseApi}/readme?ref=${encodeURIComponent(targetBranch)}`, { headers: ghHeaders }),
       fetch(`${baseApi}/contributors?per_page=15`, { headers: ghHeaders }),
     ]);
@@ -3788,6 +4120,7 @@ app.post('/api/github/intelligence', requireAuth, async (req: AuthedRequest, res
     const langsRaw: any = langsRes.ok ? await langsRes.json().catch(() => ({})) : {};
     const treeRaw: any = treeRes.ok ? await treeRes.json().catch(() => ({ tree: [] })) : { tree: [] };
     const commitsRaw: any = commitsRes.ok ? await commitsRes.json().catch(() => []) : [];
+    const commitsPrevRaw: any = commitsPrevRes.ok ? await commitsPrevRes.json().catch(() => []) : [];
     const readmeRaw: any = readmeRes.ok ? await readmeRes.json().catch(() => null) : null;
     const repoContributorsRaw: any = repoContributorsRes.ok ? await repoContributorsRes.json().catch(() => []) : [];
 
@@ -3987,6 +4320,63 @@ app.post('/api/github/intelligence', requireAuth, async (req: AuthedRequest, res
         };
       });
 
+    // Build continuous 30-day daily commit frequency series & compare against previous 30-day window
+    const seenShaDates = new Map<string, number>();
+    const collectCommitWindow = (list: any[]) => {
+      list.forEach((rawCommit, idx) => {
+        const rawDate = typeof rawCommit?.commit?.author?.date === 'string' ? rawCommit.commit.author.date : null;
+        if (!rawDate) return;
+        const ms = Date.parse(rawDate);
+        if (Number.isNaN(ms)) return;
+        const sha = typeof rawCommit?.sha === 'string' && rawCommit.sha ? rawCommit.sha : `anon_${rawDate}_${idx}`;
+        if (!seenShaDates.has(sha)) {
+          seenShaDates.set(sha, ms);
+        }
+      });
+    };
+    collectCommitWindow(Array.isArray(commitsRaw) ? commitsRaw : []);
+    collectCommitWindow(Array.isArray(commitsPrevRaw) ? commitsPrevRaw : []);
+
+    const countsByDay30d = new Map<string, number>();
+    let current30dCommits = 0;
+    let previous30dCommits = 0;
+    for (const ms of seenShaDates.values()) {
+      if (ms >= current30dStartMs) {
+        current30dCommits += 1;
+        const dayKey = new Date(ms).toISOString().slice(0, 10);
+        countsByDay30d.set(dayKey, (countsByDay30d.get(dayKey) || 0) + 1);
+      } else if (ms >= prev30dStartMs && ms < current30dStartMs) {
+        previous30dCommits += 1;
+      }
+    }
+
+    const commitActivity30d: Array<{ date: string; label: string; commits: number }> = [];
+    for (let offset = 29; offset >= 0; offset -= 1) {
+      const dayDate = new Date(todayMidnightUtcMs - offset * 86_400_000);
+      const dayKey = dayDate.toISOString().slice(0, 10);
+      const label = dayDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+      commitActivity30d.push({
+        date: dayKey,
+        label,
+        commits: countsByDay30d.get(dayKey) || 0,
+      });
+    }
+
+    const deltaCommits = current30dCommits - previous30dCommits;
+    const percentChange =
+      previous30dCommits > 0
+        ? Math.round((deltaCommits / previous30dCommits) * 100)
+        : current30dCommits > 0
+          ? 100
+          : 0;
+    const commitTrend30d = {
+      currentCommits: current30dCommits,
+      previousCommits: previous30dCommits,
+      deltaCommits,
+      percentChange,
+      direction: deltaCommits > 0 ? ('up' as const) : deltaCommits < 0 ? ('down' as const) : ('flat' as const),
+    };
+
     const repoContributors = (Array.isArray(repoContributorsRaw) ? repoContributorsRaw : [])
       .filter((c: any) => c && typeof c?.login === 'string' && typeof c?.contributions === 'number')
       .slice(0, 12)
@@ -4032,6 +4422,8 @@ app.post('/api/github/intelligence', requireAuth, async (req: AuthedRequest, res
       },
       commits,
       commitHistory,
+      commitActivity30d,
+      commitTrend30d,
       contributors,
       repoContributors,
       readme,
@@ -4919,4 +5311,256 @@ app.post('/api/github/export-issue', requireAuth, async (req: AuthedRequest, res
   }
 });
 
+// Marketplace Endpoints (Food, Groceries, Medicines, Appliances)
+app.get('/api/marketplace/items', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const items = await store.listMarketplaceItems();
+    return res.json({ ok: true, items });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load marketplace items' });
+  }
+});
+
+app.get('/api/marketplace/orders', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const orders = await store.listMarketplaceOrders();
+    const user = req.choyUser!;
+    const filtered = user.role === 'admin' ? orders : orders.filter(o => o.userId === user.id);
+    return res.json({ ok: true, orders: filtered });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load orders' });
+  }
+});
+
+app.post('/api/marketplace/checkout', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const now = new Date().toISOString();
+    const paymentMethod = req.body?.paymentMethod === 'choy_wallet' ? 'choy_wallet' : 'wallet';
+    const cartItems = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (cartItems.length === 0) {
+      return res.status(400).json({ error: 'Shopping cart is empty.' });
+    }
+
+    const marketItems = await store.listMarketplaceItems();
+    let totalCost = 0;
+    const orderItems: Array<{ itemId: string; title: string; category: any; price: number; quantity: number; imageUrl?: string }> = [];
+
+    for (const ci of cartItems) {
+      const itemId = String(ci.itemId || ci.id || '');
+      const qty = Math.max(1, Number(ci.quantity) || 1);
+      const mItem = marketItems.find(i => i.id === itemId);
+      if (!mItem) {
+        return res.status(400).json({ error: 'Item not found or unavailable.' });
+      }
+      if (mItem.stock < qty) {
+        return res.status(400).json({ error: `Insufficient stock for ${mItem.title} (Available: ${mItem.stock}).` });
+      }
+      const lineCost = Math.round(mItem.price * qty * 100) / 100;
+      totalCost += lineCost;
+      orderItems.push({
+        itemId: mItem.id,
+        title: mItem.title,
+        category: mItem.category,
+        price: mItem.price,
+        quantity: qty,
+        imageUrl: mItem.imageUrl,
+      });
+
+      mItem.stock = Math.max(0, mItem.stock - qty);
+      await store.saveMarketplaceItem(mItem);
+    }
+
+    totalCost = Math.round(totalCost * 100) / 100;
+    const dash = await store.getUserDashboard(user.id);
+    const makeTxId = () => `tx_order_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const prependTx = (list: WalletTxItem[], item: WalletTxItem): WalletTxItem[] => [item, ...list].slice(0, 60);
+
+    if (paymentMethod === 'wallet') {
+      if (dash.walletBalance < totalCost) {
+        return res.status(400).json({ error: `Insufficient Cash Wallet balance (Need ₱${totalCost.toFixed(2)}).` });
+      }
+      dash.walletBalance = Math.round((dash.walletBalance - totalCost) * 100) / 100;
+      dash.transactions = prependTx(dash.transactions, {
+        id: makeTxId(),
+        walletType: 'wallet',
+        kind: 'topup',
+        amount: -totalCost,
+        note: `Checkout ${orderItems.length} marketplace item(s) (₱${totalCost.toFixed(2)})`,
+        createdAt: now,
+      });
+    } else {
+      if (dash.choyWalletBalance < totalCost) {
+        return res.status(400).json({ error: `Insufficient Choy Wallet balance (Need ${totalCost} CHOY).` });
+      }
+      dash.choyWalletBalance = Math.round((dash.choyWalletBalance - totalCost) * 100) / 100;
+      dash.transactions = prependTx(dash.transactions, {
+        id: makeTxId(),
+        walletType: 'choy_wallet',
+        kind: 'reward',
+        amount: -totalCost,
+        note: `Checkout ${orderItems.length} marketplace item(s) with CHOY Coins (${totalCost})`,
+        createdAt: now,
+      });
+    }
+
+    const savedDash = await store.saveUserDashboard(dash);
+    const orderId = `ord_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const newOrder = {
+      id: orderId,
+      userId: user.id,
+      userName: user.name,
+      items: orderItems,
+      totalAmount: totalCost,
+      paymentMethod: paymentMethod as 'wallet' | 'choy_wallet',
+      status: 'completed' as const,
+      createdAt: now,
+    };
+
+    await store.saveMarketplaceOrder(newOrder);
+    broadcastSync('marketplace');
+
+    return res.json({ ok: true, order: newOrder, userDashboard: savedDash });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Checkout failed.' });
+  }
+});
+
+app.post('/api/marketplace/items', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const now = new Date().toISOString();
+    const action = typeof req.body?.action === 'string' ? req.body.action.trim() : 'save';
+
+    if (action === 'delete') {
+      if (user.role !== 'admin') {
+        return res.status(403).json({ error: 'Only admins can delete marketplace items.' });
+      }
+      const itemId = typeof req.body?.id === 'string' ? req.body.id.trim() : '';
+      if (!itemId) {
+        return res.status(400).json({ error: 'Invalid item ID.' });
+      }
+      const items = await store.deleteMarketplaceItem(itemId);
+      broadcastSync('marketplace');
+      return res.json({ ok: true, items });
+    }
+
+    if (action === 'buy') {
+      const itemId = typeof req.body?.itemId === 'string' ? req.body.itemId.trim() : '';
+      const paymentMethod = req.body?.paymentMethod === 'choy_wallet' ? 'choy_wallet' : 'wallet';
+      const quantity = Math.max(1, Number(req.body?.quantity) || 1);
+      const items = await store.listMarketplaceItems();
+      const targetItem = items.find((i) => i.id === itemId);
+      if (!targetItem) {
+        return res.status(404).json({ error: 'Marketplace item not found.' });
+      }
+      if (targetItem.stock < quantity) {
+        return res.status(400).json({ error: `Insufficient stock (Available: ${targetItem.stock}).` });
+      }
+
+      const totalCost = Math.round(targetItem.price * quantity * 100) / 100;
+      const dash = await store.getUserDashboard(user.id);
+
+      const makeTxId = () => `tx_buy_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+      const prependTx = (list: WalletTxItem[], item: WalletTxItem): WalletTxItem[] => [item, ...list].slice(0, 60);
+
+      if (paymentMethod === 'wallet') {
+        if (dash.walletBalance < totalCost) {
+          return res.status(400).json({ error: `Insufficient Cash Wallet balance (Need ₱${totalCost.toFixed(2)}).` });
+        }
+        dash.walletBalance = Math.round((dash.walletBalance - totalCost) * 100) / 100;
+        dash.transactions = prependTx(dash.transactions, {
+          id: makeTxId(),
+          walletType: 'wallet',
+          kind: 'topup',
+          amount: -totalCost,
+          note: `Purchased ${quantity}x ${targetItem.title} (${targetItem.category})`,
+          createdAt: now,
+        });
+      } else {
+        if (dash.choyWalletBalance < totalCost) {
+          return res.status(400).json({ error: `Insufficient Choy Wallet balance (Need ${totalCost} CHOY).` });
+        }
+        dash.choyWalletBalance = Math.round((dash.choyWalletBalance - totalCost) * 100) / 100;
+        dash.transactions = prependTx(dash.transactions, {
+          id: makeTxId(),
+          walletType: 'choy_wallet',
+          kind: 'reward',
+          amount: -totalCost,
+          note: `Purchased ${quantity}x ${targetItem.title} with CHOY Coins`,
+          createdAt: now,
+        });
+      }
+
+      targetItem.stock = Math.max(0, targetItem.stock - quantity);
+      await store.saveMarketplaceItem(targetItem);
+
+      const orderId = `ord_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+      await store.saveMarketplaceOrder({
+        id: orderId,
+        userId: user.id,
+        userName: user.name,
+        items: [{
+          itemId: targetItem.id,
+          title: targetItem.title,
+          category: targetItem.category,
+          price: targetItem.price,
+          quantity,
+          imageUrl: targetItem.imageUrl,
+        }],
+        totalAmount: totalCost,
+        paymentMethod: paymentMethod as 'wallet' | 'choy_wallet',
+        status: 'completed',
+        createdAt: now,
+      });
+
+      const savedDash = await store.saveUserDashboard(dash);
+      broadcastSync('marketplace');
+      return res.json({ ok: true, userDashboard: savedDash });
+    }
+
+    if (user.role !== 'admin') {
+      return res.status(403).json({ error: 'Only admins can add or edit marketplace items (Admin Setup).' });
+    }
+
+    const rawId = typeof req.body?.id === 'string' ? req.body.id.trim() : '';
+    const category = ['food', 'groceries', 'medicines', 'appliances'].includes(req.body?.category) ? req.body.category : 'food';
+    const title = typeof req.body?.title === 'string' ? req.body.title.trim().slice(0, 120) : '';
+    const description = typeof req.body?.description === 'string' ? req.body.description.trim().slice(0, 500) : '';
+    const price = Math.max(0, Number(req.body?.price) || 0);
+    const imageUrl = typeof req.body?.imageUrl === 'string' ? req.body.imageUrl.trim().slice(0, 1000) : undefined;
+    const stock = Math.max(0, Number(req.body?.stock) || 100);
+    const sellerName = typeof req.body?.sellerName === 'string' ? req.body.sellerName.trim().slice(0, 80) : 'Choy Store';
+
+    if (!title) {
+      return res.status(400).json({ error: 'Item title is required.' });
+    }
+
+    const itemId = rawId || `item_${category}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const existingItems = await store.listMarketplaceItems();
+    const existing = existingItems.find((i) => i.id === itemId);
+
+    const updatedItem = {
+      id: itemId,
+      category,
+      title,
+      description,
+      price,
+      imageUrl: imageUrl || existing?.imageUrl || undefined,
+      stock,
+      sellerName,
+      createdBy: existing?.createdBy || user.name,
+      createdAt: existing?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const updatedList = await store.saveMarketplaceItem(updatedItem);
+    broadcastSync('marketplace');
+    return res.json({ ok: true, items: updatedList });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save marketplace item' });
+  }
+});
+
 startServer();
+

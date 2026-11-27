@@ -229,6 +229,177 @@ export interface StoredNewsfeedConfig {
   feedCTitle: string;
 }
 
+export interface WalletTxItem {
+  id: string;
+  walletType: 'wallet' | 'choy_wallet';
+  kind: 'topup' | 'withdraw' | 'transfer_out' | 'transfer_in' | 'reward' | 'convert' | 'subscription' | 'choy_pro';
+  amount: number;
+  note: string;
+  counterparty?: string;
+  createdAt: string;
+}
+
+export interface StoredUserDashboard {
+  userId: string;
+  publicShowName: boolean;
+  walletBalance: number;
+  choyWalletBalance: number;
+  choyProActive: boolean;
+  choyProActivatedAt?: string;
+  subscriptionPlan: 'free' | 'choy_pro_monthly' | 'choy_pro_annual' | 'vip_supporter';
+  subscriptionStatus: 'active' | 'inactive' | 'cancelled';
+  subscriptionAutoRenew: boolean;
+  subscriptionRenewAt?: string;
+  lastDailyClaimAt?: string;
+  rulesAcceptedAt?: string;
+  acknowledgmentSignedName?: string;
+  acknowledgmentSignedAt?: string;
+  transactions: WalletTxItem[];
+  updatedAt: string;
+}
+
+export interface StoredMarketplaceItem {
+  id: string;
+  category: 'food' | 'groceries' | 'medicines' | 'appliances';
+  title: string;
+  description: string;
+  price: number;
+  imageUrl?: string;
+  stock: number;
+  sellerName: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StoredMarketplaceOrderItem {
+  itemId: string;
+  title: string;
+  category: 'food' | 'groceries' | 'medicines' | 'appliances';
+  price: number;
+  quantity: number;
+  imageUrl?: string;
+}
+
+export interface StoredMarketplaceOrder {
+  id: string;
+  userId: string;
+  userName: string;
+  items: StoredMarketplaceOrderItem[];
+  totalAmount: number;
+  paymentMethod: 'wallet' | 'choy_wallet';
+  status: 'completed' | 'pending' | 'cancelled';
+  createdAt: string;
+}
+
+export const DEFAULT_MARKETPLACE_ITEMS: StoredMarketplaceItem[] = [
+  {
+    id: 'item_food_1',
+    category: 'food',
+    title: 'Choy Special Grilled Chicken',
+    description: 'Juicy charcoal-grilled chicken with special Java rice & vinegar dip.',
+    price: 250,
+    imageUrl: 'https://images.unsplash.com/photo-1555939594-58d7cb561ad1?w=600&auto=format&fit=crop&q=80',
+    stock: 50,
+    sellerName: 'Choy Kitchen',
+    createdBy: 'Admin',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'item_food_2',
+    category: 'food',
+    title: 'Crispy Pata Delight',
+    description: 'Deep-fried pork trotters served with soy-vinegar chili sauce.',
+    price: 480,
+    imageUrl: 'https://images.unsplash.com/photo-1544025162-d76694265947?w=600&auto=format&fit=crop&q=80',
+    stock: 30,
+    sellerName: 'Choy Kitchen',
+    createdBy: 'Admin',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'item_groc_1',
+    category: 'groceries',
+    title: 'Jasmine Premium Rice 5kg',
+    description: 'Aromatic, soft-textured premium white rice for daily family meals.',
+    price: 295,
+    imageUrl: 'https://images.unsplash.com/photo-1586201375761-83865001e31c?w=600&auto=format&fit=crop&q=80',
+    stock: 120,
+    sellerName: 'Choy Grocer',
+    createdBy: 'Admin',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'item_groc_2',
+    category: 'groceries',
+    title: 'Fresh Farm Eggs 12pcs',
+    description: 'Grade-A fresh chicken eggs sourced directly from local organic farms.',
+    price: 130,
+    imageUrl: 'https://images.unsplash.com/photo-1516448699432-843c0800d17d?w=600&auto=format&fit=crop&q=80',
+    stock: 80,
+    sellerName: 'Choy Grocer',
+    createdBy: 'Admin',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'item_med_1',
+    category: 'medicines',
+    title: 'Paracetamol 500mg (10 Tablets)',
+    description: 'Fast relief for fever, headaches, body aches, and flu symptoms.',
+    price: 45,
+    imageUrl: 'https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?w=600&auto=format&fit=crop&q=80',
+    stock: 200,
+    sellerName: 'Choy Pharmacy',
+    createdBy: 'Admin',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'item_med_2',
+    category: 'medicines',
+    title: 'Vitamin C with Rosehips 500mg',
+    description: 'Immune system booster and antioxidant daily supplement.',
+    price: 220,
+    imageUrl: 'https://images.unsplash.com/photo-1471864190281-a93a3070b6de?w=600&auto=format&fit=crop&q=80',
+    stock: 150,
+    sellerName: 'Choy Pharmacy',
+    createdBy: 'Admin',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'item_app_1',
+    category: 'appliances',
+    title: 'Smart 16-inch Electric Fan',
+    description: 'Energy-saving 3-speed oscillating stand fan with silent copper motor.',
+    price: 1299,
+    imageUrl: 'https://images.unsplash.com/photo-1621905251189-08b45d6a269e?w=600&auto=format&fit=crop&q=80',
+    stock: 25,
+    sellerName: 'Choy Appliances',
+    createdBy: 'Admin',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'item_app_2',
+    category: 'appliances',
+    title: 'Mini Automatic Rice Cooker 1.2L',
+    description: 'Compact non-stick rice cooker with keep-warm mode, ideal for small households.',
+    price: 899,
+    imageUrl: 'https://images.unsplash.com/photo-1585515320310-259814833e62?w=600&auto=format&fit=crop&q=80',
+    stock: 40,
+    sellerName: 'Choy Appliances',
+    createdBy: 'Admin',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+];
+
+
 export interface SessionPayload {
   uid: string;
   role: 'admin' | 'member';
@@ -478,6 +649,115 @@ export class ChoyStore {
   private memEnvVault: StoredEnvVaultEntry[] = [];
   private memAnnouncements: StoredAnnouncement[] = [];
   private memChatGroups: StoredChatGroup[] = [];
+  private memUserDashboards: StoredUserDashboard[] = [];
+  private memMarketplaceItems: StoredMarketplaceItem[] = [
+    {
+      id: 'item_food_1',
+      category: 'food',
+      title: 'Choy Special Grilled Chicken',
+      description: 'Juicy charcoal-grilled chicken with special Java rice & vinegar dip.',
+      price: 250,
+      imageUrl: 'https://images.unsplash.com/photo-1555939594-58d7cb561ad1?w=600&auto=format&fit=crop&q=80',
+      stock: 50,
+      sellerName: 'Choy Kitchen',
+      createdBy: 'Admin',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    {
+      id: 'item_food_2',
+      category: 'food',
+      title: 'Crispy Pata Delight',
+      description: 'Deep-fried pork trotters served with soy-vinegar chili sauce.',
+      price: 480,
+      imageUrl: 'https://images.unsplash.com/photo-1544025162-d76694265947?w=600&auto=format&fit=crop&q=80',
+      stock: 30,
+      sellerName: 'Choy Kitchen',
+      createdBy: 'Admin',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    {
+      id: 'item_groc_1',
+      category: 'groceries',
+      title: 'Jasmine Premium Rice 5kg',
+      description: 'Aromatic, soft-textured premium white rice for daily family meals.',
+      price: 295,
+      imageUrl: 'https://images.unsplash.com/photo-1586201375761-83865001e31c?w=600&auto=format&fit=crop&q=80',
+      stock: 120,
+      sellerName: 'Choy Grocer',
+      createdBy: 'Admin',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    {
+      id: 'item_groc_2',
+      category: 'groceries',
+      title: 'Fresh Farm Eggs 12pcs',
+      description: 'Grade-A fresh chicken eggs sourced directly from local organic farms.',
+      price: 130,
+      imageUrl: 'https://images.unsplash.com/photo-1516448699432-843c0800d17d?w=600&auto=format&fit=crop&q=80',
+      stock: 80,
+      sellerName: 'Choy Grocer',
+      createdBy: 'Admin',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    {
+      id: 'item_med_1',
+      category: 'medicines',
+      title: 'Paracetamol 500mg (10 Tablets)',
+      description: 'Fast relief for fever, headaches, body aches, and flu symptoms.',
+      price: 45,
+      imageUrl: 'https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?w=600&auto=format&fit=crop&q=80',
+      stock: 200,
+      sellerName: 'Choy Pharmacy',
+      createdBy: 'Admin',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    {
+      id: 'item_med_2',
+      category: 'medicines',
+      title: 'Vitamin C with Rosehips 500mg',
+      description: 'Immune system booster and antioxidant daily supplement.',
+      price: 220,
+      imageUrl: 'https://images.unsplash.com/photo-1471864190281-a93a3070b6de?w=600&auto=format&fit=crop&q=80',
+      stock: 150,
+      sellerName: 'Choy Pharmacy',
+      createdBy: 'Admin',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    {
+      id: 'item_app_1',
+      category: 'appliances',
+      title: 'Smart 16-inch Electric Fan',
+      description: 'Energy-saving 3-speed oscillating stand fan with silent copper motor.',
+      price: 1299,
+      imageUrl: 'https://images.unsplash.com/photo-1621905251189-08b45d6a269e?w=600&auto=format&fit=crop&q=80',
+      stock: 25,
+      sellerName: 'Choy Appliances',
+      createdBy: 'Admin',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    {
+      id: 'item_app_2',
+      category: 'appliances',
+      title: 'Mini Automatic Rice Cooker 1.2L',
+      description: 'Compact non-stick rice cooker with keep-warm mode, ideal for small households.',
+      price: 899,
+      imageUrl: 'https://images.unsplash.com/photo-1585515320310-259814833e62?w=600&auto=format&fit=crop&q=80',
+      stock: 40,
+      sellerName: 'Choy Appliances',
+      createdBy: 'Admin',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+  ];
+
+  private memMarketplaceOrders: StoredMarketplaceOrder[] = [];
   private memSeeded = false;
   private persistInFlight: Promise<void> | null = null;
   private persistQueued = false;
@@ -555,6 +835,9 @@ export class ChoyStore {
       if (Array.isArray(data.envVault)) this.memEnvVault = data.envVault as StoredEnvVaultEntry[];
       if (Array.isArray(data.announcements)) this.memAnnouncements = data.announcements as StoredAnnouncement[];
       if (Array.isArray(data.chatGroups)) this.memChatGroups = data.chatGroups as StoredChatGroup[];
+      if (Array.isArray(data.userDashboards)) this.memUserDashboards = data.userDashboards as StoredUserDashboard[];
+      if (Array.isArray(data.marketplaceItems)) this.memMarketplaceItems = data.marketplaceItems as StoredMarketplaceItem[];
+      if (Array.isArray(data.marketplaceOrders)) this.memMarketplaceOrders = data.marketplaceOrders as StoredMarketplaceOrder[];
       this.memSeeded = true;
       console.log(
         `[ChoyStore] Loaded persistent local store (${this.memUsers.length} users, ${this.memPosts.length} posts, ${this.memMessages.length} messages).`
@@ -602,6 +885,9 @@ export class ChoyStore {
           envVault: this.memEnvVault,
           announcements: this.memAnnouncements,
           chatGroups: this.memChatGroups,
+          userDashboards: this.memUserDashboards,
+          marketplaceItems: this.memMarketplaceItems,
+          marketplaceOrders: this.memMarketplaceOrders,
         };
         const tmpPath = `${LOCAL_DATA_FILE}.tmp.${process.pid}`;
         await fs.promises.writeFile(tmpPath, JSON.stringify(payload, null, 2), 'utf8');
@@ -844,6 +1130,30 @@ export class ChoyStore {
         answer TEXT NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      CREATE TABLE IF NOT EXISTS app_marketplace_items (
+        id TEXT PRIMARY KEY,
+        category TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT,
+        price NUMERIC(12,2) NOT NULL DEFAULT 0,
+        image_url TEXT,
+        stock INT NOT NULL DEFAULT 100,
+        seller_name TEXT,
+        created_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS app_marketplace_orders (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        user_name TEXT NOT NULL,
+        items JSONB NOT NULL,
+        total_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+        payment_method TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'completed',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
       CREATE TABLE IF NOT EXISTS app_settings (
         id TEXT PRIMARY KEY,
         data JSONB NOT NULL,
@@ -925,6 +1235,11 @@ export class ChoyStore {
       );
       ALTER TABLE app_chat_groups ADD COLUMN IF NOT EXISTS admin_id TEXT;
       ALTER TABLE app_chat_groups ADD COLUMN IF NOT EXISTS admin_name TEXT;
+      CREATE TABLE IF NOT EXISTS app_user_dashboards (
+        user_id TEXT PRIMARY KEY,
+        data JSONB NOT NULL DEFAULT '{}'::jsonb,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
     `);
   }
 
@@ -3489,4 +3804,280 @@ export class ChoyStore {
       updatedAt: new Date(String(r.updated_at)).toISOString(),
     };
   }
+
+  private normalizeUserDashboard(userId: string, raw?: Partial<StoredUserDashboard> | null): StoredUserDashboard {
+    const now = new Date().toISOString();
+    const walletBalance = Number.isFinite(Number(raw?.walletBalance)) ? Math.max(0, Number(raw?.walletBalance)) : 500;
+    const choyWalletBalance = Number.isFinite(Number(raw?.choyWalletBalance))
+      ? Math.max(0, Number(raw?.choyWalletBalance))
+      : 300;
+    const plan =
+      raw?.subscriptionPlan === 'choy_pro_monthly' ||
+      raw?.subscriptionPlan === 'choy_pro_annual' ||
+      raw?.subscriptionPlan === 'vip_supporter'
+        ? raw.subscriptionPlan
+        : 'free';
+    const subStatus =
+      raw?.subscriptionStatus === 'active' || raw?.subscriptionStatus === 'cancelled'
+        ? raw.subscriptionStatus
+        : plan === 'free'
+        ? 'active'
+        : 'inactive';
+    const transactions = Array.isArray(raw?.transactions)
+      ? raw.transactions.slice(0, 60)
+      : [
+          {
+            id: 'tx_welcome_' + userId.slice(-6),
+            walletType: 'choy_wallet' as const,
+            kind: 'reward' as const,
+            amount: 300,
+            note: 'Welcome Choy Wallet Starter Bonus',
+            createdAt: now,
+          },
+          {
+            id: 'tx_wallet_init_' + userId.slice(-6),
+            walletType: 'wallet' as const,
+            kind: 'topup' as const,
+            amount: 500,
+            note: 'Starter Cash Wallet Credit',
+            createdAt: now,
+          },
+        ];
+
+    return {
+      userId,
+      publicShowName: raw?.publicShowName !== false,
+      walletBalance,
+      choyWalletBalance,
+      choyProActive: Boolean(raw?.choyProActive),
+      choyProActivatedAt: typeof raw?.choyProActivatedAt === 'string' ? raw.choyProActivatedAt : undefined,
+      subscriptionPlan: plan,
+      subscriptionStatus: subStatus,
+      subscriptionAutoRenew: raw?.subscriptionAutoRenew !== false,
+      subscriptionRenewAt: typeof raw?.subscriptionRenewAt === 'string' ? raw.subscriptionRenewAt : undefined,
+      lastDailyClaimAt: typeof raw?.lastDailyClaimAt === 'string' ? raw.lastDailyClaimAt : undefined,
+      rulesAcceptedAt: typeof raw?.rulesAcceptedAt === 'string' ? raw.rulesAcceptedAt : undefined,
+      acknowledgmentSignedName:
+        typeof raw?.acknowledgmentSignedName === 'string' ? raw.acknowledgmentSignedName : undefined,
+      acknowledgmentSignedAt:
+        typeof raw?.acknowledgmentSignedAt === 'string' ? raw.acknowledgmentSignedAt : undefined,
+      transactions,
+      updatedAt: typeof raw?.updatedAt === 'string' ? raw.updatedAt : now,
+    };
+  }
+
+  public async getUserDashboard(userId: string): Promise<StoredUserDashboard> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT data FROM app_user_dashboards WHERE user_id = $1 LIMIT 1', [userId]);
+      if (res.rows.length > 0 && res.rows[0].data && typeof res.rows[0].data === 'object') {
+        return this.normalizeUserDashboard(userId, res.rows[0].data as Partial<StoredUserDashboard>);
+      }
+      const created = this.normalizeUserDashboard(userId, null);
+      await this.pool.query(
+        'INSERT INTO app_user_dashboards (user_id, data, updated_at) VALUES ($1, $2::jsonb, NOW()) ON CONFLICT (user_id) DO NOTHING',
+        [userId, JSON.stringify(created)]
+      );
+      return created;
+    }
+
+    const existing = this.memUserDashboards.find((d) => d.userId === userId);
+    if (existing) {
+      return this.normalizeUserDashboard(userId, existing);
+    }
+    const created = this.normalizeUserDashboard(userId, null);
+    this.memUserDashboards.push(created);
+    await this.persistMemory();
+    return created;
+  }
+
+  public async saveUserDashboard(nextDashboard: StoredUserDashboard): Promise<StoredUserDashboard> {
+    await this.ready();
+    const normalized = this.normalizeUserDashboard(nextDashboard.userId, {
+      ...nextDashboard,
+      updatedAt: new Date().toISOString(),
+    });
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_user_dashboards (user_id, data, updated_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        [normalized.userId, JSON.stringify(normalized)]
+      );
+      return normalized;
+    }
+    const idx = this.memUserDashboards.findIndex((d) => d.userId === normalized.userId);
+    if (idx >= 0) {
+      this.memUserDashboards[idx] = normalized;
+    } else {
+      this.memUserDashboards.push(normalized);
+    }
+    await this.persistMemory();
+    return normalized;
+  }
+
+  public async listUserDashboardMeta(): Promise<
+    Record<string, { publicShowName: boolean; choyProActive: boolean; subscriptionPlan: string }>
+  > {
+    await this.ready();
+    const map: Record<string, { publicShowName: boolean; choyProActive: boolean; subscriptionPlan: string }> = {};
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT user_id, data FROM app_user_dashboards');
+      for (const row of res.rows) {
+        const uid = String(row.user_id || '').trim();
+        if (!uid) continue;
+        const d = (row.data || {}) as Partial<StoredUserDashboard>;
+        map[uid] = {
+          publicShowName: d.publicShowName !== false,
+          choyProActive: Boolean(d.choyProActive),
+          subscriptionPlan: typeof d.subscriptionPlan === 'string' ? d.subscriptionPlan : 'free',
+        };
+      }
+      return map;
+    }
+    for (const d of this.memUserDashboards) {
+      map[d.userId] = {
+        publicShowName: d.publicShowName !== false,
+        choyProActive: Boolean(d.choyProActive),
+        subscriptionPlan: d.subscriptionPlan || 'free',
+      };
+    }
+    return map;
+  }
+
+  public async listMarketplaceItems(): Promise<StoredMarketplaceItem[]> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT * FROM app_marketplace_items ORDER BY created_at DESC');
+      if (res.rows.length > 0) {
+        return res.rows.map((r) => ({
+          id: String(r.id),
+          category: (['food', 'groceries', 'medicines', 'appliances'].includes(String(r.category)) ? r.category : 'food') as any,
+          title: String(r.title),
+          description: String(r.description || ''),
+          price: Number(r.price || 0),
+          imageUrl: typeof r.image_url === 'string' && r.image_url ? r.image_url : undefined,
+          stock: Number(r.stock ?? 100),
+          sellerName: String(r.seller_name || 'Choy Store'),
+          createdBy: String(r.created_by || 'Admin'),
+          createdAt: new Date(String(r.created_at)).toISOString(),
+          updatedAt: new Date(String(r.updated_at)).toISOString(),
+        }));
+      }
+      for (const item of DEFAULT_MARKETPLACE_ITEMS) {
+        await this.pool.query(
+          `INSERT INTO app_marketplace_items (id, category, title, description, price, image_url, stock, seller_name, created_by, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz, $11::timestamptz)
+           ON CONFLICT (id) DO NOTHING`,
+          [item.id, item.category, item.title, item.description, item.price, item.imageUrl || null, item.stock, item.sellerName, item.createdBy, item.createdAt, item.updatedAt]
+        );
+      }
+      const reread = await this.pool.query('SELECT * FROM app_marketplace_items ORDER BY created_at DESC');
+      return reread.rows.map((r) => ({
+        id: String(r.id),
+        category: (['food', 'groceries', 'medicines', 'appliances'].includes(String(r.category)) ? r.category : 'food') as any,
+        title: String(r.title),
+        description: String(r.description || ''),
+        price: Number(r.price || 0),
+        imageUrl: typeof r.image_url === 'string' && r.image_url ? r.image_url : undefined,
+        stock: Number(r.stock ?? 100),
+        sellerName: String(r.seller_name || 'Choy Store'),
+        createdBy: String(r.created_by || 'Admin'),
+        createdAt: new Date(String(r.created_at)).toISOString(),
+        updatedAt: new Date(String(r.updated_at)).toISOString(),
+      }));
+    }
+    if (this.memMarketplaceItems.length === 0) {
+      this.memMarketplaceItems = [...DEFAULT_MARKETPLACE_ITEMS];
+    }
+    return this.memMarketplaceItems;
+  }
+
+  public async saveMarketplaceItem(item: StoredMarketplaceItem): Promise<StoredMarketplaceItem[]> {
+    await this.ready();
+    const now = new Date().toISOString();
+    const normalized: StoredMarketplaceItem = {
+      ...item,
+      updatedAt: now,
+    };
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_marketplace_items (id, category, title, description, price, image_url, stock, seller_name, created_by, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz, $11::timestamptz)
+         ON CONFLICT (id) DO UPDATE SET category = EXCLUDED.category, title = EXCLUDED.title, description = EXCLUDED.description, price = EXCLUDED.price, image_url = EXCLUDED.image_url, stock = EXCLUDED.stock, seller_name = EXCLUDED.seller_name, updated_at = NOW()`,
+        [normalized.id, normalized.category, normalized.title, normalized.description, normalized.price, normalized.imageUrl || null, normalized.stock, normalized.sellerName, normalized.createdBy, normalized.createdAt, normalized.updatedAt]
+      );
+      return this.listMarketplaceItems();
+    }
+    const idx = this.memMarketplaceItems.findIndex((i) => i.id === normalized.id);
+    if (idx >= 0) {
+      this.memMarketplaceItems[idx] = normalized;
+    } else {
+      this.memMarketplaceItems.unshift(normalized);
+    }
+    await this.persistMemory();
+    return this.memMarketplaceItems;
+  }
+
+  public async deleteMarketplaceItem(id: string): Promise<StoredMarketplaceItem[]> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      await this.pool.query('DELETE FROM app_marketplace_items WHERE id = $1', [id]);
+      return this.listMarketplaceItems();
+    }
+    this.memMarketplaceItems = this.memMarketplaceItems.filter((i) => i.id !== id);
+    await this.persistMemory();
+    return this.memMarketplaceItems;
+  }
+
+  public async listMarketplaceOrders(): Promise<StoredMarketplaceOrder[]> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT * FROM app_marketplace_orders ORDER BY created_at DESC');
+      return res.rows.map((r) => ({
+        id: String(r.id),
+        userId: String(r.user_id),
+        userName: String(r.user_name),
+        items: typeof r.items === 'string' ? JSON.parse(r.items) : (r.items || []),
+        totalAmount: Number(r.total_amount || 0),
+        paymentMethod: (['wallet', 'choy_wallet'].includes(String(r.payment_method)) ? r.payment_method : 'wallet') as any,
+        status: (['completed', 'pending', 'cancelled'].includes(String(r.status)) ? r.status : 'completed') as any,
+        createdAt: new Date(String(r.created_at)).toISOString(),
+      }));
+    }
+    return this.memMarketplaceOrders;
+  }
+
+  public async saveMarketplaceOrder(order: StoredMarketplaceOrder): Promise<StoredMarketplaceOrder[]> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_marketplace_orders (id, user_id, user_name, items, total_amount, payment_method, status, created_at)
+         VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8::timestamptz)
+         ON CONFLICT (id) DO UPDATE SET items = EXCLUDED.items, total_amount = EXCLUDED.total_amount, status = EXCLUDED.status`,
+        [order.id, order.userId, order.userName, JSON.stringify(order.items), order.totalAmount, order.paymentMethod, order.status, order.createdAt]
+      );
+      return this.listMarketplaceOrders();
+    }
+    const idx = this.memMarketplaceOrders.findIndex((o) => o.id === order.id);
+    if (idx >= 0) {
+      this.memMarketplaceOrders[idx] = order;
+    } else {
+      this.memMarketplaceOrders.unshift(order);
+    }
+    await this.persistMemory();
+    return this.memMarketplaceOrders;
+  }
+
+  public async deleteMarketplaceOrder(id: string): Promise<StoredMarketplaceOrder[]> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      await this.pool.query('DELETE FROM app_marketplace_orders WHERE id = $1', [id]);
+      return this.listMarketplaceOrders();
+    }
+    this.memMarketplaceOrders = this.memMarketplaceOrders.filter((o) => o.id !== id);
+    await this.persistMemory();
+    return this.memMarketplaceOrders;
+  }
 }
+

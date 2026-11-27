@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import {
   Home,
   MessageSquare,
@@ -82,7 +83,18 @@ import {
   ScreenShare,
   ScreenShareOff,
   SkipForward,
-  Disc3
+  Disc3,
+  LayoutDashboard,
+  Wallet,
+  Coins,
+  Crown,
+  CreditCard,
+  BookOpen,
+  FileCheck2,
+  BadgeCheck,
+  ChevronDown,
+  ChevronUp,
+  ShoppingBag
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -119,6 +131,12 @@ import { ONE_PIECE_LATEST_30_EPISODES } from './data/onePieceEpisodes';
 import { ImageZoomModal } from './components/ImageZoomModal';
 import { useThemePreferences } from './hooks/useThemePreferences';
 import { COLOR_THEME_LIST, THEME_PRESETS } from './themePresets';
+import {
+  UserDashboardPanels,
+  ProfileAdminCopyCard,
+  type UserDashboardData,
+  type UserDashboardTabId,
+} from './components/UserDashboardPanels';
 import {
   type EmojiLinkItem,
   buildEmojiShareUrl,
@@ -560,6 +578,16 @@ export default function App() {
   const isAdmin = currentUser?.role === 'admin';
 
   const [activeTab, setActiveTab] = useState<
+    | 'dashboard'
+    | 'user_created_name'
+    | 'groupchat'
+    | 'wallet'
+    | 'choy_pro'
+    | 'choy_wallet'
+    | 'subscription'
+    | 'rules'
+    | 'acknowledgment'
+    | 'marketplace'
     | 'feed'
     | 'profile'
     | 'messages'
@@ -574,7 +602,26 @@ export default function App() {
     | 'github'
     | 'people'
     | 'videos'
-  >('feed');
+  >('dashboard');
+  const [isUserSidebarGroupOpen, setIsUserSidebarGroupOpen] = useState(true);
+  const [userDashboardData, setUserDashboardData] = useState<UserDashboardData>({
+    userId: '',
+    publicShowName: true,
+    walletBalance: 500,
+    choyWalletBalance: 300,
+    choyProActive: false,
+    subscriptionPlan: 'free',
+    subscriptionStatus: 'active',
+    subscriptionAutoRenew: false,
+    transactions: [],
+    updatedAt: new Date().toISOString(),
+  });
+  const [userDashboardMeta, setUserDashboardMeta] = useState<
+    Record<string, { publicShowName: boolean; choyProActive: boolean; subscriptionPlan: string }>
+  >({});
+  const [isUserDashboardBusy, setIsUserDashboardBusy] = useState(false);
+  const [userDashboardError, setUserDashboardError] = useState('');
+  const [userDashboardNotice, setUserDashboardNotice] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isMenuDrawerOpen, setIsMenuDrawerOpen] = useState(false);
@@ -1105,6 +1152,18 @@ export default function App() {
   }, [cloudMessages, localMessages, chatHeadBubbleEnabled, currentUser, activeTab, activeChat, renderHeadBubbleIntoPip]);
   const [msgInput, setMsgInput] = useState('');
   const [openReactionPickerMsgId, setOpenReactionPickerMsgId] = useState<string | null>(null);
+  const [poppedReactionKey, setPoppedReactionKey] = useState<string | null>(null);
+  const reactionPopTimerRef = useRef<number | null>(null);
+  const triggerReactionPop = useCallback((msgId: string, index: number) => {
+    if (reactionPopTimerRef.current) {
+      window.clearTimeout(reactionPopTimerRef.current);
+    }
+    setPoppedReactionKey(`${msgId}:${index}`);
+    reactionPopTimerRef.current = window.setTimeout(() => {
+      setPoppedReactionKey(null);
+      reactionPopTimerRef.current = null;
+    }, 620);
+  }, []);
   const [showMsgEmojiPicker, setShowMsgEmojiPicker] = useState(false);
   const [msgMediaType, setMsgMediaType] = useState<'text' | 'image' | 'video' | 'audio' | 'file'>('text');
   const [msgTranscript, setMsgTranscript] = useState('');
@@ -1550,6 +1609,16 @@ export default function App() {
   }, [selectedProfileUser]);
 
   type AppTabId =
+    | 'dashboard'
+    | 'user_created_name'
+    | 'groupchat'
+    | 'wallet'
+    | 'choy_pro'
+    | 'choy_wallet'
+    | 'subscription'
+    | 'rules'
+    | 'acknowledgment'
+    | 'marketplace'
     | 'feed'
     | 'profile'
     | 'messages'
@@ -1641,10 +1710,20 @@ export default function App() {
     hasOpenBackOverlay ||
     navHistoryCount > 0 ||
     activeChatMobileView ||
-    activeTab !== 'feed' ||
+    activeTab !== 'dashboard' ||
     feedCategoryFilter !== 'all';
 
   const getTabDisplayName = (tab: AppTabId, feedFilter: AppNavSnapshot['feedFilter']): string => {
+    if (tab === 'dashboard') return 'User Dashboard';
+    if (tab === 'user_created_name') return 'Created Name';
+    if (tab === 'groupchat') return 'Groupchat';
+    if (tab === 'wallet') return 'Wallet';
+    if (tab === 'choy_pro') return 'Choy Pro';
+    if (tab === 'choy_wallet') return 'Choy Wallet';
+    if (tab === 'subscription') return 'Subscription';
+    if (tab === 'rules') return 'Rules';
+    if (tab === 'acknowledgment') return 'Acknowledgment';
+    if (tab === 'marketplace') return 'Food Store & Marketplace';
     if (tab === 'feed') {
       if (feedFilter === 'music') return 'Music';
       if (feedFilter === 'video') return 'Videos';
@@ -1660,7 +1739,7 @@ export default function App() {
     if (tab === 'analytics') return 'Analytics';
     if (tab === 'choyai') return 'Choy AI';
     if (tab === 'github') return 'GitHub';
-    return 'Home';
+    return 'Dashboard';
   };
 
   const backDestinationLabel = (() => {
@@ -1680,7 +1759,7 @@ export default function App() {
       if (top) return getTabDisplayName(top.tab, top.feedFilter);
     }
     if (activeTab === 'feed' && feedCategoryFilter !== 'all') return 'Newsfeed';
-    if (activeTab !== 'feed') return 'Newsfeed';
+    if (activeTab !== 'dashboard') return 'User Dashboard';
     return '';
   })();
 
@@ -1762,9 +1841,9 @@ export default function App() {
       setFeedCategoryFilter('all');
       return;
     }
-    if (activeTab !== 'feed') {
+    if (activeTab !== 'dashboard') {
       isNavigatingBackRef.current = true;
-      setActiveTab('feed');
+      setActiveTab('dashboard');
       setFeedCategoryFilter('all');
       setActiveChatMobileView(false);
     }
@@ -2117,6 +2196,17 @@ export default function App() {
       }
       if (Array.isArray(data.ledger)) {
         setLedgerRows(data.ledger);
+      }
+      if (data.userDashboard && typeof data.userDashboard === 'object') {
+        setUserDashboardData(data.userDashboard as UserDashboardData);
+      }
+      if (data.userDashboardMeta && typeof data.userDashboardMeta === 'object') {
+        setUserDashboardMeta(
+          data.userDashboardMeta as Record<
+            string,
+            { publicShowName: boolean; choyProActive: boolean; subscriptionPlan: string }
+          >
+        );
       }
       if (data.settings) {
         setUnitPrices({
@@ -4639,7 +4729,7 @@ export default function App() {
       setAuthToken(data.token);
       setCurrentUser(data.user);
       setAuthPin('');
-      setActiveTab('feed');
+      setActiveTab('dashboard');
     } catch (err) {
       setLoginError(err instanceof Error ? err.message : 'Admin setup failed');
     } finally {
@@ -4822,7 +4912,7 @@ export default function App() {
       setAuthToken(data.token);
       setCurrentUser(data.user);
       setAuthPin('');
-      setActiveTab('feed');
+      setActiveTab('dashboard');
       if (initialGpsRef.current && data.token) {
         fetch('/api/choy/gps/ping', {
           method: 'POST',
@@ -4852,7 +4942,7 @@ export default function App() {
     setLedgerRows([]);
     setLeaderboard([]);
     setBlockedUsers([]);
-    setActiveTab('feed');
+    setActiveTab('dashboard');
     checkAuthStatus();
   };
 
@@ -5226,6 +5316,126 @@ export default function App() {
       setIsUpdatingName(false);
     }
   };
+
+  const handleUserDashboardAction = useCallback(
+    async (payload: Record<string, unknown>): Promise<boolean> => {
+      if (!currentUser || isUserDashboardBusy) return false;
+      setIsUserDashboardBusy(true);
+      setUserDashboardError('');
+      setUserDashboardNotice('');
+      try {
+        const res = (await apiFetch('/api/choy/user-dashboard/action', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        })) as { ok?: boolean; userDashboard?: UserDashboardData };
+        if (res.userDashboard) {
+          setUserDashboardData(res.userDashboard);
+        }
+        const act = String(payload.action || '');
+        if (act === 'toggle_public_name') setUserDashboardNotice('Public Show visibility updated.');
+        else if (act === 'wallet_topup') setUserDashboardNotice('Wallet cash-in completed!');
+        else if (act === 'wallet_withdraw') setUserDashboardNotice('Wallet cash-out recorded!');
+        else if (act === 'wallet_transfer') setUserDashboardNotice('Transfer completed successfully!');
+        else if (act === 'choy_wallet_claim_daily') setUserDashboardNotice('Daily Choy Coins claimed!');
+        else if (act === 'choy_wallet_convert') setUserDashboardNotice('Converted to CHOY Coins!');
+        else if (act === 'activate_choy_pro') setUserDashboardNotice('Choy Pro is now active!');
+        else if (act === 'update_subscription') setUserDashboardNotice('Subscription plan updated!');
+        else if (act === 'accept_rules') setUserDashboardNotice('Community Rules accepted!');
+        else if (act === 'sign_acknowledgment') setUserDashboardNotice('Acknowledgment signed & saved!');
+        setTimeout(() => setUserDashboardNotice(''), 3500);
+        return true;
+      } catch (err) {
+        setUserDashboardError(err instanceof Error ? err.message : 'Action failed');
+        return false;
+      } finally {
+        setIsUserDashboardBusy(false);
+      }
+    },
+    [currentUser, isUserDashboardBusy, apiFetch]
+  );
+
+  const handleUpdateCreatedNameDirect = useCallback(
+    async (newName: string): Promise<{ ok: boolean; error?: string }> => {
+      if (!currentUser) return { ok: false, error: 'Not signed in' };
+      const cleanName = newName.replace(/\s+/g, ' ').trim();
+      if (cleanName.length < 2 || cleanName.length > 60) {
+        return { ok: false, error: 'Name must be between 2 and 60 characters.' };
+      }
+      if (cleanName === currentUser.name.trim()) {
+        return { ok: true };
+      }
+      try {
+        const resp = (await apiFetch('/api/auth/name', {
+          method: 'POST',
+          body: JSON.stringify({ name: cleanName }),
+        })) as { ok?: boolean; name?: string; previousName?: string };
+        const savedName = typeof resp.name === 'string' && resp.name.trim() ? resp.name.trim() : cleanName;
+        const previousName =
+          typeof resp.previousName === 'string' && resp.previousName.trim()
+            ? resp.previousName.trim()
+            : currentUser.name;
+        const prevLower = previousName.trim().toLowerCase();
+        const myId = currentUser.id;
+        const nextHandle = `@${savedName.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 18) || 'member'}`;
+
+        setCurrentUser((prev) => (prev ? { ...prev, name: savedName } : prev));
+        setUsersList((prev) =>
+          prev.map((u) =>
+            u.id === myId || u.name.trim().toLowerCase() === prevLower ? { ...u, name: savedName } : u
+          )
+        );
+        setPosts((prev) =>
+          prev.map((p) =>
+            p.authorId === myId || p.author.name.trim().toLowerCase() === prevLower
+              ? { ...p, author: { ...p.author, name: savedName, handle: nextHandle } }
+              : p
+          )
+        );
+        const renameMsgList = (prev: Message[]) =>
+          prev.map((m) => ({
+            ...m,
+            sender: m.senderId === myId || m.sender.trim().toLowerCase() === prevLower ? savedName : m.sender,
+            receiver:
+              prevLower !== 'vip group' && m.receiver.trim().toLowerCase() === prevLower
+                ? savedName
+                : m.receiver,
+          }));
+        setCloudMessages(renameMsgList);
+        setLocalMessages(renameMsgList);
+        showNotice(`Created Name updated to ${savedName}!`);
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : 'Failed to update name' };
+      }
+    },
+    [currentUser, apiFetch]
+  );
+
+  const handleSendAdminCopyToAdminChat = useCallback(
+    async (copyText: string) => {
+      if (!currentUser) return;
+      try {
+        await apiFetch('/api/choy/messages', {
+          method: 'POST',
+          body: JSON.stringify({
+            roomId: 'Choy Admin',
+            text: copyText,
+            mediaType: 'text',
+          }),
+        });
+        setActiveChat('Choy Admin');
+        setActiveTab('messages');
+        showNotice('Admin Profile Copy sent to Choy Admin!');
+        void fetchSyncedState();
+      } catch {
+        setActiveChat('Choy Admin');
+        setMsgInput(copyText);
+        setActiveTab('messages');
+        showNotice('Profile Admin Copy ready in Choy Admin chat — tap Send.');
+      }
+    },
+    [currentUser, apiFetch]
+  );
 
   const handlePostFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -5932,12 +6142,20 @@ export default function App() {
     const currentReactions = msg.reactions || [];
     if (currentReactions.length >= 20) return;
 
+    const nextIdx = currentReactions.length;
+    triggerReactionPop(msg.id, nextIdx);
+
     if (msg.isLocalOnly) {
       setLocalMessages((prev) =>
         prev.map((m) => (m.id === msg.id ? { ...m, reactions: [...currentReactions, emoji] } : m))
       );
       return;
     }
+
+    // Optimistic update so the emoji bounces onto the message immediately
+    setCloudMessages((prev) =>
+      prev.map((m) => (m.id === msg.id ? { ...m, reactions: [...currentReactions, emoji] } : m))
+    );
 
     try {
       await apiFetch(`/api/choy/messages/${encodeURIComponent(msg.id)}/reactions`, {
@@ -5946,6 +6164,9 @@ export default function App() {
       });
       await fetchSyncedState();
     } catch (err) {
+      setCloudMessages((prev) =>
+        prev.map((m) => (m.id === msg.id ? { ...m, reactions: currentReactions } : m))
+      );
       showNotice(err instanceof Error ? err.message : 'Failed to add reaction');
     }
   };
@@ -7908,7 +8129,8 @@ export default function App() {
           );
         })()}
 
-      {/* DESKTOP SIDEBAR NAVIGATION (Hidden on mobile; mobile uses header buttons + 3-dots drawer) */}
+      {/* DESKTOP SIDEBAR NAVIGATION (Hidden on mobile and when inside the separate full-width Newsfeed Dashboard) */}
+      {activeTab !== 'feed' && (
       <aside className={`hidden md:flex md:w-60 ${theme.sidebarBg} md:border-r p-3 flex-col justify-between shrink-0 overflow-y-auto transition-colors`}>
         <div className="flex flex-col items-stretch gap-1.5 w-full">
           <div className="flex items-center gap-2.5 px-2 py-2 mb-2">
@@ -7936,16 +8158,62 @@ export default function App() {
           </div>
 
           <nav className="flex flex-col gap-1 w-full text-xs font-medium">
-            <button
-              type="button"
-              onClick={() => setActiveTab('feed')}
-              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
-                activeTab === 'feed' ? theme.navActive : theme.navInactive
-              }`}
-            >
-              <Home className="w-4 h-4 shrink-0" />
-              <span>Newsfeed</span>
-            </button>
+            {/* SIDEBAR BUTTON: USER DASHBOARD (WITH ALL 11 USER TOOLS INSIDE) */}
+            <div className="rounded-2xl border border-emerald-300/60 dark:border-emerald-700/60 bg-emerald-50/60 dark:bg-emerald-950/50 p-1.5 space-y-1 mb-1">
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('dashboard')}
+                  className={`flex-1 px-2.5 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap font-bold transition ${
+                    activeTab === 'dashboard' ? theme.navActive : theme.navInactive
+                  }`}
+                >
+                  <LayoutDashboard className="w-4 h-4 shrink-0" />
+                  <span>User Dashboard</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsUserSidebarGroupOpen((v) => !v)}
+                  className="p-2 rounded-xl text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200/60 dark:hover:bg-emerald-800/70 transition shrink-0"
+                  title={isUserSidebarGroupOpen ? 'Collapse User Dashboard Menu' : 'Expand User Dashboard Menu'}
+                  aria-label="Toggle User Dashboard sidebar menu"
+                >
+                  {isUserSidebarGroupOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+
+              {isUserSidebarGroupOpen && (
+                <div className="flex flex-col gap-0.5 pl-1.5 border-l-2 border-emerald-300/70 dark:border-emerald-700/70 ml-2">
+                  {[
+                    { id: 'profile' as const, label: 'Profile (Admin Copy)', icon: <User className="w-3.5 h-3.5 shrink-0" /> },
+                    { id: 'user_created_name' as const, label: 'Created Name (Public Show)', icon: <BadgeCheck className="w-3.5 h-3.5 shrink-0" /> },
+                    { id: 'messages' as const, label: 'Message', icon: <MessageSquare className="w-3.5 h-3.5 shrink-0" /> },
+                    { id: 'feed' as const, label: 'Newsfeed', icon: <Home className="w-3.5 h-3.5 shrink-0" /> },
+                    { id: 'groupchat' as const, label: 'Groupchat', icon: <Users className="w-3.5 h-3.5 shrink-0" /> },
+                    { id: 'wallet' as const, label: 'Wallet', icon: <Wallet className="w-3.5 h-3.5 shrink-0" /> },
+                    { id: 'choy_pro' as const, label: 'Choy Pro', icon: <Crown className="w-3.5 h-3.5 shrink-0 text-amber-500" /> },
+                    { id: 'choy_wallet' as const, label: 'Choy Wallet', icon: <Coins className="w-3.5 h-3.5 shrink-0 text-amber-500" /> },
+                    { id: 'subscription' as const, label: 'Subscription', icon: <CreditCard className="w-3.5 h-3.5 shrink-0" /> },
+                    { id: 'rules' as const, label: 'Rules', icon: <BookOpen className="w-3.5 h-3.5 shrink-0" /> },
+                    { id: 'acknowledgment' as const, label: 'Acknowledgment', icon: <FileCheck2 className="w-3.5 h-3.5 shrink-0" /> },
+                    { id: 'marketplace' as const, label: 'Food Store & Marketplace', icon: <ShoppingBag className="w-3.5 h-3.5 shrink-0 text-orange-500" /> },
+                  ].map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setActiveTab(item.id)}
+                      className={`px-2.5 py-1.5 rounded-lg flex items-center gap-2 text-[11px] font-semibold transition text-left ${
+                        activeTab === item.id ? theme.navActive : theme.navInactive
+                      }`}
+                    >
+                      {item.icon}
+                      <span className="truncate">{item.label}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <button
               type="button"
               onClick={() => setActiveTab('people')}
@@ -7965,16 +8233,6 @@ export default function App() {
             >
               <Video className="w-4 h-4 shrink-0" />
               <span>Videos</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('messages')}
-              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
-                activeTab === 'messages' ? theme.navActive : theme.navInactive
-              }`}
-            >
-              <MessageSquare className="w-4 h-4 shrink-0" />
-              <span>Messages</span>
             </button>
             {isAdmin && (
               <button
@@ -8021,22 +8279,6 @@ export default function App() {
             >
               <GitBranch className="w-4 h-4 shrink-0" />
               <span>GitHub Intelligence</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('profile')}
-              className={`md:hidden px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
-                activeTab === 'profile' ? theme.navActive : theme.navInactive
-              }`}
-            >
-              <img
-                src={getUserAvatar(currentUser)}
-                alt=""
-                className={`w-4 h-5 rounded bg-white dark:bg-slate-900 shrink-0 border border-emerald-400 ${
-                  isCustomAvatar(getUserAvatar(currentUser)) ? 'object-cover' : 'object-contain'
-                }`}
-              />
-              <span>Account</span>
             </button>
 
             {isAdmin && (
@@ -8168,6 +8410,7 @@ export default function App() {
           </button>
         </div>
       </aside>
+      )}
 
       {/* MAIN VIEW */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -8207,13 +8450,37 @@ export default function App() {
             <h1 className={`font-black uppercase tracking-[0.2em] text-sm sm:text-lg bg-gradient-to-r ${theme.heroWordmark} bg-clip-text text-transparent truncate`}>
               CHOY CHAT
             </h1>
-            <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
-              • VIP Social
+            <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300 truncate">
+              {activeTab === 'feed'
+                ? '• Newsfeed Dashboard'
+                : activeTab === 'dashboard' ||
+                  activeTab === 'user_created_name' ||
+                  activeTab === 'groupchat' ||
+                  activeTab === 'wallet' ||
+                  activeTab === 'choy_pro' ||
+                  activeTab === 'choy_wallet' ||
+                  activeTab === 'subscription' ||
+                  activeTab === 'rules' ||
+                  activeTab === 'acknowledgment' ||
+                  activeTab === 'marketplace'
+                ? '• User Dashboard'
+                : '• VIP Social'}
             </span>
           </div>
 
-          {/* Right: 3-dots Menu Button */}
-          <div className="flex items-center justify-end gap-2 shrink-0 min-w-[72px] sm:min-w-[96px]">
+          {/* Right: Quick Workspace & 3-dots Menu Button */}
+          <div className="flex items-center justify-end gap-1.5 sm:gap-2 shrink-0 min-w-[72px] sm:min-w-[96px]">
+            {activeTab === 'feed' && (
+              <button
+                type="button"
+                onClick={() => setActiveTab('dashboard')}
+                className={`hidden sm:inline-flex min-h-[38px] sm:min-h-[40px] px-3 py-1.5 border rounded-xl transition shadow-xs items-center gap-1.5 text-xs font-bold whitespace-nowrap shrink-0 ${theme.chatHeaderBackBtn}`}
+                title="Back to User Dashboard & Sidebar"
+              >
+                <LayoutDashboard className="w-4 h-4 shrink-0" />
+                <span>User Dashboard</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setIsMenuDrawerOpen(true)}
@@ -8258,9 +8525,120 @@ export default function App() {
             }}
           />
 
-          {/* FEED */}
+          {/* SEPARATE FULL-WIDTH NEWSFEED DASHBOARD */}
           {activeTab === 'feed' && (
-            <div className="max-w-2xl mx-auto space-y-4">
+            <div className="max-w-7xl mx-auto space-y-5">
+              {/* Dedicated Newsfeed Dashboard Header Bar */}
+              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/60 rounded-2xl p-4 sm:p-5 shadow-xs space-y-4">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('profile')}
+                      className="relative shrink-0 group"
+                      title="Open My Profile"
+                    >
+                      <img
+                        src={getUserAvatar(currentUser)}
+                        alt={currentUser.name}
+                        className={`w-11 h-12 rounded-xl bg-emerald-50 dark:bg-emerald-950 border-2 border-emerald-400/70 group-hover:border-amber-400 transition ${
+                          isCustomAvatar(getUserAvatar(currentUser)) ? 'object-cover' : 'object-contain'
+                        }`}
+                      />
+                      <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-400 border-2 border-white dark:border-emerald-950" />
+                    </button>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-base sm:text-lg font-extrabold text-emerald-950 dark:text-white tracking-tight truncate">
+                          Newsfeed Dashboard
+                        </h2>
+                        <span className="px-2 py-0.5 rounded-md bg-emerald-100 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-[10px] font-bold text-emerald-800 dark:text-emerald-200">
+                          {isAdmin
+                            ? adminNewsfeedFilter === 'all'
+                              ? 'All Channels'
+                              : getNewsfeedLabel(adminNewsfeedFilter)
+                            : getNewsfeedLabel(currentUser.newsfeed)}
+                        </span>
+                      </div>
+                      <p className="text-xs text-emerald-700 dark:text-emerald-300/85 truncate mt-0.5">
+                        {filteredPosts.length} posts · {imageFeedPosts.length} photos · {videoFeedPosts.length + ONE_PIECE_LATEST_30_EPISODES.length} videos · {feedPeopleList.length} members
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Search + Quick Switch to Other App Dashboards */}
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 shrink-0">
+                    <div className="relative w-full sm:w-60 md:w-64">
+                      <Search className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        type="text"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Search newsfeed posts or people..."
+                        className="w-full min-h-[38px] pl-8 pr-7 py-1.5 rounded-xl bg-emerald-50/80 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white placeholder-emerald-600/65 dark:placeholder-emerald-400/65 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+                      />
+                      {searchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setSearchQuery('')}
+                          aria-label="Clear search"
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white p-0.5"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 sm:pb-0">
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('dashboard')}
+                        className="min-h-[38px] px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 shadow-xs transition"
+                      >
+                        <LayoutDashboard className="w-3.5 h-3.5 shrink-0" />
+                        <span>Dashboard</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('messages')}
+                        className={`min-h-[38px] px-3 py-1.5 rounded-xl border text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition ${theme.searchButton}`}
+                      >
+                        <MessageSquare className="w-3.5 h-3.5 shrink-0" />
+                        <span>Messages</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('people')}
+                        className={`min-h-[38px] px-3 py-1.5 rounded-xl border text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition ${theme.searchButton}`}
+                      >
+                        <Users className="w-3.5 h-3.5 shrink-0" />
+                        <span>People</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('choyai')}
+                        className={`min-h-[38px] px-3 py-1.5 rounded-xl border text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition ${theme.searchButton}`}
+                      >
+                        <Bot className="w-3.5 h-3.5 shrink-0 text-cyan-600 dark:text-cyan-400" />
+                        <span>Choy AI</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('github')}
+                        className={`hidden xl:inline-flex min-h-[38px] px-3 py-1.5 rounded-xl border text-xs font-bold items-center gap-1.5 whitespace-nowrap shrink-0 transition ${theme.searchButton}`}
+                      >
+                        <GitBranch className="w-3.5 h-3.5 shrink-0" />
+                        <span>GitHub</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Spacious 12-Column Newsfeed Dashboard Body */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+                {/* MAIN NEWSFEED STREAM (8 cols on desktop — wide canvas!) */}
+                <div className="lg:col-span-8 space-y-4 min-w-0">
               {/* MOVING ANNOUNCEMENT & REMINDER SLIDE BANNER */}
               {visibleAnnouncements.length > 0 ? (() => {
                 const safeIdx = bannerSlideIndex % visibleAnnouncements.length;
@@ -9187,6 +9565,325 @@ export default function App() {
                 )}
               </div>
               )}
+                </div>
+
+                {/* DEDICATED NEWSFEED DASHBOARD SIDEBAR (4 cols on desktop) */}
+                <aside className="lg:col-span-4 space-y-4 lg:sticky lg:top-0 min-w-0">
+                  {/* Live Newsfeed Stats Grid */}
+                  <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 shadow-xs space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xs font-extrabold uppercase tracking-wider text-emerald-950 dark:text-white">
+                        Feed Overview
+                      </h3>
+                      <span className="text-[10px] font-mono text-emerald-700 dark:text-emerald-300">
+                        Live Synced
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <button
+                        type="button"
+                        onClick={() => setFeedCategoryFilter('all')}
+                        className={`p-3 rounded-xl border text-left transition ${
+                          feedCategoryFilter === 'all'
+                            ? 'bg-emerald-500/15 border-emerald-500 text-emerald-950 dark:text-white'
+                            : 'bg-emerald-50/70 dark:bg-emerald-950/70 border-emerald-200 dark:border-emerald-800/70 hover:border-emerald-400'
+                        }`}
+                      >
+                        <div className="text-[11px] text-emerald-700 dark:text-emerald-300 font-semibold">All Posts</div>
+                        <div className="text-lg font-extrabold font-mono tabular-nums text-emerald-950 dark:text-white mt-0.5">
+                          {filteredPosts.length}
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFeedCategoryFilter('image')}
+                        className={`p-3 rounded-xl border text-left transition ${
+                          feedCategoryFilter === 'image'
+                            ? 'bg-emerald-500/15 border-emerald-500 text-emerald-950 dark:text-white'
+                            : 'bg-emerald-50/70 dark:bg-emerald-950/70 border-emerald-200 dark:border-emerald-800/70 hover:border-emerald-400'
+                        }`}
+                      >
+                        <div className="text-[11px] text-emerald-700 dark:text-emerald-300 font-semibold">Photos</div>
+                        <div className="text-lg font-extrabold font-mono tabular-nums text-emerald-950 dark:text-white mt-0.5">
+                          {imageFeedPosts.length}
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFeedCategoryFilter('video')}
+                        className={`p-3 rounded-xl border text-left transition ${
+                          feedCategoryFilter === 'video'
+                            ? 'bg-emerald-500/15 border-emerald-500 text-emerald-950 dark:text-white'
+                            : 'bg-emerald-50/70 dark:bg-emerald-950/70 border-emerald-200 dark:border-emerald-800/70 hover:border-emerald-400'
+                        }`}
+                      >
+                        <div className="text-[11px] text-emerald-700 dark:text-emerald-300 font-semibold">Videos &amp; Anime</div>
+                        <div className="text-lg font-extrabold font-mono tabular-nums text-emerald-950 dark:text-white mt-0.5">
+                          {videoFeedPosts.length + ONE_PIECE_LATEST_30_EPISODES.length}
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFeedCategoryFilter('music')}
+                        className={`p-3 rounded-xl border text-left transition ${
+                          feedCategoryFilter === 'music'
+                            ? 'bg-emerald-500/15 border-emerald-500 text-emerald-950 dark:text-white'
+                            : 'bg-emerald-50/70 dark:bg-emerald-950/70 border-emerald-200 dark:border-emerald-800/70 hover:border-emerald-400'
+                        }`}
+                      >
+                        <div className="text-[11px] text-emerald-700 dark:text-emerald-300 font-semibold">OPM Music</div>
+                        <div className="text-lg font-extrabold font-mono tabular-nums text-emerald-950 dark:text-white mt-0.5">
+                          {opmTracks.length}
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Admin Channel Filter Widget */}
+                  {isAdmin && (
+                    <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 shadow-xs space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <h3 className="text-xs font-extrabold uppercase tracking-wider text-emerald-950 dark:text-white">
+                          Newsfeed Channels
+                        </h3>
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab('admin_newsfeeds')}
+                          className="text-[11px] font-bold text-indigo-700 dark:text-indigo-300 hover:underline"
+                        >
+                          Manage
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {[
+                          { id: 'all' as const, label: 'All Feeds' },
+                          { id: 'feed_a' as const, label: newsfeedConfig.feedATitle },
+                          { id: 'feed_b' as const, label: newsfeedConfig.feedBTitle },
+                          { id: 'feed_c' as const, label: newsfeedConfig.feedCTitle },
+                        ].map((ch) => (
+                          <button
+                            key={ch.id}
+                            type="button"
+                            onClick={() => setAdminNewsfeedFilter(ch.id)}
+                            className={`px-2.5 py-2 rounded-xl text-[11px] font-bold truncate border transition ${
+                              adminNewsfeedFilter === ch.id
+                                ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-xs'
+                                : 'bg-emerald-50/70 dark:bg-emerald-950/70 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 hover:border-emerald-400'
+                            }`}
+                          >
+                            {ch.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* OPM Quick Player Card */}
+                  {currentMusicTrack && (
+                    <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 shadow-xs space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-emerald-950 dark:text-white">
+                          <Music className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                          <span>OPM Music Deck</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setFeedCategoryFilter('music')}
+                          className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:underline"
+                        >
+                          Open Player
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <div
+                          className={`w-10 h-10 rounded-xl bg-gradient-to-br ${currentMusicTrack.coverGradient} flex items-center justify-center text-white shrink-0`}
+                        >
+                          <Disc3 className={`w-5 h-5 ${isMusicPlaying ? 'motion-safe:animate-spin' : ''}`} style={{ animationDuration: '5s' }} />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-extrabold text-emerald-950 dark:text-white truncate">
+                            {currentMusicTrack.title}
+                          </div>
+                          <div className="text-[11px] text-emerald-700 dark:text-emerald-300/80 truncate">
+                            {currentMusicTrack.artist}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={toggleOpmPlayPause}
+                            aria-label={isMusicPlaying ? 'Pause OPM music' : 'Play OPM music'}
+                            className="w-9 h-9 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 flex items-center justify-center transition shadow-xs"
+                          >
+                            {isMusicPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleNextOpmTrack}
+                            aria-label="Next OPM song"
+                            className="w-9 h-9 rounded-xl bg-emerald-100 dark:bg-emerald-950 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-200 dark:hover:bg-emerald-800 flex items-center justify-center transition"
+                          >
+                            <SkipForward className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Active Members in Newsfeed */}
+                  <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 shadow-xs space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-emerald-950 dark:text-white">
+                        <Users className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                        <span>Community Members</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setFeedCategoryFilter('people')}
+                        className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:underline"
+                      >
+                        View all ({feedPeopleList.length})
+                      </button>
+                    </div>
+                    {feedPeopleList.length === 0 ? (
+                      <p className="text-xs text-emerald-700 dark:text-emerald-300/80 py-2">
+                        No members visible in this channel yet.
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        {feedPeopleList.slice(0, 6).map((person) => {
+                          const isSelf = currentUser.id === person.id;
+                          const isOnlineNow =
+                            isSelf ||
+                            onlineUsers.some(
+                              (n) => n.trim().toLowerCase() === person.name.trim().toLowerCase()
+                            );
+                          const personAvatar = getUserAvatar({
+                            id: person.id,
+                            name: person.name,
+                            avatar: person.avatar,
+                          });
+                          return (
+                            <div
+                              key={person.id}
+                              className="flex items-center justify-between gap-2 p-2 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/60 border border-emerald-200/70 dark:border-emerald-800/70"
+                            >
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  openUserProfile({
+                                    id: person.id,
+                                    name: person.name,
+                                    avatar: person.avatar,
+                                  })
+                                }
+                                className="flex items-center gap-2.5 min-w-0 text-left group"
+                              >
+                                <div className="relative shrink-0">
+                                  <img
+                                    src={personAvatar}
+                                    alt={person.name}
+                                    className={`w-8 h-9 rounded-lg bg-white dark:bg-slate-900 border border-emerald-400/50 ${
+                                      isCustomAvatar(personAvatar) ? 'object-cover' : 'object-contain'
+                                    }`}
+                                  />
+                                  <span
+                                    className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-emerald-950 ${
+                                      isOnlineNow ? 'bg-emerald-400' : 'bg-slate-400'
+                                    }`}
+                                  />
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="text-xs font-bold text-emerald-950 dark:text-white truncate group-hover:underline">
+                                    {person.name}
+                                  </div>
+                                  <div className="text-[10px] text-emerald-700 dark:text-emerald-300/80">
+                                    {isOnlineNow ? 'Online now' : 'Member'}
+                                  </div>
+                                </div>
+                              </button>
+                              {!isSelf && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setActiveChat(person.name);
+                                    setActiveTab('messages');
+                                    setActiveChatMobileView(true);
+                                  }}
+                                  className="px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[11px] font-bold shrink-0 transition"
+                                >
+                                  Chat
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Quick Switch to Main App Workspace */}
+                  <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 shadow-xs space-y-2.5">
+                    <h3 className="text-xs font-extrabold uppercase tracking-wider text-emerald-950 dark:text-white">
+                      App Workspace
+                    </h3>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('messages')}
+                        className={`px-3 py-2 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-emerald-400`}
+                      >
+                        <MessageSquare className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                        <span className="truncate">Messages</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('videos')}
+                        className={`px-3 py-2 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-emerald-400`}
+                      >
+                        <Video className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                        <span className="truncate">Videos</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('analytics')}
+                        className={`px-3 py-2 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-emerald-400`}
+                      >
+                        <Award className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                        <span className="truncate">Analytics</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('github')}
+                        className={`px-3 py-2 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-emerald-400`}
+                      >
+                        <GitBranch className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                        <span className="truncate">GitHub Intel</span>
+                      </button>
+                      {isAdmin && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setActiveTab('ledger')}
+                            className={`px-3 py-2 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-emerald-400`}
+                          >
+                            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                            <span className="truncate">Milestone</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setActiveTab('admin_security')}
+                            className={`px-3 py-2 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-indigo-400`}
+                          >
+                            <Key className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                            <span className="truncate">Admin Studio</span>
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </aside>
+              </div>
             </div>
           )}
 
@@ -9279,8 +9976,13 @@ export default function App() {
                           ></span>
                         </div>
                         <div className="min-w-0">
-                          <div className="text-xs font-bold text-emerald-950 dark:text-white truncate group-hover:text-emerald-700 dark:group-hover:text-emerald-300 group-hover:underline">
-                            {u.name} {isMe ? '(You)' : ''}
+                          <div className="text-xs font-bold text-emerald-950 dark:text-white truncate group-hover:text-emerald-700 dark:group-hover:text-emerald-300 group-hover:underline flex items-center gap-1.5">
+                            <span className="truncate">{u.name} {isMe ? '(You)' : ''}</span>
+                            {userDashboardMeta[u.id]?.choyProActive && (
+                              <span className="px-1.5 py-0.5 rounded bg-amber-400 text-slate-950 text-[9px] font-black shrink-0">
+                                PRO
+                              </span>
+                            )}
                           </div>
                           <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-emerald-700 dark:text-emerald-300">
                             <span className="truncate">{u.role === 'admin' ? 'Admin' : 'Active'} · Tap to view profile</span>
@@ -9392,6 +10094,56 @@ export default function App() {
                 </div>
               );
             })()}
+
+          {/* USER DASHBOARD & SIDEBAR BUTTON PANELS (FOR EVERY USER) */}
+          {(activeTab === 'dashboard' ||
+            activeTab === 'user_created_name' ||
+            activeTab === 'groupchat' ||
+            activeTab === 'wallet' ||
+            activeTab === 'choy_pro' ||
+            activeTab === 'choy_wallet' ||
+            activeTab === 'subscription' ||
+            activeTab === 'rules' ||
+            activeTab === 'acknowledgment' ||
+            activeTab === 'marketplace') && (
+            <UserDashboardPanels
+              section={activeTab as UserDashboardTabId}
+              currentUser={currentUser}
+              avatarUrl={getUserAvatar(currentUser)}
+              isCustomAvatar={isCustomAvatar(getUserAvatar(currentUser))}
+              dashboard={{ ...userDashboardData, userId: currentUser.id }}
+              isBusy={isUserDashboardBusy}
+              actionError={userDashboardError}
+              actionNotice={userDashboardNotice}
+              newsfeedLabel={getNewsfeedLabel(currentUser.newsfeed)}
+              membersList={visibleUsersList}
+              onlineUsers={onlineUsers}
+              chatGroups={chatGroups}
+              activeGroupCalls={activeGroupCalls}
+              messages={messages}
+              postsCount={posts.length}
+              unreadMessagesCount={0}
+              onNavigate={(tab) => setActiveTab(tab)}
+              onDashboardAction={handleUserDashboardAction}
+              onUpdateCreatedName={handleUpdateCreatedNameDirect}
+              onSendAdminCopyToAdminChat={handleSendAdminCopyToAdminChat}
+              onOpenChatRoom={(roomId) => {
+                setActiveChat(roomId);
+                setActiveTab('messages');
+              }}
+              onOpenCreateGroup={() => setIsCreateGroupModalOpen(true)}
+              onOpenGroupMembers={(groupId) => setGroupMembersModalId(groupId)}
+              onJoinOrStartGroupCall={(groupId) => {
+                const running = activeGroupCalls.find((c) => c.roomId === groupId);
+                if (running && !isInVideoCall) {
+                  void joinGroupVideoCall(running.callId, running.roomId, getRoomDisplayName(groupId, chatGroups));
+                } else {
+                  void startVideoCall(groupId);
+                }
+              }}
+              onOpenPrivacyModal={() => setIsPrivacyModalOpen(true)}
+            />
+          )}
 
           {/* CLEAN PROFILE DASHBOARD (ALL CONTROLS MOVED TO 3-DOTS MENU DRAWER) */}
           {activeTab === 'profile' &&
@@ -9591,6 +10343,14 @@ export default function App() {
                       </div>
                     </div>
                   </div>
+
+                  {/* PROFILE (ADMIN COPY) */}
+                  <ProfileAdminCopyCard
+                    currentUser={currentUser}
+                    dashboard={{ ...userDashboardData, userId: currentUser.id }}
+                    newsfeedLabel={getNewsfeedLabel(currentUser.newsfeed)}
+                    onSendToAdminChat={handleSendAdminCopyToAdminChat}
+                  />
 
                   {/* My Recent Posts */}
                   <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 sm:p-5 space-y-3 shadow-sm">
@@ -10495,28 +11255,85 @@ export default function App() {
 
                           {m.reactions && m.reactions.length > 0 && (
                             <div className="flex flex-wrap gap-1 pt-1">
-                              {m.reactions.map((emoji, rIdx) => (
-                                <span
-                                  key={rIdx}
-                                  className={`px-1.5 py-0.5 rounded-full text-[10px] border ${
-                                    msgBgMode === 'default'
-                                      ? m.isMe
-                                        ? theme.chatBubbleMeReactionChip
-                                        : theme.chatBubbleOtherReactionChip
-                                      : 'bg-white/90 text-slate-900 border-slate-300'
-                                  }`}
-                                >
-                                  {emoji}
-                                </span>
-                              ))}
+                              <AnimatePresence initial={false}>
+                                {m.reactions.map((emoji, rIdx) => {
+                                  const isPopped = poppedReactionKey === `${m.id}:${rIdx}`;
+                                  return (
+                                    <motion.button
+                                      key={`${m.id}-r-${rIdx}-${emoji}`}
+                                      type="button"
+                                      onClick={() => {
+                                        if ((m.reactions?.length || 0) < 20) {
+                                          void addReactionToMessage(m, emoji);
+                                        } else {
+                                          triggerReactionPop(m.id, rIdx);
+                                        }
+                                      }}
+                                      initial={
+                                        reducedMotion
+                                          ? { opacity: 0 }
+                                          : { scale: 0, y: 10, rotate: -18, opacity: 0 }
+                                      }
+                                      animate={
+                                        reducedMotion
+                                          ? { opacity: 1 }
+                                          : isPopped
+                                          ? {
+                                              scale: [0.35, 1.48, 0.86, 1.15, 1],
+                                              y: [8, -8, 1, -2, 0],
+                                              rotate: [-14, 12, -5, 2, 0],
+                                              opacity: 1,
+                                            }
+                                          : {
+                                              scale: [0.4, 1.3, 0.92, 1.06, 1],
+                                              y: [6, -5, 1, 0],
+                                              rotate: [-10, 8, -3, 0],
+                                              opacity: 1,
+                                            }
+                                      }
+                                      exit={reducedMotion ? { opacity: 0 } : { scale: 0, opacity: 0 }}
+                                      transition={
+                                        reducedMotion
+                                          ? { duration: 0.12 }
+                                          : { duration: isPopped ? 0.54 : 0.42, ease: [0.22, 1, 0.36, 1] }
+                                      }
+                                      whileHover={reducedMotion ? undefined : { scale: 1.18, y: -2 }}
+                                      whileTap={reducedMotion ? undefined : { scale: 0.84 }}
+                                      title={`React ${emoji}`}
+                                      className={`relative px-1.5 py-0.5 rounded-full text-[11px] leading-none border cursor-pointer select-none shadow-2xs ${
+                                        msgBgMode === 'default'
+                                          ? m.isMe
+                                            ? theme.chatBubbleMeReactionChip
+                                            : theme.chatBubbleOtherReactionChip
+                                          : 'bg-white/90 text-slate-900 border-slate-300'
+                                      }`}
+                                    >
+                                      {emoji}
+                                      {isPopped && !reducedMotion && (
+                                        <motion.span
+                                          aria-hidden="true"
+                                          initial={{ opacity: 0.95, y: 0, scale: 0.9 }}
+                                          animate={{ opacity: 0, y: -22, scale: 1.35 }}
+                                          transition={{ duration: 0.55, ease: 'easeOut' }}
+                                          className="pointer-events-none absolute -top-2 left-1/2 -translate-x-1/2 text-xs select-none"
+                                        >
+                                          {emoji}
+                                        </motion.span>
+                                      )}
+                                    </motion.button>
+                                  );
+                                })}
+                              </AnimatePresence>
                             </div>
                           )}
                         </div>
 
                         {!m.isQueuedOffline && (
                           <div className="relative flex flex-wrap items-center gap-1 mt-1 px-1" data-emoji-reaction-menu="true">
-                            <button
+                            <motion.button
                               type="button"
+                              whileHover={reducedMotion ? undefined : { scale: 1.08 }}
+                              whileTap={reducedMotion ? undefined : { scale: 0.86 }}
                               onClick={() =>
                                 setOpenReactionPickerMsgId((prev) => (prev === m.id ? null : m.id))
                               }
@@ -10534,30 +11351,66 @@ export default function App() {
                               aria-expanded={openReactionPickerMsgId === m.id}
                             >
                               <Smile className="w-3 h-3" />
-                            </button>
+                            </motion.button>
 
-                            {openReactionPickerMsgId === m.id && (
-                              <div
-                                className={`absolute bottom-full mb-1.5 z-20 flex items-center gap-0.5 p-1 rounded-2xl ${theme.drawerAside} border shadow-lg ${
-                                  m.isMe ? 'right-0' : 'left-0'
-                                }`}
-                              >
-                                {(['❤️', '👍', '🔥', '😄', '😂', '😮', '😢', '🙏'] as const).map((emoji) => (
-                                  <button
-                                    key={emoji}
-                                    type="button"
-                                    onClick={() => {
-                                      setOpenReactionPickerMsgId(null);
-                                      void addReactionToMessage(m, emoji);
-                                    }}
-                                    className={`text-sm w-7 h-7 flex items-center justify-center rounded-xl hover:scale-110 transition ${theme.drawerSegmentedInactive}`}
-                                    title={`React ${emoji}`}
-                                  >
-                                    {emoji}
-                                  </button>
-                                ))}
-                              </div>
-                            )}
+                            <AnimatePresence>
+                              {openReactionPickerMsgId === m.id && (
+                                <motion.div
+                                  initial={
+                                    reducedMotion
+                                      ? { opacity: 0 }
+                                      : { opacity: 0, scale: 0.84, y: 8 }
+                                  }
+                                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                                  exit={
+                                    reducedMotion
+                                      ? { opacity: 0 }
+                                      : { opacity: 0, scale: 0.88, y: 6 }
+                                  }
+                                  transition={
+                                    reducedMotion
+                                      ? { duration: 0.12 }
+                                      : { type: 'spring', stiffness: 520, damping: 24, mass: 0.6 }
+                                  }
+                                  className={`absolute bottom-full mb-1.5 z-20 flex items-center gap-0.5 p-1 rounded-2xl ${theme.drawerAside} border shadow-lg ${
+                                    m.isMe ? 'right-0' : 'left-0'
+                                  }`}
+                                >
+                                  {(['❤️', '👍', '🔥', '😄', '😂', '😮', '😢', '🙏'] as const).map((emoji, idx) => (
+                                    <motion.button
+                                      key={emoji}
+                                      type="button"
+                                      initial={reducedMotion ? false : { scale: 0.55, opacity: 0 }}
+                                      animate={{ scale: 1, opacity: 1 }}
+                                      transition={
+                                        reducedMotion
+                                          ? { duration: 0.1 }
+                                          : {
+                                              delay: idx * 0.022,
+                                              type: 'spring',
+                                              stiffness: 560,
+                                              damping: 18,
+                                            }
+                                      }
+                                      whileHover={
+                                        reducedMotion
+                                          ? undefined
+                                          : { scale: 1.28, y: -4, rotate: idx % 2 === 0 ? -8 : 8 }
+                                      }
+                                      whileTap={reducedMotion ? undefined : { scale: 0.8 }}
+                                      onClick={() => {
+                                        setOpenReactionPickerMsgId(null);
+                                        void addReactionToMessage(m, emoji);
+                                      }}
+                                      className={`text-sm w-7 h-7 flex items-center justify-center rounded-xl transition-colors ${theme.drawerSegmentedInactive}`}
+                                      title={`React ${emoji}`}
+                                    >
+                                      {emoji}
+                                    </motion.button>
+                                  ))}
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
 
                             <div className="relative">
                               <button
@@ -13321,13 +14174,76 @@ export default function App() {
 
             {/* Scrollable Drawer Body */}
             <div className="flex-1 overflow-y-auto overscroll-y-contain p-4 space-y-5">
+              {/* USER DASHBOARD SIDEBAR BUTTON SECTION (ALL 11 USER TOOLS INSIDE) */}
+              <div className="p-3.5 rounded-2xl border border-emerald-300 dark:border-emerald-700 bg-white/90 dark:bg-slate-900/90 shadow-xs space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('dashboard');
+                      setIsMenuDrawerOpen(false);
+                    }}
+                    className="flex items-center gap-2 text-left min-w-0 flex-1"
+                  >
+                    <LayoutDashboard className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                    <span className="text-[11px] font-black uppercase tracking-wider text-emerald-900 dark:text-emerald-200 truncate">
+                      User Dashboard
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsUserSidebarGroupOpen((v) => !v)}
+                    className="px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 text-[10px] font-bold inline-flex items-center gap-1"
+                  >
+                    <span>Menu</span>
+                    {isUserSidebarGroupOpen ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                  </button>
+                </div>
+
+                {isUserSidebarGroupOpen && (
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {[
+                      { id: 'profile' as const, label: 'Profile (Admin Copy)', icon: <User className="w-3.5 h-3.5 shrink-0" /> },
+                      { id: 'user_created_name' as const, label: 'Created Name', icon: <BadgeCheck className="w-3.5 h-3.5 shrink-0" /> },
+                      { id: 'messages' as const, label: 'Message', icon: <MessageSquare className="w-3.5 h-3.5 shrink-0" /> },
+                      { id: 'feed' as const, label: 'Newsfeed', icon: <Home className="w-3.5 h-3.5 shrink-0" /> },
+                      { id: 'groupchat' as const, label: 'Groupchat', icon: <Users className="w-3.5 h-3.5 shrink-0" /> },
+                      { id: 'wallet' as const, label: 'Wallet', icon: <Wallet className="w-3.5 h-3.5 shrink-0" /> },
+                      { id: 'choy_pro' as const, label: 'Choy Pro', icon: <Crown className="w-3.5 h-3.5 shrink-0 text-amber-500" /> },
+                      { id: 'choy_wallet' as const, label: 'Choy Wallet', icon: <Coins className="w-3.5 h-3.5 shrink-0 text-amber-500" /> },
+                      { id: 'subscription' as const, label: 'Subscription', icon: <CreditCard className="w-3.5 h-3.5 shrink-0" /> },
+                      { id: 'rules' as const, label: 'Rules', icon: <BookOpen className="w-3.5 h-3.5 shrink-0" /> },
+                      { id: 'acknowledgment' as const, label: 'Acknowledgment', icon: <FileCheck2 className="w-3.5 h-3.5 shrink-0" /> },
+                      { id: 'marketplace' as const, label: 'Food Store & Marketplace', icon: <ShoppingBag className="w-3.5 h-3.5 shrink-0 text-orange-500" /> },
+                    ].map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => {
+                          setActiveTab(item.id);
+                          setIsMenuDrawerOpen(false);
+                        }}
+                        className={`px-2.5 py-2 rounded-xl border flex items-center gap-1.5 text-[11px] font-bold transition ${
+                          activeTab === item.id
+                            ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm'
+                            : `${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-emerald-400`
+                        }`}
+                      >
+                        {item.icon}
+                        <span className="truncate">{item.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               {/* App Navigation Section */}
               <div className="p-3.5 rounded-2xl border border-emerald-200 dark:border-emerald-800 bg-white/80 dark:bg-slate-900/80 shadow-xs space-y-3">
                 <div className="flex items-center justify-between px-1">
                   <div className="flex items-center gap-1.5">
                     <Home className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
                     <span className="text-[11px] font-black uppercase tracking-wider text-emerald-900 dark:text-emerald-200">
-                      Navigation &amp; Pages
+                      Other Workspace Tools
                     </span>
                   </div>
                   <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 capitalize">
@@ -13336,54 +14252,6 @@ export default function App() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveTab('feed');
-                      setIsMenuDrawerOpen(false);
-                    }}
-                    className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
-                      activeTab === 'feed'
-                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm'
-                        : `${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-emerald-400`
-                    }`}
-                  >
-                    <Home className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                    <span>Newsfeed</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveTab('messages');
-                      setIsMenuDrawerOpen(false);
-                    }}
-                    className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
-                      activeTab === 'messages'
-                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm'
-                        : `${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-emerald-400`
-                    }`}
-                  >
-                    <MessageSquare className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                    <span>Messages</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveTab('profile');
-                      setIsMenuDrawerOpen(false);
-                    }}
-                    className={`px-3 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-bold transition ${
-                      activeTab === 'profile'
-                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm'
-                        : `${theme.sidebarCard} ${theme.sidebarTitleText} hover:border-emerald-400`
-                    }`}
-                  >
-                    <User className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                    <span>My Profile</span>
-                  </button>
-
                   <button
                     type="button"
                     onClick={() => {
@@ -13463,7 +14331,6 @@ export default function App() {
                     <GitBranch className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
                     <span>GitHub Intel</span>
                   </button>
-
                 </div>
               </div>
 

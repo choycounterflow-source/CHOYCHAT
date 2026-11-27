@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useId, useMemo, useRef, useState } from 'react';
 import {
   GitBranch,
   GitCommitHorizontal,
@@ -32,8 +32,16 @@ import {
   CheckCircle2,
   AlertTriangle,
   Info,
+  TrendingUp,
+  TrendingDown,
+  Minus,
 } from 'lucide-react';
 import {
+  Area,
+  AreaChart,
+  PieChart,
+  Pie,
+  Cell,
   LineChart,
   Line,
   BarChart,
@@ -170,6 +178,14 @@ interface IntelligencePayload {
   };
   commits: CommitItem[];
   commitHistory?: RepoCommitHistoryPoint[];
+  commitActivity30d?: Array<{ date: string; label: string; commits: number }>;
+  commitTrend30d?: {
+    currentCommits: number;
+    previousCommits: number;
+    deltaCommits: number;
+    percentChange: number;
+    direction: 'up' | 'down' | 'flat';
+  };
   contributors: ContributorSummary[];
   repoContributors?: RepoContributorStat[];
   readme: ReadmeDocument | null;
@@ -219,13 +235,15 @@ function isReviewableFilePath(filePath: string): boolean {
   return !NON_TEXT_EXTENSIONS.has(lower.slice(dotIdx));
 }
 
-const LANGUAGE_BAR_COLORS: string[] = [
-  'bg-emerald-500 dark:bg-emerald-400',
-  'bg-amber-500 dark:bg-amber-400',
-  'bg-cyan-500 dark:bg-cyan-400',
-  'bg-indigo-500 dark:bg-indigo-400',
-  'bg-rose-500 dark:bg-rose-400',
-  'bg-teal-500 dark:bg-teal-300',
+const LANGUAGE_HEX_COLORS: string[] = [
+  '#10b981',
+  '#f59e0b',
+  '#06b6d4',
+  '#6366f1',
+  '#f43f5e',
+  '#14b8a6',
+  '#8b5cf6',
+  '#64748b',
 ];
 
 function formatBytes(bytes: number): string {
@@ -631,6 +649,8 @@ function collectAllFolderPaths(nodes: FileTreeNode[]): string[] {
 }
 
 export const GitHubIntelligence: React.FC<GitHubIntelligenceProps> = ({ authToken }) => {
+  const sparklineUid = useId().replace(/[^a-zA-Z0-9_-]/g, '');
+  const sparklineGradientId = `ghRepoSparkline_${sparklineUid}`;
   const [repoUrlInput, setRepoUrlInput] = useState('');
   const [patInput, setPatInput] = useState('');
   const [showPat, setShowPat] = useState(false);
@@ -1260,6 +1280,118 @@ export const GitHubIntelligence: React.FC<GitHubIntelligenceProps> = ({ authToke
     if (!data?.readme?.content) return [];
     return renderSafeMarkdownBlocks(data.readme.content, data.repo.fullName, data.repo.selectedBranch);
   }, [data]);
+
+  const commitActivity30d = useMemo(() => {
+    if (!data) return [];
+    if (Array.isArray(data.commitActivity30d) && data.commitActivity30d.length > 0) {
+      return data.commitActivity30d;
+    }
+    const countsByDay = new Map<string, number>();
+    if (Array.isArray(data.commitHistory)) {
+      for (const pt of data.commitHistory) {
+        if (pt.date) countsByDay.set(pt.date, (countsByDay.get(pt.date) || 0) + (pt.commits || 0));
+      }
+    }
+    if (countsByDay.size === 0 && Array.isArray(data.commits)) {
+      for (const c of data.commits) {
+        if (!c.date) continue;
+        const parsed = new Date(c.date);
+        if (Number.isNaN(parsed.getTime())) continue;
+        const key = parsed.toISOString().slice(0, 10);
+        countsByDay.set(key, (countsByDay.get(key) || 0) + 1);
+      }
+    }
+    const now = new Date();
+    const todayUtcMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    const series: Array<{ date: string; label: string; commits: number }> = [];
+    for (let offset = 29; offset >= 0; offset -= 1) {
+      const d = new Date(todayUtcMs - offset * 86_400_000);
+      const dayKey = d.toISOString().slice(0, 10);
+      series.push({
+        date: dayKey,
+        label: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }),
+        commits: countsByDay.get(dayKey) || 0,
+      });
+    }
+    return series;
+  }, [data]);
+
+  const commitActivity30dStats = useMemo(() => {
+    let total = 0;
+    let activeDays = 0;
+    let peak = 0;
+    for (const pt of commitActivity30d) {
+      total += pt.commits;
+      if (pt.commits > 0) activeDays += 1;
+      if (pt.commits > peak) peak = pt.commits;
+    }
+    return { total, activeDays, peak };
+  }, [commitActivity30d]);
+
+  const commitTrend30d = useMemo(() => {
+    if (data?.commitTrend30d) {
+      return data.commitTrend30d;
+    }
+    const now = new Date();
+    const todayUtcMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    const currentStartMs = todayUtcMs - 29 * 86_400_000;
+    const prevStartMs = todayUtcMs - 59 * 86_400_000;
+    let currentCommits = commitActivity30dStats.total;
+    let previousCommits = 0;
+
+    if (Array.isArray(data?.commits)) {
+      let countedCurrent = 0;
+      for (const c of data.commits) {
+        if (!c.date) continue;
+        const ms = Date.parse(c.date);
+        if (Number.isNaN(ms)) continue;
+        if (ms >= currentStartMs) countedCurrent += 1;
+        else if (ms >= prevStartMs && ms < currentStartMs) previousCommits += 1;
+      }
+      if (currentCommits === 0) currentCommits = countedCurrent;
+    }
+
+    const deltaCommits = currentCommits - previousCommits;
+    const percentChange =
+      previousCommits > 0
+        ? Math.round((deltaCommits / previousCommits) * 100)
+        : currentCommits > 0
+          ? 100
+          : 0;
+    return {
+      currentCommits,
+      previousCommits,
+      deltaCommits,
+      percentChange,
+      direction: deltaCommits > 0 ? ('up' as const) : deltaCommits < 0 ? ('down' as const) : ('flat' as const),
+    };
+  }, [data, commitActivity30dStats.total]);
+
+  const languageChartData = useMemo(() => {
+    const langs = data?.languages || [];
+    if (langs.length === 0) return [];
+    const top = langs.slice(0, 7);
+    const rest = langs.slice(7);
+    const mapped = top.map((l, idx) => ({
+      name: l.name,
+      bytes: l.bytes,
+      percent: l.percent,
+      color: LANGUAGE_HEX_COLORS[idx % LANGUAGE_HEX_COLORS.length],
+    }));
+    if (rest.length > 0) {
+      const restBytes = rest.reduce((sum, l) => sum + l.bytes, 0);
+      const restPercent = Number(rest.reduce((sum, l) => sum + l.percent, 0).toFixed(1));
+      if (restPercent > 0 || restBytes > 0) {
+        mapped.push({
+          name: `Other (${rest.length})`,
+          bytes: restBytes,
+          percent: restPercent,
+          color: LANGUAGE_HEX_COLORS[7],
+        });
+      }
+    }
+    return mapped;
+  }, [data?.languages]);
 
   return (
     <div className="max-w-6xl mx-auto space-y-6 pb-8">
@@ -2039,30 +2171,210 @@ export const GitHubIntelligence: React.FC<GitHubIntelligenceProps> = ({ authToke
               </div>
             </div>
 
-            {/* Language Composition Bar */}
-            {data.languages.length > 0 && (
-              <div className="space-y-2 pt-1">
-                <div className="h-2.5 w-full rounded-full overflow-hidden bg-emerald-100 dark:bg-emerald-950 flex">
-                  {data.languages.map((lang, idx) => (
-                    <div
-                      key={lang.name}
-                      style={{ width: `${Math.max(lang.percent, 1)}%` }}
-                      className={`${LANGUAGE_BAR_COLORS[idx % LANGUAGE_BAR_COLORS.length]} h-full`}
-                      title={`${lang.name}: ${lang.percent}%`}
-                    />
-                  ))}
-                </div>
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-emerald-800 dark:text-emerald-200 font-mono tabular-nums">
-                  {data.languages.slice(0, 6).map((lang, idx) => (
-                    <span key={lang.name} className="inline-flex items-center gap-1.5">
-                      <span
-                        className={`w-2 h-2 rounded-sm ${LANGUAGE_BAR_COLORS[idx % LANGUAGE_BAR_COLORS.length]}`}
-                        aria-hidden="true"
-                      />
-                      <span className="font-sans text-emerald-950 dark:text-white font-medium">{lang.name}</span>
-                      <span className="text-emerald-700/85 dark:text-emerald-300/80">{lang.percent}%</span>
+            {/* 30-Day Commit Activity Sparkline */}
+            {commitActivity30d.length > 0 && (
+              <div className="p-3.5 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/75 border border-emerald-200 dark:border-emerald-800/70 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div className="space-y-0.5 shrink-0">
+                  <div className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-800 dark:text-emerald-200">
+                    <GitCommitHorizontal className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                    <span>30-Day Commit Frequency</span>
+                  </div>
+                  <div className="flex items-baseline gap-2 flex-wrap">
+                    <span className="text-base font-bold text-emerald-950 dark:text-white font-mono tabular-nums">
+                      {commitActivity30dStats.total.toLocaleString()}
                     </span>
-                  ))}
+                    <span className="text-[11px] text-emerald-700 dark:text-emerald-300/85 font-mono tabular-nums">
+                      commits · {commitActivity30dStats.activeDays}/30 active days · peak {commitActivity30dStats.peak}/day
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between md:justify-end gap-3 w-full md:w-auto min-w-0">
+                  {/* Trend Indicator vs Previous 30-Day Period */}
+                  <div
+                    title={`${commitTrend30d.currentCommits.toLocaleString()} commits in last 30 days vs ${commitTrend30d.previousCommits.toLocaleString()} in previous 30 days`}
+                    className={`px-2.5 py-1.5 rounded-lg border shrink-0 flex flex-col items-end justify-center leading-tight ${
+                      commitTrend30d.direction === 'up'
+                        ? 'bg-emerald-100/90 dark:bg-emerald-900/80 border-emerald-300 dark:border-emerald-600/80 text-emerald-800 dark:text-emerald-200'
+                        : commitTrend30d.direction === 'down'
+                          ? 'bg-rose-100/90 dark:bg-rose-950/80 border-rose-300 dark:border-rose-700/80 text-rose-800 dark:text-rose-200'
+                          : 'bg-white/90 dark:bg-emerald-900/60 border-emerald-200 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300'
+                    }`}
+                  >
+                    <div className="inline-flex items-center gap-1 text-xs font-bold font-mono tabular-nums whitespace-nowrap">
+                      {commitTrend30d.direction === 'up' ? (
+                        <TrendingUp className="w-3.5 h-3.5 shrink-0" />
+                      ) : commitTrend30d.direction === 'down' ? (
+                        <TrendingDown className="w-3.5 h-3.5 shrink-0" />
+                      ) : (
+                        <Minus className="w-3.5 h-3.5 shrink-0" />
+                      )}
+                      <span>
+                        {commitTrend30d.percentChange > 0
+                          ? `+${commitTrend30d.percentChange}%`
+                          : `${commitTrend30d.percentChange}%`}
+                      </span>
+                    </div>
+                    <span className="text-[9px] font-mono tabular-nums opacity-80 whitespace-nowrap">
+                      vs {commitTrend30d.previousCommits} prev 30d
+                    </span>
+                  </div>
+
+                  <div
+                    className="flex-1 md:flex-none sm:w-56 md:w-64 lg:w-72 h-12 min-w-[120px] shrink-0"
+                    aria-label="30-day commit activity sparkline chart"
+                  >
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={commitActivity30d} margin={{ top: 4, right: 4, left: 4, bottom: 2 }}>
+                        <defs>
+                          <linearGradient id={sparklineGradientId} x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#10b981" stopOpacity={0.35} />
+                            <stop offset="95%" stopColor="#10b981" stopOpacity={0.02} />
+                          </linearGradient>
+                        </defs>
+                        <Tooltip
+                          cursor={{ stroke: '#10b981', strokeWidth: 1, strokeDasharray: '2 2' }}
+                          content={({ active, payload }) => {
+                            if (!active || !payload || payload.length === 0) return null;
+                            const row = payload[0]?.payload as { label?: string; commits?: number } | undefined;
+                            const count = row?.commits ?? 0;
+                            return (
+                              <div className="rounded-lg bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 px-2.5 py-1 shadow-md text-[10px] font-mono tabular-nums text-emerald-950 dark:text-white whitespace-nowrap">
+                                <span className="font-bold">{row?.label}</span>
+                                <span className="mx-1.5 text-emerald-500">·</span>
+                                <span className="text-emerald-700 dark:text-emerald-300 font-semibold">
+                                  {count} commit{count === 1 ? '' : 's'}
+                                </span>
+                              </div>
+                            );
+                          }}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="commits"
+                          stroke="#10b981"
+                          strokeWidth={2}
+                          fill={`url(#${sparklineGradientId})`}
+                          dot={false}
+                          activeDot={{ r: 3.5, fill: '#34d399', stroke: '#064e3b', strokeWidth: 1.5 }}
+                          isAnimationActive={false}
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Language Distribution Recharts Donut Chart */}
+            {languageChartData.length > 0 && (
+              <div className="p-3.5 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/75 border border-emerald-200 dark:border-emerald-800/70 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-800 dark:text-emerald-200">
+                    <Code2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                    <span>Language Distribution</span>
+                  </div>
+                  <span className="text-[11px] text-emerald-700 dark:text-emerald-300/80 font-mono tabular-nums">
+                    {data.languages.length} language{data.languages.length === 1 ? '' : 's'} detected
+                  </span>
+                </div>
+
+                <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                  {/* Recharts Donut Chart */}
+                  <div
+                    className="relative w-36 h-36 mx-auto sm:mx-0 shrink-0"
+                    aria-label="Repository programming language distribution chart"
+                  >
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={languageChartData}
+                          dataKey="percent"
+                          nameKey="name"
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={40}
+                          outerRadius={60}
+                          paddingAngle={languageChartData.length > 1 ? 2 : 0}
+                          stroke="none"
+                          animationDuration={450}
+                        >
+                          {languageChartData.map((entry) => (
+                            <Cell key={entry.name} fill={entry.color} />
+                          ))}
+                        </Pie>
+                        <Tooltip
+                          content={({ active, payload }) => {
+                            if (!active || !payload || payload.length === 0) return null;
+                            const row = payload[0]?.payload as {
+                              name?: string;
+                              percent?: number;
+                              bytes?: number;
+                              color?: string;
+                            } | undefined;
+                            if (!row) return null;
+                            return (
+                              <div className="rounded-lg bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 px-2.5 py-1.5 shadow-md text-[10px] font-mono tabular-nums text-emerald-950 dark:text-white whitespace-nowrap space-y-0.5">
+                                <div className="flex items-center gap-1.5 font-sans font-bold">
+                                  <span
+                                    className="w-2 h-2 rounded-sm shrink-0"
+                                    style={{ backgroundColor: row.color || '#10b981' }}
+                                  />
+                                  <span>{row.name}</span>
+                                </div>
+                                <div className="text-emerald-700 dark:text-emerald-300">
+                                  {row.percent ?? 0}% · {formatBytes(row.bytes ?? 0)}
+                                </div>
+                              </div>
+                            );
+                          }}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                    <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center px-3">
+                      <span className="text-sm font-bold text-emerald-950 dark:text-white font-mono tabular-nums leading-none">
+                        {languageChartData[0].percent}%
+                      </span>
+                      <span className="text-[10px] font-medium text-emerald-700 dark:text-emerald-300 truncate max-w-[68px] mt-0.5">
+                        {languageChartData[0].name}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Language Percentage Breakdown */}
+                  <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-2 min-w-0">
+                    {languageChartData.map((lang) => (
+                      <div
+                        key={lang.name}
+                        className="px-2.5 py-1.5 rounded-lg bg-white/80 dark:bg-emerald-900/45 border border-emerald-200/80 dark:border-emerald-800/70 space-y-1 min-w-0"
+                      >
+                        <div className="flex items-center justify-between gap-2 text-[11px]">
+                          <span className="inline-flex items-center gap-1.5 min-w-0">
+                            <span
+                              className="w-2.5 h-2.5 rounded-sm shrink-0"
+                              style={{ backgroundColor: lang.color }}
+                              aria-hidden="true"
+                            />
+                            <span className="font-semibold text-emerald-950 dark:text-white truncate">
+                              {lang.name}
+                            </span>
+                          </span>
+                          <span className="font-mono tabular-nums text-emerald-800 dark:text-emerald-200 font-bold shrink-0">
+                            {lang.percent}%
+                          </span>
+                        </div>
+                        <div className="h-1.5 w-full rounded-full bg-emerald-100 dark:bg-emerald-950 overflow-hidden">
+                          <div
+                            className="h-full rounded-full"
+                            style={{
+                              width: `${Math.max(lang.percent, 2)}%`,
+                              backgroundColor: lang.color,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             )}
