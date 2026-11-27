@@ -1549,6 +1549,280 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [selectedProfileUser]);
 
+  type AppTabId =
+    | 'feed'
+    | 'profile'
+    | 'messages'
+    | 'ledger'
+    | 'analytics'
+    | 'admin_approvals'
+    | 'admin_knowledge'
+    | 'admin_prices'
+    | 'admin_newsfeeds'
+    | 'admin_security'
+    | 'choyai'
+    | 'github'
+    | 'people'
+    | 'videos';
+  type AppNavSnapshot = {
+    tab: AppTabId;
+    feedFilter: 'all' | 'image' | 'video' | 'music' | 'people';
+    chatMobileView: boolean;
+  };
+  const navHistoryRef = useRef<AppNavSnapshot[]>([]);
+  const prevNavSnapRef = useRef<AppNavSnapshot>({
+    tab: activeTab,
+    feedFilter: feedCategoryFilter,
+    chatMobileView: activeChatMobileView,
+  });
+  const isNavigatingBackRef = useRef(false);
+  const [navHistoryCount, setNavHistoryCount] = useState(0);
+
+  useEffect(() => {
+    if (!currentUser) {
+      navHistoryRef.current = [];
+      setNavHistoryCount(0);
+    }
+  }, [currentUser]);
+
+  useEffect(() => {
+    const prev = prevNavSnapRef.current;
+    const curr: AppNavSnapshot = {
+      tab: activeTab,
+      feedFilter: feedCategoryFilter,
+      chatMobileView: activeChatMobileView,
+    };
+    if (
+      prev.tab === curr.tab &&
+      prev.feedFilter === curr.feedFilter &&
+      prev.chatMobileView === curr.chatMobileView
+    ) {
+      return;
+    }
+    prevNavSnapRef.current = curr;
+
+    if (isNavigatingBackRef.current) {
+      isNavigatingBackRef.current = false;
+      setNavHistoryCount(navHistoryRef.current.length);
+      return;
+    }
+
+    // Exiting a mobile chat thread back to the chat list should not leave the thread on the back stack
+    if (prev.tab === 'messages' && curr.tab === 'messages' && prev.chatMobileView && !curr.chatMobileView) {
+      navHistoryRef.current = navHistoryRef.current.filter(
+        (entry) => !(entry.tab === 'messages' && entry.chatMobileView)
+      );
+      setNavHistoryCount(navHistoryRef.current.length);
+      return;
+    }
+
+    const nextHistory = [...navHistoryRef.current, prev].slice(-30);
+    navHistoryRef.current = nextHistory;
+    setNavHistoryCount(nextHistory.length);
+  }, [activeTab, feedCategoryFilter, activeChatMobileView]);
+
+  const hasOpenBackOverlay = Boolean(
+    zoomedImage ||
+      isPhotoEditorOpen ||
+      selectedGalleryVideo ||
+      isMediaGalleryOpen ||
+      groupMembersModalId ||
+      isCreateGroupModalOpen ||
+      selectedProfileUser ||
+      forwardingMessage ||
+      isAppIconShareModalOpen ||
+      isPrivacyModalOpen ||
+      isChoyAIPopupOpen ||
+      isMenuDrawerOpen ||
+      isSearchOpen
+  );
+
+  const canGoBack =
+    hasOpenBackOverlay ||
+    navHistoryCount > 0 ||
+    activeChatMobileView ||
+    activeTab !== 'feed' ||
+    feedCategoryFilter !== 'all';
+
+  const getTabDisplayName = (tab: AppTabId, feedFilter: AppNavSnapshot['feedFilter']): string => {
+    if (tab === 'feed') {
+      if (feedFilter === 'music') return 'Music';
+      if (feedFilter === 'video') return 'Videos';
+      if (feedFilter === 'image') return 'Photos';
+      if (feedFilter === 'people') return 'People';
+      return 'Newsfeed';
+    }
+    if (tab === 'messages') return 'Messages';
+    if (tab === 'people') return 'People';
+    if (tab === 'videos') return 'Videos';
+    if (tab === 'profile') return 'Profile';
+    if (tab === 'ledger') return 'Ledger';
+    if (tab === 'analytics') return 'Analytics';
+    if (tab === 'choyai') return 'Choy AI';
+    if (tab === 'github') return 'GitHub';
+    return 'Home';
+  };
+
+  const backDestinationLabel = (() => {
+    if (zoomedImage) return 'Close Photo';
+    if (isPhotoEditorOpen) return 'Close Editor';
+    if (selectedGalleryVideo || isMediaGalleryOpen) return 'Close Gallery';
+    if (groupMembersModalId || isCreateGroupModalOpen) return 'Close Group';
+    if (selectedProfileUser) return 'Close Profile';
+    if (forwardingMessage) return 'Close Forward';
+    if (isAppIconShareModalOpen || isPrivacyModalOpen) return 'Close';
+    if (isChoyAIPopupOpen) return 'Close Choy AI';
+    if (isMenuDrawerOpen) return 'Close Menu';
+    if (isSearchOpen) return 'Close Search';
+    if (activeTab === 'messages' && activeChatMobileView) return 'Chats';
+    if (navHistoryCount > 0) {
+      const top = navHistoryRef.current[navHistoryRef.current.length - 1];
+      if (top) return getTabDisplayName(top.tab, top.feedFilter);
+    }
+    if (activeTab === 'feed' && feedCategoryFilter !== 'all') return 'Newsfeed';
+    if (activeTab !== 'feed') return 'Newsfeed';
+    return '';
+  })();
+
+  const goBackInApp = useCallback(() => {
+    if (zoomedImage) {
+      setZoomedImage(null);
+      return;
+    }
+    if (isPhotoEditorOpen) {
+      setIsPhotoEditorOpen(false);
+      return;
+    }
+    if (selectedGalleryVideo) {
+      setSelectedGalleryVideo(null);
+      return;
+    }
+    if (isMediaGalleryOpen) {
+      setIsMediaGalleryOpen(false);
+      return;
+    }
+    if (groupMembersModalId) {
+      setGroupMembersModalId(null);
+      return;
+    }
+    if (isCreateGroupModalOpen) {
+      setIsCreateGroupModalOpen(false);
+      return;
+    }
+    if (selectedProfileUser) {
+      setSelectedProfileUser(null);
+      return;
+    }
+    if (forwardingMessage) {
+      setForwardingMessage(null);
+      return;
+    }
+    if (isAppIconShareModalOpen) {
+      setIsAppIconShareModalOpen(false);
+      return;
+    }
+    if (isPrivacyModalOpen) {
+      setIsPrivacyModalOpen(false);
+      return;
+    }
+    if (isChoyAIPopupOpen) {
+      setIsChoyAIPopupOpen(false);
+      return;
+    }
+    if (isMenuDrawerOpen) {
+      setIsMenuDrawerOpen(false);
+      return;
+    }
+    if (isSearchOpen) {
+      setIsSearchOpen(false);
+      return;
+    }
+    if (activeTab === 'messages' && activeChatMobileView) {
+      isNavigatingBackRef.current = true;
+      const last = navHistoryRef.current[navHistoryRef.current.length - 1];
+      if (last && last.tab === 'messages' && !last.chatMobileView) {
+        navHistoryRef.current = navHistoryRef.current.slice(0, -1);
+        setNavHistoryCount(navHistoryRef.current.length);
+      }
+      setActiveChatMobileView(false);
+      return;
+    }
+    if (navHistoryRef.current.length > 0) {
+      const target = navHistoryRef.current[navHistoryRef.current.length - 1];
+      navHistoryRef.current = navHistoryRef.current.slice(0, -1);
+      setNavHistoryCount(navHistoryRef.current.length);
+      isNavigatingBackRef.current = true;
+      setActiveTab(target.tab);
+      setFeedCategoryFilter(target.feedFilter);
+      setActiveChatMobileView(target.chatMobileView);
+      return;
+    }
+    if (activeTab === 'feed' && feedCategoryFilter !== 'all') {
+      isNavigatingBackRef.current = true;
+      setFeedCategoryFilter('all');
+      return;
+    }
+    if (activeTab !== 'feed') {
+      isNavigatingBackRef.current = true;
+      setActiveTab('feed');
+      setFeedCategoryFilter('all');
+      setActiveChatMobileView(false);
+    }
+  }, [
+    zoomedImage,
+    isPhotoEditorOpen,
+    selectedGalleryVideo,
+    isMediaGalleryOpen,
+    groupMembersModalId,
+    isCreateGroupModalOpen,
+    selectedProfileUser,
+    forwardingMessage,
+    isAppIconShareModalOpen,
+    isPrivacyModalOpen,
+    isChoyAIPopupOpen,
+    isMenuDrawerOpen,
+    isSearchOpen,
+    activeTab,
+    activeChatMobileView,
+    feedCategoryFilter,
+  ]);
+
+  const goBackInAppRef = useRef(goBackInApp);
+  goBackInAppRef.current = goBackInApp;
+  const canGoBackRef = useRef(canGoBack);
+  canGoBackRef.current = canGoBack;
+
+  // Sync browser / Android device hardware Back button with in-app navigation stack
+  useEffect(() => {
+    if (!currentUser || typeof window === 'undefined') return;
+    if (canGoBack && (!window.history.state || window.history.state.choyInApp !== true)) {
+      window.history.pushState({ choyInApp: true }, '');
+    }
+  }, [currentUser, canGoBack]);
+
+  useEffect(() => {
+    if (!currentUser || typeof window === 'undefined') return;
+    const handlePopState = () => {
+      if (isInVideoCall) {
+        if (isBgPickerOpen) {
+          setIsBgPickerOpen(false);
+        }
+        window.history.pushState({ choyInApp: true }, '');
+        return;
+      }
+      if (canGoBackRef.current) {
+        goBackInAppRef.current();
+        window.setTimeout(() => {
+          if (canGoBackRef.current && (!window.history.state || window.history.state.choyInApp !== true)) {
+            window.history.pushState({ choyInApp: true }, '');
+          }
+        }, 0);
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [currentUser, isInVideoCall, isBgPickerOpen]);
+
   // Authenticated fetch helper using in-memory Bearer token with timeout protection
   const apiFetch = useCallback(
     async (url: string, options: RequestInit = {}) => {
@@ -7899,23 +8173,38 @@ export default function App() {
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* TOP BAR — CENTERED CHOY CHAT BANNER WITH NAVIGATION CONTROLS */}
         <header className={`relative z-30 flex items-center justify-between px-3 sm:px-5 py-2 border-b ${theme.topHeaderBg} shrink-0 gap-2 transition-colors`}>
-          {/* Left: Mobile Navigation Menu button */}
-          <div className="flex items-center gap-2 shrink-0 min-w-[72px]">
+          {/* Left: App Back Button + Mobile Navigation Menu button */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 min-w-[72px] sm:min-w-[96px]">
+            <button
+              type="button"
+              onClick={goBackInApp}
+              disabled={!canGoBack}
+              className={`min-h-[38px] sm:min-h-[40px] px-2.5 sm:px-3 py-1.5 border rounded-xl transition shadow-xs flex items-center gap-1.5 text-xs font-bold whitespace-nowrap shrink-0 ${
+                canGoBack
+                  ? `${theme.chatHeaderBackBtn} active:scale-95 cursor-pointer`
+                  : `${theme.searchButton} opacity-45 cursor-default`
+              }`}
+              title={canGoBack && backDestinationLabel ? `Back (${backDestinationLabel})` : 'Back (Already on Newsfeed)'}
+              aria-label={canGoBack && backDestinationLabel ? `Go back: ${backDestinationLabel}` : 'App Back'}
+            >
+              <ArrowLeft className="w-4 h-4 shrink-0" />
+              <span className="text-[11px] sm:text-xs">Back</span>
+            </button>
             <button
               type="button"
               onClick={() => setIsMenuDrawerOpen(true)}
-              className={`p-1.5 sm:px-2.5 sm:py-1.5 border rounded-xl transition shadow-xs flex items-center gap-1.5 text-xs font-bold md:hidden ${theme.searchButton}`}
+              className={`min-h-[38px] p-2 border rounded-xl transition shadow-xs flex items-center justify-center text-xs font-bold whitespace-nowrap shrink-0 md:hidden ${theme.searchButton}`}
               title="Open Navigation Menu"
               aria-label="Open Navigation Menu"
             >
-              <Menu className="w-4 h-4" />
-              <span className="text-[11px]">Menu</span>
+              <Menu className="w-4 h-4 shrink-0" />
+              <span className="sr-only">Menu</span>
             </button>
           </div>
 
           {/* Center: Centered CHOY CHAT App Name */}
           <div className="flex-1 flex flex-col items-center justify-center text-center min-w-0">
-            <h1 className={`font-black uppercase tracking-[0.2em] text-base sm:text-lg bg-gradient-to-r ${theme.heroWordmark} bg-clip-text text-transparent truncate`}>
+            <h1 className={`font-black uppercase tracking-[0.2em] text-sm sm:text-lg bg-gradient-to-r ${theme.heroWordmark} bg-clip-text text-transparent truncate`}>
               CHOY CHAT
             </h1>
             <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
@@ -7924,17 +8213,17 @@ export default function App() {
           </div>
 
           {/* Right: 3-dots Menu Button */}
-          <div className="flex items-center justify-end gap-2 shrink-0 min-w-[72px]">
+          <div className="flex items-center justify-end gap-2 shrink-0 min-w-[72px] sm:min-w-[96px]">
             <button
               type="button"
               onClick={() => setIsMenuDrawerOpen(true)}
-              className={`p-1.5 sm:px-2.5 sm:py-1.5 border rounded-xl transition shadow-xs flex items-center gap-1.5 text-xs font-bold ${theme.searchButton}`}
+              className={`min-h-[38px] sm:min-h-[40px] p-2 sm:px-3 sm:py-1.5 border rounded-xl transition shadow-xs flex items-center gap-1.5 text-xs font-bold whitespace-nowrap shrink-0 ${theme.searchButton}`}
               title="Open Menu & Settings"
               aria-label="Open Menu and Settings"
               aria-expanded={isMenuDrawerOpen}
             >
-              <MoreVertical className="w-4 h-4" />
-              <span className="hidden xs:inline text-[11px]">More</span>
+              <MoreVertical className="w-4 h-4 shrink-0" />
+              <span className="hidden sm:inline text-[11px] sm:text-xs">More</span>
             </button>
           </div>
         </header>

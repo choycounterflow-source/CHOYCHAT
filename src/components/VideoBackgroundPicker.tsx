@@ -97,7 +97,7 @@ export const VideoBackgroundPicker: React.FC<VideoBackgroundPickerProps> = ({
           animate={prefersReducedMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1 }}
           exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 8, scale: 0.98 }}
           transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-          className="VideoBackgroundPicker w-full max-w-3xl mt-3 rounded-2xl bg-slate-900/95 border border-emerald-500/40 backdrop-blur-md p-3.5 sm:p-4 shadow-2xl space-y-3"
+          className="VideoBackgroundPicker w-full max-w-3xl mt-3 rounded-xl bg-slate-900/95 border border-emerald-400/35 ring-1 ring-white/5 backdrop-blur-md p-3.5 sm:p-4 shadow-lg shadow-slate-950/60 space-y-3"
           role="region"
           aria-label="Video Call Background Effects"
         >
