@@ -565,6 +565,150 @@ function sanitizeChoyProgramsConfig(raw: unknown): StoredChoyProgramsConfig {
     updatedAt: typeof input.updatedAt === 'string' ? input.updatedAt : new Date().toISOString(),
   };
 }
+
+export type PaymentTerminalChannelId = 'gcash' | 'maya' | 'qrph' | 'bank_transfer' | 'online_card';
+export type PaymentTerminalPurpose = 'wallet_topup' | 'choy_coins' | 'order_payment' | 'pos_payment';
+export type PaymentTerminalStatus = 'pending' | 'approved' | 'rejected';
+
+export interface StoredPaymentTerminalConfig {
+  enabled: boolean;
+  merchantName: string;
+  terminalId: string;
+  gcashEnabled: boolean;
+  gcashName: string;
+  gcashNumber: string;
+  gcashQrUrl?: string;
+  mayaEnabled: boolean;
+  mayaName: string;
+  mayaNumber: string;
+  mayaQrUrl?: string;
+  qrphEnabled: boolean;
+  qrphLabel: string;
+  qrphQrUrl?: string;
+  bankEnabled: boolean;
+  bankName: string;
+  bankAccountName: string;
+  bankAccountNumber: string;
+  onlineCardEnabled: boolean;
+  convenienceFeePercent: number;
+  minAmountPhp: number;
+  maxAmountPhp: number;
+  instructions: string;
+  updatedAt: string;
+}
+
+export interface StoredPaymentTerminalTx {
+  id: string;
+  referenceCode: string;
+  userId: string;
+  userName: string;
+  userPhone?: string;
+  purpose: PaymentTerminalPurpose;
+  channel: PaymentTerminalChannelId;
+  amountPhp: number;
+  feePhp: number;
+  totalPhp: number;
+  choyCoinsPreview: number;
+  payerReference: string;
+  customerName: string;
+  customerContact: string;
+  note: string;
+  receiptImageUrl?: string;
+  checkoutUrl?: string;
+  status: PaymentTerminalStatus;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  creditedAt?: string;
+  rejectionReason?: string;
+  createdAt: string;
+}
+
+export const DEFAULT_PAYMENT_TERMINAL_CONFIG: StoredPaymentTerminalConfig = {
+  enabled: true,
+  merchantName: 'Choy Chat Merchant POS',
+  terminalId: 'CHOY-POS-01',
+  gcashEnabled: true,
+  gcashName: 'Choy Chat Official',
+  gcashNumber: '09361223978',
+  gcashQrUrl: undefined,
+  mayaEnabled: true,
+  mayaName: 'Choy Chat Official',
+  mayaNumber: '0918 000 0000',
+  mayaQrUrl: undefined,
+  qrphEnabled: true,
+  qrphLabel: 'Choy Chat QRPh Unified',
+  qrphQrUrl: undefined,
+  bankEnabled: true,
+  bankName: 'BDO / BPI / UnionBank',
+  bankAccountName: 'Choy Chat Merchant',
+  bankAccountNumber: '0000-0000-0000',
+  onlineCardEnabled: true,
+  convenienceFeePercent: 0,
+  minAmountPhp: 10,
+  maxAmountPhp: 100000,
+  instructions:
+    'Send the exact Total Amount using your chosen online channel, enter your reference number or upload your screenshot, then submit for fast verification.',
+  updatedAt: new Date(0).toISOString(),
+};
+
+function sanitizeTerminalImageUrl(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.startsWith('/assets/') || trimmed.startsWith('/api/media/')) {
+    return trimmed.slice(0, 1000);
+  }
+  if (/^data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(trimmed)) {
+    return trimmed.length <= 2_500_000 ? trimmed : undefined;
+  }
+  return sanitizeMediaUrl(trimmed);
+}
+
+export function sanitizePaymentTerminalConfig(raw: unknown): StoredPaymentTerminalConfig {
+  const input = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const str = (val: unknown, fallback: string, maxLen: number): string => {
+    if (typeof val !== 'string') return fallback;
+    const t = val.trim();
+    return t ? t.slice(0, maxLen) : fallback;
+  };
+  const minAmountPhp = clampNum(input.minAmountPhp ?? DEFAULT_PAYMENT_TERMINAL_CONFIG.minAmountPhp, 1, 100000);
+  const maxAmountPhp = Math.max(
+    minAmountPhp,
+    clampNum(input.maxAmountPhp ?? DEFAULT_PAYMENT_TERMINAL_CONFIG.maxAmountPhp, 1, 500000)
+  );
+  const rawGcashNumber = str(input.gcashNumber, DEFAULT_PAYMENT_TERMINAL_CONFIG.gcashNumber, 40);
+  const normalizedGcashNumber =
+    rawGcashNumber.replace(/\s+/g, '') === '09170000000'
+      ? DEFAULT_PAYMENT_TERMINAL_CONFIG.gcashNumber
+      : rawGcashNumber;
+  return {
+    enabled: input.enabled !== false,
+    merchantName: str(input.merchantName, DEFAULT_PAYMENT_TERMINAL_CONFIG.merchantName, 80),
+    terminalId: str(input.terminalId, DEFAULT_PAYMENT_TERMINAL_CONFIG.terminalId, 32).toUpperCase(),
+    gcashEnabled: input.gcashEnabled !== false,
+    gcashName: str(input.gcashName, DEFAULT_PAYMENT_TERMINAL_CONFIG.gcashName, 80),
+    gcashNumber: normalizedGcashNumber,
+    gcashQrUrl: sanitizeTerminalImageUrl(input.gcashQrUrl),
+    mayaEnabled: input.mayaEnabled !== false,
+    mayaName: str(input.mayaName, DEFAULT_PAYMENT_TERMINAL_CONFIG.mayaName, 80),
+    mayaNumber: str(input.mayaNumber, DEFAULT_PAYMENT_TERMINAL_CONFIG.mayaNumber, 40),
+    mayaQrUrl: sanitizeTerminalImageUrl(input.mayaQrUrl),
+    qrphEnabled: input.qrphEnabled !== false,
+    qrphLabel: str(input.qrphLabel, DEFAULT_PAYMENT_TERMINAL_CONFIG.qrphLabel, 80),
+    qrphQrUrl: sanitizeTerminalImageUrl(input.qrphQrUrl),
+    bankEnabled: input.bankEnabled !== false,
+    bankName: str(input.bankName, DEFAULT_PAYMENT_TERMINAL_CONFIG.bankName, 80),
+    bankAccountName: str(input.bankAccountName, DEFAULT_PAYMENT_TERMINAL_CONFIG.bankAccountName, 80),
+    bankAccountNumber: str(input.bankAccountNumber, DEFAULT_PAYMENT_TERMINAL_CONFIG.bankAccountNumber, 60),
+    onlineCardEnabled: input.onlineCardEnabled !== false,
+    convenienceFeePercent: Math.round(clampNum(input.convenienceFeePercent ?? 0, 0, 25) * 100) / 100,
+    minAmountPhp,
+    maxAmountPhp,
+    instructions: str(input.instructions, DEFAULT_PAYMENT_TERMINAL_CONFIG.instructions, 400),
+    updatedAt: typeof input.updatedAt === 'string' && input.updatedAt.trim() ? input.updatedAt : new Date().toISOString(),
+  };
+}
+
 const DEFAULT_SETTINGS: StoredPricesSettings = {
   fiveH: 50,
   bulig: 100,
@@ -772,6 +916,8 @@ export class ChoyStore {
   private memSettings: StoredPricesSettings = { ...DEFAULT_SETTINGS };
   private memNewsfeedConfig: StoredNewsfeedConfig = { ...DEFAULT_NEWSFEED_CONFIG };
   private memChoyProgramsConfig: StoredChoyProgramsConfig = sanitizeChoyProgramsConfig(DEFAULT_CHOY_PROGRAMS_CONFIG);
+  private memPaymentTerminalConfig: StoredPaymentTerminalConfig = sanitizePaymentTerminalConfig(DEFAULT_PAYMENT_TERMINAL_CONFIG);
+  private memPaymentTerminalTxs: StoredPaymentTerminalTx[] = [];
   private memPushSubs: StoredPushSubscription[] = [];
   private memVapidKeys: VapidKeyPair | null = null;
   private memLocations: Array<{
@@ -912,6 +1058,7 @@ export class ChoyStore {
   ];
 
   private memMarketplaceOrders: StoredMarketplaceOrder[] = [];
+  private zeroStarterBalancesV1 = false;
   private memSeeded = false;
   private persistInFlight: Promise<void> | null = null;
   private persistQueued = false;
@@ -973,6 +1120,12 @@ export class ChoyStore {
       if (data.choyProgramsConfig && typeof data.choyProgramsConfig === 'object') {
         this.memChoyProgramsConfig = sanitizeChoyProgramsConfig(data.choyProgramsConfig);
       }
+      if (data.paymentTerminalConfig && typeof data.paymentTerminalConfig === 'object') {
+        this.memPaymentTerminalConfig = sanitizePaymentTerminalConfig(data.paymentTerminalConfig);
+      }
+      if (Array.isArray(data.paymentTerminalTxs)) {
+        this.memPaymentTerminalTxs = data.paymentTerminalTxs as StoredPaymentTerminalTx[];
+      }
       if (Array.isArray(data.pushSubs)) this.memPushSubs = data.pushSubs as StoredPushSubscription[];
       if (data.vapidKeys && typeof data.vapidKeys === 'object') {
         this.memVapidKeys = data.vapidKeys as VapidKeyPair;
@@ -995,6 +1148,7 @@ export class ChoyStore {
       if (Array.isArray(data.userDashboards)) this.memUserDashboards = data.userDashboards as StoredUserDashboard[];
       if (Array.isArray(data.marketplaceItems)) this.memMarketplaceItems = data.marketplaceItems as StoredMarketplaceItem[];
       if (Array.isArray(data.marketplaceOrders)) this.memMarketplaceOrders = data.marketplaceOrders as StoredMarketplaceOrder[];
+      if (data.zeroStarterBalancesV1 === true) this.zeroStarterBalancesV1 = true;
       this.memSeeded = true;
       console.log(
         `[ChoyStore] Loaded persistent local store (${this.memUsers.length} users, ${this.memPosts.length} posts, ${this.memMessages.length} messages).`
@@ -1034,6 +1188,8 @@ export class ChoyStore {
           settings: this.memSettings,
           newsfeedConfig: this.memNewsfeedConfig,
           choyProgramsConfig: this.memChoyProgramsConfig,
+          paymentTerminalConfig: this.memPaymentTerminalConfig,
+          paymentTerminalTxs: this.memPaymentTerminalTxs,
           pushSubs: this.memPushSubs,
           vapidKeys: this.memVapidKeys,
           locations: this.memLocations,
@@ -1046,6 +1202,7 @@ export class ChoyStore {
           userDashboards: this.memUserDashboards,
           marketplaceItems: this.memMarketplaceItems,
           marketplaceOrders: this.memMarketplaceOrders,
+          zeroStarterBalancesV1: this.zeroStarterBalancesV1,
         };
         const tmpPath = `${LOCAL_DATA_FILE}.tmp.${process.pid}`;
         await fs.promises.writeFile(tmpPath, JSON.stringify(payload, null, 2), 'utf8');
@@ -1179,6 +1336,7 @@ export class ChoyStore {
               await this.createTables();
               await this.ensurePostgresSessionKey(pool);
               await this.seedIfEmptyPostgres();
+              await this.ensureZeroStarterBalancesPostgres(pool);
               this.usePostgres = true;
               this._storageStatus = 'postgres_connected';
               console.log(
@@ -1215,9 +1373,69 @@ export class ChoyStore {
     const loaded = this.loadMemoryFromDisk();
     if (!loaded) {
       this.seedMemory();
+      this.zeroStarterBalancesV1 = true;
       await this.persistMemory();
+    } else if (!this.zeroStarterBalancesV1) {
+      this.memUserDashboards = this.memUserDashboards.map((dash) => this.stripPreseededBalances(dash));
+      this.zeroStarterBalancesV1 = true;
+      await this.persistMemory();
+      console.log('[ChoyStore] Reset pre-seeded user wallet & coin balances to 0 in local store.');
     }
     console.log('[ChoyStore] Running with persistent local disk fallback (.choychat-data.json).');
+  }
+
+  private stripPreseededBalances(dash: StoredUserDashboard): StoredUserDashboard {
+    const cleanedTxs = Array.isArray(dash.transactions)
+      ? dash.transactions.filter((tx) => {
+          const id = String(tx?.id || '').toLowerCase();
+          const note = String(tx?.note || '').toLowerCase();
+          return (
+            !id.startsWith('tx_wallet_init_') &&
+            !id.startsWith('tx_choy_init_') &&
+            !note.includes('starter cash wallet') &&
+            !note.includes('free choy') &&
+            !note.includes('daily reward')
+          );
+        })
+      : [];
+    return {
+      ...dash,
+      walletBalance: 0,
+      choyWalletBalance: 0,
+      transactions: cleanedTxs,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  private async ensureZeroStarterBalancesPostgres(pool: Pool): Promise<void> {
+    try {
+      const check = await pool.query('SELECT id FROM app_settings WHERE id = $1 LIMIT 1', [
+        'migration_zero_starter_balances_v1',
+      ]);
+      if (check.rowCount && check.rowCount > 0) return;
+
+      const rows = await pool.query('SELECT user_id, data FROM app_user_dashboards');
+      for (const row of rows.rows) {
+        const userId = String(row.user_id);
+        const normalized = this.normalizeUserDashboard(userId, row.data as Partial<StoredUserDashboard>);
+        const zeroed = this.stripPreseededBalances(normalized);
+        await pool.query(
+          'UPDATE app_user_dashboards SET data = $2::jsonb, updated_at = NOW() WHERE user_id = $1',
+          [userId, JSON.stringify(zeroed)]
+        );
+      }
+
+      await pool.query(
+        'INSERT INTO app_settings (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO NOTHING',
+        ['migration_zero_starter_balances_v1', JSON.stringify({ done: true, appliedAt: new Date().toISOString() })]
+      );
+      console.log(`[ChoyStore] Reset pre-seeded balances to 0 for ${rows.rows.length} PostgreSQL user dashboard(s).`);
+    } catch (err) {
+      console.error(
+        '[ChoyStore] Zero starter balances migration warning:',
+        err instanceof Error ? err.message : err
+      );
+    }
   }
 
   private async createTables(): Promise<void> {
@@ -1409,6 +1627,31 @@ export class ChoyStore {
         user_id TEXT PRIMARY KEY,
         data JSONB NOT NULL DEFAULT '{}'::jsonb,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS app_payment_terminal_transactions (
+        id TEXT PRIMARY KEY,
+        reference_code TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        user_name TEXT NOT NULL,
+        user_phone TEXT,
+        purpose TEXT NOT NULL DEFAULT 'wallet_topup',
+        channel TEXT NOT NULL DEFAULT 'gcash',
+        amount_php NUMERIC NOT NULL DEFAULT 0,
+        fee_php NUMERIC NOT NULL DEFAULT 0,
+        total_php NUMERIC NOT NULL DEFAULT 0,
+        choy_coins_preview NUMERIC NOT NULL DEFAULT 0,
+        payer_reference TEXT NOT NULL DEFAULT '',
+        customer_name TEXT NOT NULL DEFAULT '',
+        customer_contact TEXT NOT NULL DEFAULT '',
+        note TEXT NOT NULL DEFAULT '',
+        receipt_image_url TEXT,
+        checkout_url TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        reviewed_by TEXT,
+        reviewed_at TIMESTAMPTZ,
+        credited_at TIMESTAMPTZ,
+        rejection_reason TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
     `);
   }
@@ -4014,7 +4257,7 @@ export class ChoyStore {
 
   private normalizeUserDashboard(userId: string, raw?: Partial<StoredUserDashboard> | null): StoredUserDashboard {
     const now = new Date().toISOString();
-    const walletBalance = Number.isFinite(Number(raw?.walletBalance)) ? Math.max(0, Number(raw?.walletBalance)) : 500;
+    const walletBalance = Number.isFinite(Number(raw?.walletBalance)) ? Math.max(0, Number(raw?.walletBalance)) : 0;
     const choyWalletBalance = Number.isFinite(Number(raw?.choyWalletBalance))
       ? Math.max(0, Number(raw?.choyWalletBalance))
       : 0;
@@ -4030,18 +4273,7 @@ export class ChoyStore {
         : plan === 'free'
         ? 'active'
         : 'inactive';
-    const transactions = Array.isArray(raw?.transactions)
-      ? raw.transactions.slice(0, 60)
-      : [
-          {
-            id: 'tx_wallet_init_' + userId.slice(-6),
-            walletType: 'wallet' as const,
-            kind: 'topup' as const,
-            amount: 500,
-            note: 'Starter Cash Wallet Credit',
-            createdAt: now,
-          },
-        ];
+    const transactions = Array.isArray(raw?.transactions) ? raw.transactions.slice(0, 60) : [];
 
     return {
       userId,
@@ -4283,6 +4515,170 @@ export class ChoyStore {
     this.memMarketplaceOrders = this.memMarketplaceOrders.filter((o) => o.id !== id);
     await this.persistMemory();
     return this.memMarketplaceOrders;
+  }
+
+  public async getPaymentTerminalConfig(): Promise<StoredPaymentTerminalConfig> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT data FROM app_settings WHERE id = $1', ['payment_terminal_config']);
+      if (res.rows[0]?.data) {
+        return sanitizePaymentTerminalConfig(res.rows[0].data);
+      }
+      return sanitizePaymentTerminalConfig(DEFAULT_PAYMENT_TERMINAL_CONFIG);
+    }
+    return sanitizePaymentTerminalConfig(this.memPaymentTerminalConfig);
+  }
+
+  public async savePaymentTerminalConfig(config: StoredPaymentTerminalConfig): Promise<StoredPaymentTerminalConfig> {
+    await this.ready();
+    const sanitized = sanitizePaymentTerminalConfig({
+      ...config,
+      updatedAt: new Date().toISOString(),
+    });
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_settings (id, data, updated_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        ['payment_terminal_config', JSON.stringify(sanitized)]
+      );
+      return sanitized;
+    }
+    this.memPaymentTerminalConfig = sanitized;
+    await this.persistMemory();
+    return sanitized;
+  }
+
+  private mapPaymentTerminalTxRow(r: Record<string, unknown>): StoredPaymentTerminalTx {
+    const rawPurpose = String(r.purpose || 'wallet_topup');
+    const purpose: PaymentTerminalPurpose =
+      rawPurpose === 'choy_coins' || rawPurpose === 'order_payment' || rawPurpose === 'pos_payment'
+        ? rawPurpose
+        : 'wallet_topup';
+    const rawChannel = String(r.channel || 'gcash');
+    const channel: PaymentTerminalChannelId =
+      rawChannel === 'maya' || rawChannel === 'qrph' || rawChannel === 'bank_transfer' || rawChannel === 'online_card'
+        ? rawChannel
+        : 'gcash';
+    const rawStatus = String(r.status || 'pending');
+    const status: PaymentTerminalStatus =
+      rawStatus === 'approved' || rawStatus === 'rejected' ? rawStatus : 'pending';
+    return {
+      id: String(r.id),
+      referenceCode: String(r.reference_code || ''),
+      userId: String(r.user_id || ''),
+      userName: String(r.user_name || 'Member'),
+      userPhone: typeof r.user_phone === 'string' && r.user_phone ? r.user_phone : undefined,
+      purpose,
+      channel,
+      amountPhp: Number(r.amount_php || 0),
+      feePhp: Number(r.fee_php || 0),
+      totalPhp: Number(r.total_php || 0),
+      choyCoinsPreview: Number(r.choy_coins_preview || 0),
+      payerReference: String(r.payer_reference || ''),
+      customerName: String(r.customer_name || ''),
+      customerContact: String(r.customer_contact || ''),
+      note: String(r.note || ''),
+      receiptImageUrl: typeof r.receipt_image_url === 'string' && r.receipt_image_url ? r.receipt_image_url : undefined,
+      checkoutUrl: typeof r.checkout_url === 'string' && r.checkout_url ? r.checkout_url : undefined,
+      status,
+      reviewedBy: typeof r.reviewed_by === 'string' && r.reviewed_by ? r.reviewed_by : undefined,
+      reviewedAt: r.reviewed_at ? new Date(String(r.reviewed_at)).toISOString() : undefined,
+      creditedAt: r.credited_at ? new Date(String(r.credited_at)).toISOString() : undefined,
+      rejectionReason: typeof r.rejection_reason === 'string' && r.rejection_reason ? r.rejection_reason : undefined,
+      createdAt: r.created_at ? new Date(String(r.created_at)).toISOString() : new Date().toISOString(),
+    };
+  }
+
+  public async listPaymentTerminalTransactions(): Promise<StoredPaymentTerminalTx[]> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query(
+        'SELECT * FROM app_payment_terminal_transactions ORDER BY created_at DESC LIMIT 300'
+      );
+      return res.rows.map((r) => this.mapPaymentTerminalTxRow(r as Record<string, unknown>));
+    }
+    return [...this.memPaymentTerminalTxs].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }
+
+  public async getPaymentTerminalTransactionById(id: string): Promise<StoredPaymentTerminalTx | null> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query(
+        'SELECT * FROM app_payment_terminal_transactions WHERE id = $1 LIMIT 1',
+        [id]
+      );
+      if (!res.rows[0]) return null;
+      return this.mapPaymentTerminalTxRow(res.rows[0] as Record<string, unknown>);
+    }
+    return this.memPaymentTerminalTxs.find((t) => t.id === id) || null;
+  }
+
+  public async savePaymentTerminalTransaction(tx: StoredPaymentTerminalTx): Promise<StoredPaymentTerminalTx> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_payment_terminal_transactions (
+           id, reference_code, user_id, user_name, user_phone, purpose, channel,
+           amount_php, fee_php, total_php, choy_coins_preview, payer_reference,
+           customer_name, customer_contact, note, receipt_image_url, checkout_url,
+           status, reviewed_by, reviewed_at, credited_at, rejection_reason, created_at
+         ) VALUES (
+           $1, $2, $3, $4, $5, $6, $7,
+           $8, $9, $10, $11, $12,
+           $13, $14, $15, $16, $17,
+           $18, $19, $20::timestamptz, $21::timestamptz, $22, $23::timestamptz
+         )
+         ON CONFLICT (id) DO UPDATE SET
+           payer_reference = EXCLUDED.payer_reference,
+           receipt_image_url = EXCLUDED.receipt_image_url,
+           checkout_url = EXCLUDED.checkout_url,
+           status = EXCLUDED.status,
+           reviewed_by = EXCLUDED.reviewed_by,
+           reviewed_at = EXCLUDED.reviewed_at,
+           credited_at = EXCLUDED.credited_at,
+           rejection_reason = EXCLUDED.rejection_reason`,
+        [
+          tx.id,
+          tx.referenceCode,
+          tx.userId,
+          tx.userName,
+          tx.userPhone || null,
+          tx.purpose,
+          tx.channel,
+          tx.amountPhp,
+          tx.feePhp,
+          tx.totalPhp,
+          tx.choyCoinsPreview,
+          tx.payerReference,
+          tx.customerName,
+          tx.customerContact,
+          tx.note,
+          tx.receiptImageUrl || null,
+          tx.checkoutUrl || null,
+          tx.status,
+          tx.reviewedBy || null,
+          tx.reviewedAt || null,
+          tx.creditedAt || null,
+          tx.rejectionReason || null,
+          tx.createdAt,
+        ]
+      );
+      return tx;
+    }
+    const idx = this.memPaymentTerminalTxs.findIndex((item) => item.id === tx.id);
+    if (idx >= 0) {
+      this.memPaymentTerminalTxs[idx] = tx;
+    } else {
+      this.memPaymentTerminalTxs.unshift(tx);
+      if (this.memPaymentTerminalTxs.length > 300) {
+        this.memPaymentTerminalTxs = this.memPaymentTerminalTxs.slice(0, 300);
+      }
+    }
+    await this.persistMemory();
+    return tx;
   }
 }
 

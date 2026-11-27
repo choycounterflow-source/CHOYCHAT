@@ -95,7 +95,8 @@ import {
   ChevronDown,
   ChevronUp,
   ShoppingBag,
-  Tag
+  Tag,
+  QrCode
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -105,6 +106,10 @@ import {
   type AdminChoySetupTab,
   type ChoyProgramsConfig,
 } from './components/AdminChoySetupPanel';
+import {
+  PaymentTerminalPanel,
+  type PaymentTerminalView,
+} from './components/PaymentTerminalPanel';
 import {
   SecurityStudio,
   type StudioAnnouncementItem,
@@ -595,6 +600,7 @@ export default function App() {
     | 'rules'
     | 'acknowledgment'
     | 'marketplace'
+    | 'payment_terminal'
     | 'feed'
     | 'profile'
     | 'messages'
@@ -610,14 +616,15 @@ export default function App() {
     | 'github'
     | 'people'
     | 'videos'
-  >('dashboard');
+  >('feed');
   const [adminChoySetupTab, setAdminChoySetupTab] = useState<AdminChoySetupTab>('choy_pro');
+  const [paymentTerminalView, setPaymentTerminalView] = useState<PaymentTerminalView>('terminal');
   const [choyProgramsConfig, setChoyProgramsConfig] = useState<ChoyProgramsConfig>(DEFAULT_CLIENT_CHOY_PROGRAMS_CONFIG);
   const [isUserSidebarGroupOpen, setIsUserSidebarGroupOpen] = useState(true);
   const [userDashboardData, setUserDashboardData] = useState<UserDashboardData>({
     userId: '',
     publicShowName: true,
-    walletBalance: 500,
+    walletBalance: 0,
     choyWalletBalance: 0,
     choyProActive: false,
     subscriptionPlan: 'free',
@@ -1630,6 +1637,7 @@ export default function App() {
     | 'rules'
     | 'acknowledgment'
     | 'marketplace'
+    | 'payment_terminal'
     | 'feed'
     | 'profile'
     | 'messages'
@@ -1722,11 +1730,11 @@ export default function App() {
     hasOpenBackOverlay ||
     navHistoryCount > 0 ||
     activeChatMobileView ||
-    activeTab !== 'dashboard' ||
+    activeTab !== 'feed' ||
     feedCategoryFilter !== 'all';
 
   const getTabDisplayName = (tab: AppTabId, feedFilter: AppNavSnapshot['feedFilter']): string => {
-    if (tab === 'dashboard') return 'User Dashboard';
+    if (tab === 'dashboard') return 'Newsfeed';
     if (tab === 'user_created_name') return 'Created Name';
     if (tab === 'groupchat') return 'Groupchat';
     if (tab === 'wallet') return 'Wallet';
@@ -1736,6 +1744,7 @@ export default function App() {
     if (tab === 'rules') return 'Rules';
     if (tab === 'acknowledgment') return 'Acknowledgment';
     if (tab === 'marketplace') return 'Food Store & Marketplace';
+    if (tab === 'payment_terminal') return 'Payment Terminal';
     if (tab === 'feed') {
       if (feedFilter === 'music') return 'Music';
       if (feedFilter === 'video') return 'Videos';
@@ -1772,7 +1781,7 @@ export default function App() {
       if (top) return getTabDisplayName(top.tab, top.feedFilter);
     }
     if (activeTab === 'feed' && feedCategoryFilter !== 'all') return 'Newsfeed';
-    if (activeTab !== 'dashboard') return 'User Dashboard';
+    if (activeTab !== 'feed') return 'Newsfeed';
     return '';
   })();
 
@@ -1854,9 +1863,9 @@ export default function App() {
       setFeedCategoryFilter('all');
       return;
     }
-    if (activeTab !== 'dashboard') {
+    if (activeTab !== 'feed') {
       isNavigatingBackRef.current = true;
-      setActiveTab('dashboard');
+      setActiveTab('feed');
       setFeedCategoryFilter('all');
       setActiveChatMobileView(false);
     }
@@ -4745,7 +4754,7 @@ export default function App() {
       setAuthToken(data.token);
       setCurrentUser(data.user);
       setAuthPin('');
-      setActiveTab('dashboard');
+      setActiveTab('feed');
     } catch (err) {
       setLoginError(err instanceof Error ? err.message : 'Admin setup failed');
     } finally {
@@ -4928,7 +4937,7 @@ export default function App() {
       setAuthToken(data.token);
       setCurrentUser(data.user);
       setAuthPin('');
-      setActiveTab('dashboard');
+      setActiveTab('feed');
       if (initialGpsRef.current && data.token) {
         fetch('/api/choy/gps/ping', {
           method: 'POST',
@@ -4958,7 +4967,7 @@ export default function App() {
     setLedgerRows([]);
     setLeaderboard([]);
     setBlockedUsers([]);
-    setActiveTab('dashboard');
+    setActiveTab('feed');
     checkAuthStatus();
   };
 
@@ -8144,8 +8153,7 @@ export default function App() {
           );
         })()}
 
-      {/* DESKTOP SIDEBAR NAVIGATION (Hidden on mobile and when inside the separate full-width Newsfeed Dashboard) */}
-      {activeTab !== 'feed' && (
+      {/* DESKTOP SIDEBAR NAVIGATION */}
       <aside className="hidden md:flex md:w-64 lg:w-[272px] bg-[#0E4B1D] text-white border-r border-white/10 flex-col shrink-0 overflow-hidden select-none">
         {/* Top Brand Header */}
         <div className="px-4 py-4 border-b border-white/10 flex items-center gap-3 shrink-0">
@@ -8219,27 +8227,35 @@ export default function App() {
           {/* Primary Single-Column Navigation */}
           <nav className="flex flex-col gap-1 w-full">
             {[
-              { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
+              { id: 'feed' as const, label: 'Newsfeed', icon: Home },
+              { id: 'messages' as const, label: 'Message', icon: MessageSquare },
+              { id: 'groupchat' as const, label: 'Groupchat', icon: Users },
               { id: 'marketplace' as const, label: 'Food Store & Marketplace', icon: ShoppingBag },
+              { id: 'payment_terminal' as const, label: 'Payment Terminal', icon: QrCode },
               { id: 'choy_wallet' as const, label: 'Choy Wallet', icon: Coins },
               { id: 'choy_pro' as const, label: 'Choy Pro', icon: Crown },
               { id: 'subscription' as const, label: 'Subscription', icon: CreditCard },
               { id: 'wallet' as const, label: 'Wallet', icon: Wallet },
-              { id: 'feed' as const, label: 'Newsfeed', icon: Home },
-              { id: 'messages' as const, label: 'Message', icon: MessageSquare },
-              { id: 'groupchat' as const, label: 'Groupchat', icon: Users },
               { id: 'acknowledgment' as const, label: 'Acknowledgement', icon: FileCheck2 },
               { id: 'profile' as const, label: 'Profile & PIN', icon: User },
               { id: 'user_created_name' as const, label: 'Created Name', icon: BadgeCheck },
               { id: 'rules' as const, label: 'Rules and regulations', icon: BookOpen },
             ].map((item) => {
               const Icon = item.icon;
-              const isActive = activeTab === item.id;
+              const isActive =
+                item.id === 'payment_terminal'
+                  ? activeTab === 'payment_terminal' && paymentTerminalView !== 'admin'
+                  : activeTab === item.id;
               return (
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => setActiveTab(item.id)}
+                  onClick={() => {
+                    if (item.id === 'payment_terminal') {
+                      setPaymentTerminalView('terminal');
+                    }
+                    setActiveTab(item.id);
+                  }}
                   className={`w-full px-3.5 py-2.5 rounded-xl flex items-center gap-3 text-[13.5px] text-left transition whitespace-nowrap ${
                     isActive
                       ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
@@ -8349,6 +8365,21 @@ export default function App() {
                   >
                     <Coins className="w-[18px] h-[18px] shrink-0" />
                     <span className="truncate">Set Up: Choy Wallet</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPaymentTerminalView('admin');
+                      setActiveTab('payment_terminal');
+                    }}
+                    className={`w-full px-3.5 py-2.5 rounded-xl flex items-center gap-3 text-[13.5px] text-left transition whitespace-nowrap ${
+                      activeTab === 'payment_terminal' && paymentTerminalView === 'admin'
+                        ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                        : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                    }`}
+                  >
+                    <QrCode className="w-[18px] h-[18px] shrink-0" />
+                    <span className="truncate">Set Up: Payment Terminal</span>
                   </button>
                   <button
                     type="button"
@@ -8472,7 +8503,6 @@ export default function App() {
           </button>
         </div>
       </aside>
-      )}
 
       {/* MAIN VIEW */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -8513,36 +8543,12 @@ export default function App() {
               CHOY CHAT
             </h1>
             <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300 truncate">
-              {activeTab === 'feed'
-                ? '• Newsfeed Dashboard'
-                : activeTab === 'dashboard' ||
-                  activeTab === 'user_created_name' ||
-                  activeTab === 'groupchat' ||
-                  activeTab === 'wallet' ||
-                  activeTab === 'choy_pro' ||
-                  activeTab === 'choy_wallet' ||
-                  activeTab === 'subscription' ||
-                  activeTab === 'rules' ||
-                  activeTab === 'acknowledgment' ||
-                  activeTab === 'marketplace'
-                ? '• User Dashboard'
-                : '• VIP Social'}
+              • {getTabDisplayName(activeTab, feedCategoryFilter)}
             </span>
           </div>
 
-          {/* Right: Quick Workspace & 3-dots Menu Button */}
+          {/* Right: 3-dots Menu Button */}
           <div className="flex items-center justify-end gap-1.5 sm:gap-2 shrink-0 min-w-[72px] sm:min-w-[96px]">
-            {activeTab === 'feed' && (
-              <button
-                type="button"
-                onClick={() => setActiveTab('dashboard')}
-                className={`hidden sm:inline-flex min-h-[38px] sm:min-h-[40px] px-3 py-1.5 border rounded-xl transition shadow-xs items-center gap-1.5 text-xs font-bold whitespace-nowrap shrink-0 ${theme.chatHeaderBackBtn}`}
-                title="Back to User Dashboard & Sidebar"
-              >
-                <LayoutDashboard className="w-4 h-4 shrink-0" />
-                <span>User Dashboard</span>
-              </button>
-            )}
             <button
               type="button"
               onClick={() => setIsMenuDrawerOpen(true)}
@@ -8628,15 +8634,15 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Search + Quick Switch to Other App Dashboards */}
+                  {/* Search Newsfeed */}
                   <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 shrink-0">
-                    <div className="relative w-full sm:w-60 md:w-64">
+                    <div className="relative w-full sm:w-64 md:w-72">
                       <Search className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                       <input
                         type="text"
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
-                        placeholder="Search newsfeed posts or people..."
+                        placeholder="Search newsfeed posts..."
                         className="w-full min-h-[38px] pl-8 pr-7 py-1.5 rounded-xl bg-emerald-50/80 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white placeholder-emerald-600/65 dark:placeholder-emerald-400/65 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
                       />
                       {searchQuery && (
@@ -8649,49 +8655,6 @@ export default function App() {
                           <X className="w-3.5 h-3.5" />
                         </button>
                       )}
-                    </div>
-
-                    <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 sm:pb-0">
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab('dashboard')}
-                        className="min-h-[38px] px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 shadow-xs transition"
-                      >
-                        <LayoutDashboard className="w-3.5 h-3.5 shrink-0" />
-                        <span>Dashboard</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab('messages')}
-                        className={`min-h-[38px] px-3 py-1.5 rounded-xl border text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition ${theme.searchButton}`}
-                      >
-                        <MessageSquare className="w-3.5 h-3.5 shrink-0" />
-                        <span>Messages</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab('people')}
-                        className={`min-h-[38px] px-3 py-1.5 rounded-xl border text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition ${theme.searchButton}`}
-                      >
-                        <Users className="w-3.5 h-3.5 shrink-0" />
-                        <span>People</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab('choyai')}
-                        className={`min-h-[38px] px-3 py-1.5 rounded-xl border text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition ${theme.searchButton}`}
-                      >
-                        <Bot className="w-3.5 h-3.5 shrink-0 text-cyan-600 dark:text-cyan-400" />
-                        <span>Choy AI</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab('github')}
-                        className={`hidden xl:inline-flex min-h-[38px] px-3 py-1.5 rounded-xl border text-xs font-bold items-center gap-1.5 whitespace-nowrap shrink-0 transition ${theme.searchButton}`}
-                      >
-                        <GitBranch className="w-3.5 h-3.5 shrink-0" />
-                        <span>GitHub</span>
-                      </button>
                     </div>
                   </div>
                 </div>
@@ -10157,9 +10120,8 @@ export default function App() {
               );
             })()}
 
-          {/* USER DASHBOARD & SIDEBAR BUTTON PANELS (FOR EVERY USER) */}
-          {(activeTab === 'dashboard' ||
-            activeTab === 'user_created_name' ||
+          {/* INDIVIDUAL SIDEBAR PANEL VIEWS */}
+          {(activeTab === 'user_created_name' ||
             activeTab === 'groupchat' ||
             activeTab === 'wallet' ||
             activeTab === 'choy_pro' ||
@@ -13181,6 +13143,23 @@ export default function App() {
             />
           )}
 
+          {/* ONLINE PAYMENT TERMINAL */}
+          {activeTab === 'payment_terminal' && currentUser && (
+            <PaymentTerminalPanel
+              currentUser={{
+                id: currentUser.id,
+                name: currentUser.name,
+                phone: currentUser.phone,
+                role: currentUser.role,
+              }}
+              authToken={authToken}
+              dashboard={userDashboardData}
+              choyProgramsConfig={choyProgramsConfig}
+              initialView={paymentTerminalView}
+              onOwnDashboardUpdated={(next) => setUserDashboardData(next)}
+            />
+          )}
+
           {/* NEWSFEED SETUP (ADMIN ONLY SIDEBAR VIEW) */}
           {activeTab === 'admin_newsfeeds' && isAdmin && (
             <div className="max-w-3xl mx-auto space-y-4">
@@ -14325,27 +14304,33 @@ export default function App() {
               {/* Single-Column Primary Navigation */}
               <nav className="flex flex-col gap-1">
                 {[
-                  { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
+                  { id: 'feed' as const, label: 'Newsfeed', icon: Home },
+                  { id: 'messages' as const, label: 'Message', icon: MessageSquare },
+                  { id: 'groupchat' as const, label: 'Groupchat', icon: Users },
                   { id: 'marketplace' as const, label: 'Food Store & Marketplace', icon: ShoppingBag },
+                  { id: 'payment_terminal' as const, label: 'Payment Terminal', icon: QrCode },
                   { id: 'choy_wallet' as const, label: 'Choy Wallet', icon: Coins },
                   { id: 'choy_pro' as const, label: 'Choy Pro', icon: Crown },
                   { id: 'subscription' as const, label: 'Subscription', icon: CreditCard },
                   { id: 'wallet' as const, label: 'Wallet', icon: Wallet },
-                  { id: 'feed' as const, label: 'Newsfeed', icon: Home },
-                  { id: 'messages' as const, label: 'Message', icon: MessageSquare },
-                  { id: 'groupchat' as const, label: 'Groupchat', icon: Users },
                   { id: 'acknowledgment' as const, label: 'Acknowledgement', icon: FileCheck2 },
                   { id: 'profile' as const, label: 'Profile & PIN', icon: User },
                   { id: 'user_created_name' as const, label: 'Created Name', icon: BadgeCheck },
                   { id: 'rules' as const, label: 'Rules and regulations', icon: BookOpen },
                 ].map((item) => {
                   const Icon = item.icon;
-                  const isActive = activeTab === item.id;
+                  const isActive =
+                    item.id === 'payment_terminal'
+                      ? activeTab === 'payment_terminal' && paymentTerminalView !== 'admin'
+                      : activeTab === item.id;
                   return (
                     <button
                       key={item.id}
                       type="button"
                       onClick={() => {
+                        if (item.id === 'payment_terminal') {
+                          setPaymentTerminalView('terminal');
+                        }
                         setActiveTab(item.id);
                         setIsMenuDrawerOpen(false);
                       }}
@@ -14470,6 +14455,23 @@ export default function App() {
                       >
                         <Coins className="w-5 h-5 shrink-0" />
                         <span className="truncate">Set Up: Choy Wallet</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPaymentTerminalView('admin');
+                          setActiveTab('payment_terminal');
+                          setIsMenuDrawerOpen(false);
+                        }}
+                        className={`w-full px-4 py-3 rounded-xl flex items-center gap-3.5 text-[14px] text-left transition whitespace-nowrap ${
+                          activeTab === 'payment_terminal' && paymentTerminalView === 'admin'
+                            ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                            : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                        }`}
+                      >
+                        <QrCode className="w-5 h-5 shrink-0" />
+                        <span className="truncate">Set Up: Payment Terminal</span>
                       </button>
 
                       <button

@@ -26,12 +26,16 @@ import {
   normalizePhone,
   sanitizeMediaUrl,
   sanitizeWebsiteUrl,
+  sanitizePaymentTerminalConfig,
   clampNum,
   type StoredUser,
   type NewsfeedChannel,
   type StoredAnnouncement,
   type StoredChatGroup,
   type WalletTxItem,
+  type PaymentTerminalChannelId,
+  type PaymentTerminalPurpose,
+  type StoredPaymentTerminalTx,
 } from './src/server/choyStore.ts';
 import {
   getSupabaseStorageStatus,
@@ -460,7 +464,7 @@ function setSessionCookie(req: Request, res: Response, token: string) {
     `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
     'Path=/',
     'HttpOnly',
-    'SameSite=Lax',
+    isHttps ? 'SameSite=None' : 'SameSite=Lax',
     `Max-Age=${60 * 60 * 24 * 7}`,
   ];
   if (isHttps) attrs.push('Secure');
@@ -469,7 +473,13 @@ function setSessionCookie(req: Request, res: Response, token: string) {
 
 function clearSessionCookie(req: Request, res: Response) {
   const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https' || process.env.NODE_ENV === 'production';
-  const attrs = [`${SESSION_COOKIE_NAME}=`, 'Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=0'];
+  const attrs = [
+    `${SESSION_COOKIE_NAME}=`,
+    'Path=/',
+    'HttpOnly',
+    isHttps ? 'SameSite=None' : 'SameSite=Lax',
+    'Max-Age=0',
+  ];
   if (isHttps) attrs.push('Secure');
   res.setHeader('Set-Cookie', attrs.join('; '));
 }
@@ -5839,6 +5849,324 @@ app.post('/api/marketplace/items', requireAuth, async (req: AuthedRequest, res: 
     return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save marketplace item' });
   }
 });
+
+// ============================================================
+// ONLINE PAYMENT TERMINAL ROUTES
+// ============================================================
+const terminalReviewInFlight = new Set<string>();
+
+function sanitizeTerminalReceiptUrl(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.startsWith('/assets/') || trimmed.startsWith('/api/media/')) {
+    return trimmed.slice(0, 1000);
+  }
+  if (/^data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(trimmed)) {
+    return trimmed.length <= 2_500_000 ? trimmed : undefined;
+  }
+  return sanitizeMediaUrl(trimmed);
+}
+
+app.get('/api/choy/payment-terminal/config', requireAuth, async (_req: AuthedRequest, res: Response) => {
+  try {
+    const config = await store.getPaymentTerminalConfig();
+    const paymongoConfigured = Boolean((process.env.PAYMONGO_SECRET_KEY || '').trim());
+    return res.json({ config, paymongoConfigured });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load payment terminal config' });
+  }
+});
+
+app.put('/api/choy/admin/payment-terminal/config', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const sanitized = sanitizePaymentTerminalConfig(req.body);
+    const saved = await store.savePaymentTerminalConfig(sanitized);
+    broadcastSync('payment_terminal');
+    return res.json({ ok: true, config: saved });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save payment terminal config' });
+  }
+});
+
+app.get('/api/choy/payment-terminal/transactions', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const all = await store.listPaymentTerminalTransactions();
+    const transactions = user.role === 'admin' ? all : all.filter((tx) => tx.userId === user.id);
+    return res.json({ transactions });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load payment transactions' });
+  }
+});
+
+app.post('/api/choy/payment-terminal/charge', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const config = await store.getPaymentTerminalConfig();
+    if (!config.enabled && user.role !== 'admin') {
+      return res.status(503).json({ error: 'Online Payment Terminal is currently paused by Admin.' });
+    }
+
+    const rawPurpose = String(req.body?.purpose || 'wallet_topup').trim();
+    const validPurposes: PaymentTerminalPurpose[] = ['wallet_topup', 'choy_coins', 'order_payment', 'pos_payment'];
+    if (!validPurposes.includes(rawPurpose as PaymentTerminalPurpose)) {
+      return res.status(400).json({ error: 'Invalid payment purpose.' });
+    }
+    const purpose = rawPurpose as PaymentTerminalPurpose;
+
+    const rawChannel = String(req.body?.channel || 'gcash').trim();
+    const validChannels: PaymentTerminalChannelId[] = ['gcash', 'maya', 'qrph', 'bank_transfer', 'online_card'];
+    if (!validChannels.includes(rawChannel as PaymentTerminalChannelId)) {
+      return res.status(400).json({ error: 'Invalid online payment channel.' });
+    }
+    const channel = rawChannel as PaymentTerminalChannelId;
+
+    const channelEnabledMap: Record<PaymentTerminalChannelId, boolean> = {
+      gcash: config.gcashEnabled,
+      maya: config.mayaEnabled,
+      qrph: config.qrphEnabled,
+      bank_transfer: config.bankEnabled,
+      online_card: config.onlineCardEnabled,
+    };
+    if (!channelEnabledMap[channel]) {
+      return res.status(400).json({ error: 'Selected payment channel is currently disabled by Admin.' });
+    }
+
+    const amountPhp = Math.round(Number(req.body?.amountPhp) * 100) / 100;
+    if (!Number.isFinite(amountPhp) || amountPhp < config.minAmountPhp || amountPhp > config.maxAmountPhp) {
+      return res.status(400).json({
+        error: `Enter an amount between ₱${config.minAmountPhp.toLocaleString()} and ₱${config.maxAmountPhp.toLocaleString()}.`,
+      });
+    }
+
+    const feePhp = Math.round(((amountPhp * config.convenienceFeePercent) / 100) * 100) / 100;
+    const totalPhp = Math.round((amountPhp + feePhp) * 100) / 100;
+
+    const programs = await store.getChoyProgramsConfig();
+    const conversionRate = programs.choyWallet?.conversionRate || 2;
+    const choyCoinsPreview = purpose === 'choy_coins' ? Math.round(amountPhp * conversionRate * 100) / 100 : 0;
+
+    const payerReference =
+      typeof req.body?.payerReference === 'string' ? req.body.payerReference.trim().slice(0, 80) : '';
+    const customerName =
+      typeof req.body?.customerName === 'string' && req.body.customerName.trim()
+        ? req.body.customerName.trim().slice(0, 80)
+        : user.name;
+    const customerContact =
+      typeof req.body?.customerContact === 'string' && req.body.customerContact.trim()
+        ? req.body.customerContact.trim().slice(0, 40)
+        : user.phone || '';
+    const note = typeof req.body?.note === 'string' ? req.body.note.trim().slice(0, 240) : '';
+    const receiptImageUrl = sanitizeTerminalReceiptUrl(req.body?.receiptImageUrl);
+
+    if (channel !== 'online_card' && !payerReference && !receiptImageUrl) {
+      return res.status(400).json({
+        error: 'Please enter your payment Reference Number or upload a payment receipt screenshot.',
+      });
+    }
+
+    const now = new Date().toISOString();
+    const refSuffix = crypto.randomBytes(2).toString('hex').toUpperCase();
+    const referenceCode = `CHOY-${Date.now().toString(36).toUpperCase().slice(-6)}-${refSuffix}`;
+    const txId = `ptx_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
+
+    let checkoutUrl: string | undefined;
+    let gatewayNotice: string | undefined;
+    const paymongoKey = (process.env.PAYMONGO_SECRET_KEY || '').trim();
+
+    if (channel === 'online_card' && paymongoKey) {
+      try {
+        const authHeader = `Basic ${Buffer.from(`${paymongoKey}:`).toString('base64')}`;
+        const purposeLabels: Record<PaymentTerminalPurpose, string> = {
+          wallet_topup: 'Choy Cash Wallet Top-Up',
+          choy_coins: 'Choy Coins Purchase',
+          order_payment: 'Choy Marketplace Order Payment',
+          pos_payment: 'Choy POS Direct Payment',
+        };
+        const appUrl = (process.env.APP_URL || '').trim().replace(/\/$/, '');
+        const paymongoPayload = {
+          data: {
+            attributes: {
+              billing: {
+                name: customerName,
+                phone: customerContact || undefined,
+              },
+              send_email_receipt: false,
+              show_description: true,
+              show_line_items: true,
+              description: `${purposeLabels[purpose]} (${referenceCode})`,
+              reference_number: referenceCode,
+              line_items: [
+                {
+                  currency: 'PHP',
+                  amount: Math.round(totalPhp * 100),
+                  name: purposeLabels[purpose],
+                  quantity: 1,
+                },
+              ],
+              payment_method_types: ['card', 'gcash', 'paymaya', 'qrph'],
+              ...(appUrl.startsWith('https://')
+                ? { success_url: `${appUrl}/?payment_ref=${encodeURIComponent(referenceCode)}`, cancel_url: appUrl }
+                : {}),
+            },
+          },
+        };
+        const pmRes = await fetch('https://api.paymongo.com/v1/checkout_sessions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: authHeader,
+          },
+          body: JSON.stringify(paymongoPayload),
+        });
+        if (pmRes.ok) {
+          const pmData = (await pmRes.json()) as {
+            data?: { attributes?: { checkout_url?: string } };
+          };
+          const rawUrl = pmData?.data?.attributes?.checkout_url;
+          if (typeof rawUrl === 'string' && rawUrl.startsWith('https://')) {
+            checkoutUrl = rawUrl;
+          }
+        } else {
+          gatewayNotice = 'Online gateway checkout session could not be created; payment logged as pending for verification.';
+        }
+      } catch {
+        gatewayNotice = 'Online gateway unreachable right now; payment logged as pending for manual verification.';
+      }
+    }
+
+    const newTx: StoredPaymentTerminalTx = {
+      id: txId,
+      referenceCode,
+      userId: user.id,
+      userName: user.name,
+      userPhone: user.phone,
+      purpose,
+      channel,
+      amountPhp,
+      feePhp,
+      totalPhp,
+      choyCoinsPreview,
+      payerReference,
+      customerName,
+      customerContact,
+      note,
+      receiptImageUrl,
+      checkoutUrl,
+      status: 'pending',
+      createdAt: now,
+    };
+
+    await store.savePaymentTerminalTransaction(newTx);
+    broadcastSync('payment_terminal');
+
+    return res.status(201).json({
+      ok: true,
+      transaction: newTx,
+      gatewayNotice,
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to create payment transaction' });
+  }
+});
+
+app.post(
+  '/api/choy/admin/payment-terminal/transactions/:id/status',
+  requireAuth,
+  requireAdmin,
+  async (req: AuthedRequest, res: Response) => {
+    const txId = String(req.params.id || '').trim();
+    if (!txId) {
+      return res.status(400).json({ error: 'Transaction ID is required.' });
+    }
+    if (terminalReviewInFlight.has(txId)) {
+      return res.status(409).json({ error: 'Transaction is currently being processed. Please wait.' });
+    }
+    terminalReviewInFlight.add(txId);
+    try {
+      const admin = req.choyUser!;
+      const nextStatus = req.body?.status === 'approved' ? 'approved' : req.body?.status === 'rejected' ? 'rejected' : '';
+      if (!nextStatus) {
+        return res.status(400).json({ error: 'Status must be approved or rejected.' });
+      }
+      const rejectionReason =
+        typeof req.body?.rejectionReason === 'string' ? req.body.rejectionReason.trim().slice(0, 200) : '';
+
+      const existing = await store.getPaymentTerminalTransactionById(txId);
+      if (!existing) {
+        return res.status(404).json({ error: 'Payment transaction not found.' });
+      }
+      if (existing.status !== 'pending' || existing.creditedAt) {
+        return res.status(400).json({ error: 'This transaction has already been finalized.' });
+      }
+
+      const now = new Date().toISOString();
+      const updatedTx: StoredPaymentTerminalTx = {
+        ...existing,
+        status: nextStatus,
+        reviewedBy: admin.name,
+        reviewedAt: now,
+        rejectionReason: nextStatus === 'rejected' ? rejectionReason || 'Rejected by Admin' : undefined,
+      };
+
+      let updatedOwnDashboard = undefined;
+
+      if (nextStatus === 'approved' && (existing.purpose === 'wallet_topup' || existing.purpose === 'choy_coins')) {
+        const targetDash = await store.getUserDashboard(existing.userId);
+        const makeWalletTxId = () => `tx_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`;
+        const prependTx = (list: WalletTxItem[], item: WalletTxItem): WalletTxItem[] => [item, ...list].slice(0, 60);
+
+        if (existing.purpose === 'wallet_topup') {
+          targetDash.walletBalance = Math.round((targetDash.walletBalance + existing.amountPhp) * 100) / 100;
+          targetDash.transactions = prependTx(targetDash.transactions, {
+            id: makeWalletTxId(),
+            walletType: 'wallet',
+            kind: 'topup',
+            amount: existing.amountPhp,
+            note: `Payment Terminal Top-Up (${existing.referenceCode})`,
+            createdAt: now,
+          });
+        } else if (existing.purpose === 'choy_coins') {
+          const programs = await store.getChoyProgramsConfig();
+          const coinsToCredit =
+            existing.choyCoinsPreview > 0
+              ? existing.choyCoinsPreview
+              : Math.round(existing.amountPhp * (programs.choyWallet?.conversionRate || 2) * 100) / 100;
+          targetDash.choyWalletBalance = Math.round((targetDash.choyWalletBalance + coinsToCredit) * 100) / 100;
+          targetDash.transactions = prependTx(targetDash.transactions, {
+            id: makeWalletTxId(),
+            walletType: 'choy_wallet',
+            kind: 'topup',
+            amount: coinsToCredit,
+            note: `Payment Terminal CHOY Coins (${existing.referenceCode})`,
+            createdAt: now,
+          });
+        }
+
+        const savedDash = await store.saveUserDashboard(targetDash);
+        updatedTx.creditedAt = now;
+        if (existing.userId === admin.id) {
+          updatedOwnDashboard = savedDash;
+        }
+      }
+
+      await store.savePaymentTerminalTransaction(updatedTx);
+      broadcastSync('payment_terminal');
+      broadcastSync('users');
+
+      return res.json({
+        ok: true,
+        transaction: updatedTx,
+        ownDashboard: updatedOwnDashboard,
+      });
+    } catch (err: unknown) {
+      return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update payment status' });
+    } finally {
+      terminalReviewInFlight.delete(txId);
+    }
+  }
+);
 
 startServer();
 
