@@ -490,13 +490,13 @@ export function decryptSensitiveField(ciphertext: string | undefined | null): st
 export const DEFAULT_BLOG_POSTS: StoredBlogPost[] = [
   {
     id: 'blog_1',
-    slug: 'choy-chat-and-food-all-in-one-local-community-app',
-    title: 'Welcome to Choy Chat & Food: Chat with Your Community and Order Fresh Local Meals',
-    excerpt: 'Discover how Choy Chat brings real-time messaging, neighborhood group chats, and freshly cooked local food delivery together inside one fast app.',
+    slug: 'choy-chat-message-loved-ones-and-order-food-directly',
+    title: 'Welcome to Choy Chat: Message Your Loved Ones, Video Call, and Order Food When You Are Hungry',
+    excerpt: 'Stay close to family and friends with instant messaging and video calls, then order fresh local comfort food directly from the Food Store whenever hunger strikes.',
     content: [
-      'Choy Chat was built to be more than a messaging app—it is your everyday neighborhood hub where chatting with friends, family, and local sellers connects directly to freshly cooked food delivered straight to your doorstep.',
-      'Inside the Choy Chat Food Store, you can browse signature rice meals, charcoal-grilled favorites, merienda snacks, hot noodle bowls, and sharing platters prepared daily by trusted neighborhood kitchens. No switching apps or juggling separate delivery trackers.',
-      'Whether you are coordinating a family dinner inside a Choy Chat Groupchat, paying smoothly with your Choy Wallet, or checking live order updates with your rider, Choy Chat keeps local connection and great food side by side.'
+      'Choy Chat was created to bring everything you love together in one seamless experience. Whether you want to send a quick message to your loved ones, catch up face-to-face with an HD video call, or share daily photos and moments on the community newsfeed, Choy Chat keeps you connected 24/7.',
+      'And whenever hunger kicks in while you are chatting or browsing, you do not need to switch apps. You can open the Choy Chat Food Store directly and order freshly prepared meals—from charcoal-grilled chicken inasal to steaming noodle bowls—delivered straight to your door.',
+      'Chat, video call, share stories, and order delicious food all in one place with Choy Chat!'
     ],
     category: 'Restaurant Spotlight',
     author: 'Choy Chat Editorial Team',
@@ -507,64 +507,59 @@ export const DEFAULT_BLOG_POSTS: StoredBlogPost[] = [
   },
   {
     id: 'blog_2',
-    slug: 'top-must-try-comfort-food-dishes-on-choy-chat-food-store',
-    title: 'Top Must-Try Local Comfort Food Dishes on the Choy Chat Food Store',
-    excerpt: 'From smoky chicken inasal and crispy pork sisig to steaming beef mami and family bilao platters—explore the local favorites everyone is ordering on Choy Chat.',
+    slug: 'top-comfort-food-dishes-to-order-when-hungry-on-choy-chat',
+    title: 'Feeling Hungry? Order Local Comfort Food Directly Inside Choy Chat',
+    excerpt: 'Explore must-try neighborhood dishes—from sizzling pork sisig to rich beef batchoy—ready to order instantly while chatting with friends.',
     content: [
-      'Craving honest, freshly cooked comfort food without leaving home? The Choy Chat Food Store highlights independent neighborhood kitchens cooking small-batch dishes to order every day.',
-      'Popular customer picks include flame-grilled Chicken Inasal with garlic rice, Crispy Lechon Kawali packed in vented kraft boxes to stay crunchy, hearty Beef Batchoy with broth sealed separately, and afternoon Halo-Halo or freshly baked pandesal bundles.',
-      'Every food listing on Choy Chat displays transparent pricing, live stock availability, and clear Delivery Fee visibility—so you always know exactly what you are getting before tapping checkout.'
+      'There is nothing quite like craving a hot, satisfying meal right in the middle of an afternoon chat with family or coworkers. Instead of leaving your conversation to search for food elsewhere, the Choy Chat Food Store lets you order directly.',
+      'Choose from local partner kitchens serving crispy lechon kawali, savory pancit bihon platters, and refreshing halo-halo. Every order features transparent delivery fees and live status updates from kitchen prep to doorstep arrival.',
+      'Stay connected with the people you care about and satisfy your hunger without missing a beat.'
     ],
     category: 'Restaurant Spotlight',
     author: 'Choy Chat Food Desk',
-    readTimeMin: 5,
+    readTimeMin: 4,
     coverImage: '/assets/images/blog_restaurant_kitchen_1795763680437.jpg',
     publishedAt: '2026-11-25T09:30:00.000Z',
     updatedAt: '2026-11-25T09:30:00.000Z',
   },
   {
     id: 'blog_3',
-    slug: 'choy-chat-group-food-ordering-for-barkada-and-office-lunches',
-    title: 'How to Plan Barkada & Office Food Orders Right Inside Choy Chat Groupchats',
-    excerpt: 'Use Choy Chat Groupchats to collect lunch cravings in minutes, pick one neighborhood kitchen, and check out fast with Choy Wallet.',
+    slug: 'staying-connected-video-calls-and-group-chats-on-choy-chat',
+    title: 'Catch Up Anytime: HD Video Calls & Neighborhood Group Chats on Choy Chat',
+    excerpt: 'Connect instantly with family across town through crystal-clear video calls and coordinate weekend get-togethers in group chats.',
     content: [
-      'Planning lunch for the office or a weekend barkada hangout is effortless when everyone is already talking in the same Choy Chat Groupchat. Drop your favorite Food Store dishes into the thread, agree on spice levels and extra rice, and send one consolidated order.',
-      'Ordering together from a single Choy Chat partner kitchen saves on delivery trips and ensures every meal box arrives hot at the exact same time.',
-      'With Choy Wallet cashless checkout and instant order confirmations, your group can skip hunting for loose change and enjoy lunch the moment the rider pulls up.'
+      'Distance is never a barrier when you have instant messaging and crystal-clear video calls right at your fingertips. Share laughs, celebrate milestones, and check in on family members instantly.',
+      'Organizing weekend gatherings or office lunches is just as easy using Choy Chat group chats. Discuss what food everyone is craving, pick your favorite dishes from the Food Store, and place your order together smoothly.'
     ],
     category: 'Delivery Tips',
     author: 'Choy Chat Editorial Team',
-    readTimeMin: 4,
+    readTimeMin: 3,
     coverImage: '/assets/images/blog_packaging_tips_1795763682155.jpg',
     publishedAt: '2026-11-24T11:00:00.000Z',
     updatedAt: '2026-11-24T11:00:00.000Z',
   },
   {
     id: 'blog_4',
-    slug: 'meet-the-choy-chat-community-food-delivery-riders',
-    title: 'Meet the Choy Chat Riders Bringing Hot Food Across Our Neighborhoods',
-    excerpt: 'How direct Choy Chat messaging, verified customer accounts, and insulated food bags help our local riders deliver meals fast and safely.',
+    slug: 'meet-the-choy-chat-riders-delivering-hot-meals',
+    title: 'Meet Our Trusted Riders Delivering Hot Meals Straight to Your Door',
+    excerpt: 'How community riders ensure your favorite meals arrive hot, secure, and right on time.',
     content: [
-      'Every hot meal delivered through Choy Chat depends on dedicated local riders who know every shortcut, barangay landmark, and rainy-day route across town.',
-      'Before peak lunch and dinner hours, Choy Chat riders inspect their insulated thermal bags, seal beverage carriers, and coordinate drop-off timing directly through in-app chat so your soup stays piping hot and fried dishes stay crisp.',
-      'Because Choy Chat verifies accounts privately before ordering is unlocked, local kitchens and riders are protected from fake bookings and can focus on delivering great service.'
+      'When you order food directly on Choy Chat, our dedicated local riders make sure your meals travel safely in insulated thermal bags. From narrow neighborhood streets to apartment gates, riders navigate local routes efficiently so your food arrives fresh and piping hot.'
     ],
     category: 'Rider Stories',
     author: 'Choy Chat Rider Community',
-    readTimeMin: 4,
+    readTimeMin: 3,
     coverImage: '/assets/images/blog_delivery_rider_1795763682277.jpg',
     publishedAt: '2026-11-22T10:15:00.000Z',
     updatedAt: '2026-11-22T10:15:00.000Z',
   },
   {
     id: 'blog_5',
-    slug: 'keep-choy-chat-food-deliveries-hot-and-crispy-every-time',
-    title: '5 Quick Tips to Keep Your Choy Chat Food Deliveries Piping Hot & Crispy',
-    excerpt: 'Simple ordering habits—from vented packaging notes to clear gate landmarks—that make every Choy Chat food order taste fresh from the stove.',
+    slug: 'keep-your-food-deliveries-hot-and-crispy',
+    title: 'Tips for Hotter, Crispier Food Deliveries on Choy Chat',
+    excerpt: 'Simple ordering notes and landmark tips that guarantee restaurant-quality meals at your dining table.',
     content: [
-      'Great food delivery starts with a few smart habits inside Choy Chat. Ordering 15 to 20 minutes before the 12:00 PM lunch rush or 6:30 PM dinner peak lets partner kitchens cook each dish fresh without backlog delays.',
-      'When ordering crispy fried chicken, lumpia, or grilled pork on the Choy Chat Food Store, look for vented kraft packaging and broth-on-the-side packing so steam never softens crunchy crusts during transit.',
-      'Adding a clear gate color or street landmark to your Choy Chat delivery note shaves minutes off the handoff and brings your meal to the table while it is still steaming.'
+      'Maximize your food delivery experience by adding helpful gate notes and requesting vented packaging for crispy fried items. Choy Chat makes local food ordering simple, transparent, and delicious.'
     ],
     category: 'Delivery Tips',
     author: 'Choy Chat Food Desk',
@@ -575,13 +570,11 @@ export const DEFAULT_BLOG_POSTS: StoredBlogPost[] = [
   },
   {
     id: 'blog_6',
-    slug: 'privacy-first-food-ordering-on-choy-chat',
-    title: 'Order Food with Confidence: How Choy Chat Protects Your Real Name & Valid ID',
-    excerpt: 'Chat and order food using your public Display Name while Choy Chat secures your encrypted real name and Valid ID inside a private Admin-only vault.',
+    slug: 'privacy-first-messaging-and-ordering-on-choy-chat',
+    title: 'Chat & Order Safely: How Choy Chat Protects Your Privacy',
+    excerpt: 'Enjoy secure messaging and private KYC verification that keeps your identity safe while you chat and order food.',
     content: [
-      'Ordering food online should feel safe for both customers and local merchants. Choy Chat protects your everyday privacy by displaying only your chosen Display Name on public feeds, chat rooms, kitchen tickets, and rider screens.',
-      'When you register or verify your Choy Chat account for food orders, your Valid ID and real profile photo are uploaded to a locked PRIVATE storage bucket with zero public access—regular users, restaurants, and riders cannot open them.',
-      'Your legal real name stays AES-256 encrypted in an Admin-only database column strictly for fraud prevention, giving you peace of mind every time you chat or order your next meal on Choy Chat.'
+      'Choy Chat values your privacy. Chat with peace of mind using your public Display Name while your verification documents remain securely encrypted in our Admin-only private vault.'
     ],
     category: 'Safety & Privacy',
     author: 'Choy Chat Trust & Safety',

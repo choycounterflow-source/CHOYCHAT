@@ -93,13 +93,13 @@ const FALLBACK_FEATURED_FOOD: FeaturedFoodDish[] = [
 const FALLBACK_PUBLIC_ARTICLES: PublicBlogPost[] = [
   {
     id: 'blog_1',
-    slug: 'choy-chat-and-food-all-in-one-local-community-app',
-    title: 'Welcome to Choy Chat & Food: Chat with Your Community and Order Fresh Local Meals',
+    slug: 'welcome-to-choy-chat-message-loved-ones-video-call-and-order-foodplay',
+    title: 'Welcome to Choy Chat: Message Loved Ones, HD Video Call, and Order in FoodPlay Directly When Hungry',
     category: 'Restaurant Spotlight',
     excerpt:
-      'Discover how Choy Chat brings real-time messaging, neighborhood group chats, and freshly cooked local food delivery together inside one fast app.',
+      'Choy Chat is your all-in-one community app where you message your loved ones, enjoy crystal-clear video calls, and order delicious meals directly in FoodPlay when you are hungry.',
     content:
-      'Choy Chat was built to be more than a messaging app—it is your everyday neighborhood hub where chatting with friends, family, and local sellers connects directly to freshly cooked food delivered straight to your doorstep.\n\nInside the Choy Chat Food Store, you can browse signature rice meals, charcoal-grilled favorites, merienda snacks, hot noodle bowls, and sharing platters prepared daily by trusted neighborhood kitchens. No switching apps or juggling separate delivery trackers.\n\nWhether you are coordinating a family dinner inside a Choy Chat Groupchat, paying smoothly with your Choy Wallet, or checking live order updates with your rider, Choy Chat keeps local connection and great food side by side.',
+      'Choy Chat was created to bring everyone closer together. Here, you can message your loved ones instantly, catch up face-to-face with HD video calls, share special moments on your newsfeed, and stay connected all day long.\n\nAnd when hunger strikes while chatting or working, you never have to leave the app! You can order in FoodPlay (Choy Chat Food Store) directly—selecting your favorite local comfort foods, sizzling dishes, and refreshing drinks for instant delivery straight to your doorstep.\n\nEverything you love is now in one seamless app: chat, video calls, group conversations, and direct food delivery with FoodPlay.',
     author: 'Choy Chat Editorial Team',
     coverImage: '/assets/images/hero_local_food_delivery_1795763680017.jpg',
     readTimeMinutes: 4,
@@ -107,13 +107,13 @@ const FALLBACK_PUBLIC_ARTICLES: PublicBlogPost[] = [
   },
   {
     id: 'blog_2',
-    slug: 'top-must-try-comfort-food-dishes-on-choy-chat-food-store',
-    title: 'Top Must-Try Local Comfort Food Dishes on the Choy Chat Food Store',
-    category: 'Restaurant Spotlight',
+    slug: 'video-calls-and-food-delivery-on-choy-chat',
+    title: 'Catch Up Over HD Video Call on Choy Chat, Then Order in FoodPlay When You Hunger',
+    category: 'Delivery Tips',
     excerpt:
-      'From smoky chicken inasal and crispy pork sisig to steaming beef mami and family bilao platters—explore the local favorites everyone is ordering on Choy Chat.',
+      'Connect face-to-face with friends and family using Choy Chat video calls, and when everyone gets hungry, order straight from FoodPlay together.',
     content:
-      'Craving honest, freshly cooked comfort food without leaving home? The Choy Chat Food Store highlights independent neighborhood kitchens cooking small-batch dishes to order every day.\n\nPopular customer picks include flame-grilled Chicken Inasal with garlic rice, Crispy Lechon Kawali packed in vented kraft boxes to stay crunchy, hearty Beef Batchoy with broth sealed separately, and afternoon Halo-Halo or freshly baked pandesal bundles.\n\nEvery food listing on Choy Chat displays transparent pricing, live stock availability, and clear Delivery Fee visibility—so you always know exactly what you are getting before tapping checkout.',
+      'Nothing beats seeing your loved ones smile across the screen. With Choy Chat’s built-in HD video calling, you can share stories, laugh together, and plan your day in real-time.\n\nWhen your conversation gets long and hunger kicks in, you can order in FoodPlay directly without switching apps. Browse local kitchens, pick your favorite meals, and enjoy hot food delivered while your chat continues.\n\nChoy Chat and FoodPlay make connecting with family and satisfying your cravings effortless.',
     author: 'Choy Chat Food Desk',
     coverImage: '/assets/images/blog_restaurant_kitchen_1795763680437.jpg',
     readTimeMinutes: 5,
@@ -121,27 +121,27 @@ const FALLBACK_PUBLIC_ARTICLES: PublicBlogPost[] = [
   },
   {
     id: 'blog_3',
-    slug: 'choy-chat-group-food-ordering-for-barkada-and-office-lunches',
-    title: 'How to Plan Barkada & Office Food Orders Right Inside Choy Chat Groupchats',
-    category: 'Delivery Tips',
+    slug: 'group-chats-and-foodplay-ordering-for-barkada',
+    title: 'Group Chats, Video Calls, and Direct FoodPlay Ordering for the Whole Barkada',
+    category: 'Restaurant Spotlight',
     excerpt:
-      'Use Choy Chat Groupchats to collect lunch cravings in minutes, pick one neighborhood kitchen, and check out fast with Choy Wallet.',
+      'Coordinate hangouts in Choy Chat group chats, start a video call, and order in FoodPlay directly when everyone is hungry.',
     content:
-      'Planning lunch for the office or a weekend barkada hangout is effortless when everyone is already talking in the same Choy Chat Groupchat. Drop your favorite Food Store dishes into the thread, agree on spice levels and extra rice, and send one consolidated order.\n\nOrdering together from a single Choy Chat partner kitchen saves on delivery trips and ensures every meal box arrives hot at the exact same time.\n\nWith Choy Wallet cashless checkout and instant order confirmations, your group can skip hunting for loose change and enjoy lunch the moment the rider pulls up.',
-    author: 'Choy Chat Editorial Team',
+      'Planning a barkada get-together or family feast is easy with Choy Chat. Set up group chats, chat with everyone at once, or jump into a group video call.\n\nWhen the group gets hungry during your chat, you can order in FoodPlay directly from your favorite local kitchens. No need to argue about where to order or switch between different apps.\n\nFrom chatting and video calling to direct food delivery with FoodPlay, Choy Chat handles all your daily needs in one place.',
+    author: 'Choy Chat Community Team',
     coverImage: '/assets/images/blog_packaging_tips_1795763682155.jpg',
     readTimeMinutes: 4,
     publishedAt: '2026-11-24T11:00:00.000Z',
   },
   {
     id: 'blog_4',
-    slug: 'meet-the-choy-chat-community-food-delivery-riders',
-    title: 'Meet the Choy Chat Riders Bringing Hot Food Across Our Neighborhoods',
+    slug: 'meet-the-riders-bringing-foodplay-meals-fast',
+    title: 'Fast Delivery from FoodPlay While You Chat with Loved Ones on Choy Chat',
     category: 'Rider Stories',
     excerpt:
-      'How direct Choy Chat messaging, verified customer accounts, and insulated food bags help our local riders deliver meals fast and safely.',
+      'Our dedicated riders bring your FoodPlay orders fast while you enjoy messaging and video calling your loved ones on Choy Chat.',
     content:
-      'Every hot meal delivered through Choy Chat depends on dedicated local riders who know every shortcut, barangay landmark, and rainy-day route across town.\n\nBefore peak lunch and dinner hours, Choy Chat riders inspect their insulated thermal bags, seal beverage carriers, and coordinate drop-off timing directly through in-app chat so your soup stays piping hot and fried dishes stay crisp.\n\nBecause Choy Chat verifies accounts privately before ordering is unlocked, local kitchens and riders are protected from fake bookings and can focus on delivering great service.',
+      'While you are busy messaging your loved ones or catching up on video calls, our trusted delivery riders are making sure your FoodPlay orders arrive hot and fresh.\n\nWith verified accounts, secure chats, and insulated thermal boxes, Choy Chat and FoodPlay ensure every meal gets to your table safely and quickly.\n\nStay connected, chat all day, and order in FoodPlay whenever hunger strikes.',
     author: 'Choy Chat Rider Community',
     coverImage: '/assets/images/blog_delivery_rider_1795763682277.jpg',
     readTimeMinutes: 4,
@@ -149,27 +149,27 @@ const FALLBACK_PUBLIC_ARTICLES: PublicBlogPost[] = [
   },
   {
     id: 'blog_5',
-    slug: 'keep-choy-chat-food-deliveries-hot-and-crispy-every-time',
-    title: '5 Quick Tips to Keep Your Choy Chat Food Deliveries Piping Hot & Crispy',
+    slug: 'tips-for-smooth-choy-chat-experience-and-foodplay-ordering',
+    title: 'Top Tips for Messaging Loved Ones and Ordering in FoodPlay on Choy Chat',
     category: 'Delivery Tips',
     excerpt:
-      'Simple ordering habits—from vented packaging notes to clear gate landmarks—that make every Choy Chat food order taste fresh from the stove.',
+      'Make the most of Choy Chat messaging, video calls, and direct FoodPlay food ordering with these simple tips.',
     content:
-      'Great food delivery starts with a few smart habits inside Choy Chat. Ordering 15 to 20 minutes before the 12:00 PM lunch rush or 6:30 PM dinner peak lets partner kitchens cook each dish fresh without backlog delays.\n\nWhen ordering crispy fried chicken, lumpia, or grilled pork on the Choy Chat Food Store, look for vented kraft packaging and broth-on-the-side packing so steam never softens crunchy crusts during transit.\n\nAdding a clear gate color or street landmark to your Choy Chat delivery note shaves minutes off the handoff and brings your meal to the table while it is still steaming.',
-    author: 'Choy Chat Food Desk',
+      'Get the best experience on Choy Chat by keeping your app updated. Send photos, voice notes, and make smooth video calls to your loved ones anytime.\n\nWhen you hunger during long conversations, tap over to FoodPlay to order fresh meals instantly with Choy Wallet cashless checkout.\n\nChat, call, and eat—all in one place with Choy Chat and FoodPlay.',
+    author: 'Choy Chat Support',
     coverImage: '/assets/images/blog_packaging_tips_1795763682155.jpg',
     readTimeMinutes: 3,
     publishedAt: '2026-11-20T08:00:00.000Z',
   },
   {
     id: 'blog_6',
-    slug: 'privacy-first-food-ordering-on-choy-chat',
-    title: 'Order Food with Confidence: How Choy Chat Protects Your Real Name & Valid ID',
+    slug: 'safe-messaging-and-secure-foodplay-ordering-on-choy-chat',
+    title: 'Safe Messaging, Video Calls, and Secure FoodPlay Ordering on Choy Chat',
     category: 'Safety & Privacy',
     excerpt:
-      'Chat and order food using your public Display Name while Choy Chat secures your encrypted real name and Valid ID inside a private Admin-only vault.',
+      'Enjoy secure messaging, private video calls, and safe FoodPlay food ordering backed by Choy Chat privacy protection.',
     content:
-      'Ordering food online should feel safe for both customers and local merchants. Choy Chat protects your everyday privacy by displaying only your chosen Display Name on public feeds, chat rooms, kitchen tickets, and rider screens.\n\nWhen you register or verify your Choy Chat account for food orders, your Valid ID and real profile photo are uploaded to a locked PRIVATE storage bucket with zero public access—regular users, restaurants, and riders cannot open them.\n\nYour legal real name stays AES-256 encrypted in an Admin-only database column strictly for fraud prevention, giving you peace of mind every time you chat or order your next meal on Choy Chat.',
+      'Your privacy and security matter. Choy Chat protects your conversations, video calls, and personal details while letting you interact freely with friends and family.\n\nWhen you order in FoodPlay directly, your payments and delivery details are secure, and your legal real name is safely protected in our encrypted vault.\n\nMessage your loved ones, enjoy video calls, and order in FoodPlay with complete peace of mind on Choy Chat.',
     author: 'Choy Chat Trust & Safety',
     coverImage: '/assets/images/hero_local_food_delivery_1795763680017.jpg',
     readTimeMinutes: 3,
