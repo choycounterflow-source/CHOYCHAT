@@ -5615,7 +5615,7 @@ app.post('/api/marketplace/checkout', requireAuth, async (req: AuthedRequest, re
         walletType: 'wallet',
         kind: 'topup',
         amount: -totalCost,
-        note: `Checkout ${orderItems.length} item(s) + ₱${deliveryFee} delivery (${deliveryDistanceKm}km)${appliedPromoCode ? ` · Promo ${appliedPromoCode} (-₱${promoDiscount.toFixed(2)})` : ''}`,
+        note: `Checkout ${orderItems.length} item(s) + ₱${deliveryFee} Delivery Fee${appliedPromoCode ? ` · Promo ${appliedPromoCode} (-₱${promoDiscount.toFixed(2)})` : ''}`,
         createdAt: now,
       });
     } else {
@@ -5753,7 +5753,7 @@ app.post('/api/marketplace/items', requireAuth, async (req: AuthedRequest, res: 
           walletType: 'wallet',
           kind: 'topup',
           amount: -totalCost,
-          note: `Purchased ${quantity}x ${targetItem.title} + ₱${deliveryFee} delivery (${deliveryDistanceKm}km)`,
+          note: `Purchased ${quantity}x ${targetItem.title} + ₱${deliveryFee} Delivery Fee`,
           createdAt: now,
         });
       } else {

@@ -1,17 +1,27 @@
 import React, { useEffect, useState } from 'react';
 import {
+  BookOpen,
+  Bot,
   CheckCircle2,
   Coins,
+  CreditCard,
   Crown,
+  FileCheck2,
   Loader2,
+  MessageSquare,
   Plus,
+  Power,
+  QrCode,
   RefreshCw,
   Save,
   Settings2,
+  ShoppingBag,
+  Sliders,
   Sparkles,
   Tag,
   Trash2,
   UserPlus,
+  Users,
   Wallet,
 } from 'lucide-react';
 import type { UserDashboardData } from './UserDashboardPanels';
@@ -28,6 +38,34 @@ export interface ChoyPromoItem {
   active: boolean;
   expiresAt?: string;
 }
+
+export interface ChoyFeatureToggles {
+  marketplace: boolean;
+  wallet: boolean;
+  choyWallet: boolean;
+  choyPro: boolean;
+  subscription: boolean;
+  paymentTerminal: boolean;
+  groupchat: boolean;
+  messages: boolean;
+  choyAi: boolean;
+  acknowledgment: boolean;
+  rules: boolean;
+}
+
+export const DEFAULT_FEATURE_TOGGLES: ChoyFeatureToggles = {
+  marketplace: true,
+  wallet: true,
+  choyWallet: true,
+  choyPro: true,
+  subscription: true,
+  paymentTerminal: true,
+  groupchat: true,
+  messages: true,
+  choyAi: true,
+  acknowledgment: true,
+  rules: true,
+};
 
 export interface ChoyProgramsConfig {
   choyPro: {
@@ -50,6 +88,7 @@ export interface ChoyProgramsConfig {
     topUpInstructions: string;
   };
   promos: ChoyPromoItem[];
+  featureToggles?: ChoyFeatureToggles;
   updatedAt: string;
 }
 
@@ -80,13 +119,15 @@ export const DEFAULT_CLIENT_CHOY_PROGRAMS_CONFIG: ChoyProgramsConfig = {
     topUpInstructions: 'Top up your Cash Wallet or message Admin for verified CHOY Coin top-ups.',
   },
   promos: [],
+  featureToggles: { ...DEFAULT_FEATURE_TOGGLES },
   updatedAt: '',
 };
 
-export type AdminChoySetupTab = 'choy_pro' | 'choy_promo' | 'choy_wallet';
+export type AdminChoySetupTab = 'feature_toggles' | 'choy_pro' | 'choy_promo' | 'choy_wallet';
 
 interface AdminChoySetupPanelProps {
   config: ChoyProgramsConfig;
+  authToken?: string | null;
   initialTab?: AdminChoySetupTab;
   members: Array<{ id: string; name: string; phone?: string; role?: 'admin' | 'member' }>;
   onConfigSaved: (next: ChoyProgramsConfig) => void;
@@ -94,9 +135,84 @@ interface AdminChoySetupPanelProps {
   onNavigateTab?: (tab: 'choy_pro' | 'subscription' | 'choy_wallet' | 'marketplace') => void;
 }
 
+const FEATURE_TOGGLE_CATALOG: Array<{
+  key: keyof ChoyFeatureToggles;
+  label: string;
+  description: string;
+  icon: React.ComponentType<{ className?: string }>;
+}> = [
+  {
+    key: 'marketplace',
+    label: 'Food Store & Marketplace',
+    description: 'Food, Groceries, Medicines, and Appliances ordering store',
+    icon: ShoppingBag,
+  },
+  {
+    key: 'wallet',
+    label: 'Cash Wallet',
+    description: 'PHP Cash Wallet balance, cash-in, cash-out, and transfers',
+    icon: Wallet,
+  },
+  {
+    key: 'choyWallet',
+    label: 'Choy Wallet',
+    description: 'CHOY Coins wallet, conversion, and coin transfers',
+    icon: Coins,
+  },
+  {
+    key: 'choyPro',
+    label: 'Choy Pro',
+    description: 'Choy Pro membership perks and Pro badge upgrades',
+    icon: Crown,
+  },
+  {
+    key: 'subscription',
+    label: 'Subscription',
+    description: 'Monthly, annual, and VIP subscription plans',
+    icon: CreditCard,
+  },
+  {
+    key: 'paymentTerminal',
+    label: 'Payment Terminal',
+    description: 'Online POS Terminal (GCash, Maya, QRPh, Bank, Card)',
+    icon: QrCode,
+  },
+  {
+    key: 'groupchat',
+    label: 'Groupchat',
+    description: 'Group chat rooms and group video calls',
+    icon: Users,
+  },
+  {
+    key: 'messages',
+    label: 'Message',
+    description: 'Direct messaging and 1-on-1 calls',
+    icon: MessageSquare,
+  },
+  {
+    key: 'choyAi',
+    label: 'Choy AI',
+    description: 'Choy AI assistant panel',
+    icon: Bot,
+  },
+  {
+    key: 'acknowledgment',
+    label: 'Acknowledgement',
+    description: 'Member acknowledgement and agreement screen',
+    icon: FileCheck2,
+  },
+  {
+    key: 'rules',
+    label: 'Rules and regulations',
+    description: 'Community guidelines and terms screen',
+    icon: BookOpen,
+  },
+];
+
 export const AdminChoySetupPanel: React.FC<AdminChoySetupPanelProps> = ({
   config,
-  initialTab = 'choy_pro',
+  authToken,
+  initialTab = 'feature_toggles',
   members,
   onConfigSaved,
   onOwnDashboardUpdated,
@@ -136,6 +252,17 @@ export const AdminChoySetupPanel: React.FC<AdminChoySetupPanelProps> = ({
     setPerksText(config.choyPro.perks.join('\n'));
   }, [config]);
 
+  const getAuthHeaders = (): Record<string, string> => {
+    const h: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) h.Authorization = `Bearer ${authToken}`;
+    return h;
+  };
+
+  const currentToggles: ChoyFeatureToggles = {
+    ...DEFAULT_FEATURE_TOGGLES,
+    ...(draft.featureToggles || {}),
+  };
+
   const persistConfig = async (nextConfig: ChoyProgramsConfig, successLabel: string) => {
     setSaving(true);
     setErrorMsg(null);
@@ -143,7 +270,7 @@ export const AdminChoySetupPanel: React.FC<AdminChoySetupPanelProps> = ({
     try {
       const res = await fetch('/api/choy/programs-config', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         credentials: 'include',
         body: JSON.stringify(nextConfig),
       });
@@ -162,6 +289,52 @@ export const AdminChoySetupPanel: React.FC<AdminChoySetupPanelProps> = ({
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleToggleFeature = async (key: keyof ChoyFeatureToggles, label: string) => {
+    const nextValue = !currentToggles[key];
+    const nextToggles: ChoyFeatureToggles = {
+      ...currentToggles,
+      [key]: nextValue,
+    };
+    const nextConfig: ChoyProgramsConfig = {
+      ...draft,
+      featureToggles: nextToggles,
+    };
+    setDraft(nextConfig);
+    await persistConfig(
+      nextConfig,
+      nextValue
+        ? `${label} is now ENABLED for all users.`
+        : `${label} is now DISABLED — users will see "Coming Soon" on their dashboard.`
+    );
+  };
+
+  const handleSetAllFeatures = async (enabled: boolean) => {
+    const nextToggles: ChoyFeatureToggles = {
+      marketplace: enabled,
+      wallet: enabled,
+      choyWallet: enabled,
+      choyPro: enabled,
+      subscription: enabled,
+      paymentTerminal: enabled,
+      groupchat: enabled,
+      messages: enabled,
+      choyAi: enabled,
+      acknowledgment: enabled,
+      rules: enabled,
+    };
+    const nextConfig: ChoyProgramsConfig = {
+      ...draft,
+      featureToggles: nextToggles,
+    };
+    setDraft(nextConfig);
+    await persistConfig(
+      nextConfig,
+      enabled
+        ? 'All features are now ENABLED for users.'
+        : 'All features set to DISABLED (Coming Soon) for users.'
+    );
   };
 
   const handleSaveProSetup = async (e: React.FormEvent) => {
@@ -248,7 +421,7 @@ export const AdminChoySetupPanel: React.FC<AdminChoySetupPanelProps> = ({
       setTopupBusy(true);
       const res = await fetch('/api/choy/admin/wallet-topup', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         credentials: 'include',
         body: JSON.stringify({
           targetUserId: topupMemberId,
@@ -320,7 +493,29 @@ export const AdminChoySetupPanel: React.FC<AdminChoySetupPanelProps> = ({
       </div>
 
       {/* Sub-Navigation Tabs */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+        <button
+          type="button"
+          onClick={() => {
+            setSubTab('feature_toggles');
+            setErrorMsg(null);
+            setNotice(null);
+          }}
+          className={`p-3.5 rounded-2xl border text-left flex items-center gap-3 transition ${
+            subTab === 'feature_toggles'
+              ? 'bg-[#FF5A1F] text-white border-[#FF5A1F] shadow-sm'
+              : 'bg-white dark:bg-emerald-900/60 border-emerald-200 dark:border-emerald-700/60 text-emerald-950 dark:text-white hover:border-[#FF5A1F]'
+          }`}
+        >
+          <Power className={`w-5 h-5 shrink-0 ${subTab === 'feature_toggles' ? 'text-white' : 'text-[#FF5A1F]'}`} />
+          <div className="min-w-0">
+            <div className="text-xs font-black">Enable / Disable</div>
+            <div className={`text-[11px] truncate ${subTab === 'feature_toggles' ? 'text-white/90' : 'text-emerald-700 dark:text-emerald-300'}`}>
+              {Object.values(currentToggles).filter(Boolean).length}/{Object.values(currentToggles).length} Active
+            </div>
+          </div>
+        </button>
+
         <button
           type="button"
           onClick={() => {
@@ -400,6 +595,102 @@ export const AdminChoySetupPanel: React.FC<AdminChoySetupPanelProps> = ({
         <div className="p-3 rounded-xl bg-emerald-100 dark:bg-emerald-900/70 border border-emerald-400/70 text-xs font-bold text-emerald-950 dark:text-emerald-100 flex items-center gap-2">
           <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-300" />
           <span>{notice}</span>
+        </div>
+      )}
+
+      {/* TAB 0: FEATURE ENABLE / DISABLE (COMING SOON CONTROLS) */}
+      {subTab === 'feature_toggles' && (
+        <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/60 rounded-2xl p-5 shadow-xs space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-emerald-200 dark:border-emerald-800 pb-3.5">
+            <div>
+              <h3 className="text-sm font-black text-emerald-950 dark:text-white flex items-center gap-2">
+                <Sliders className="w-4 h-4 text-[#FF5A1F]" />
+                <span>Feature Enable &amp; Disable Controls</span>
+              </h3>
+              <p className="text-xs text-emerald-700 dark:text-emerald-300 mt-0.5">
+                Turn any module ON or OFF anytime. Disabled features automatically display a <strong>Coming Soon</strong> screen on users&apos; dashboards while Admin keeps full access.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => handleSetAllFeatures(true)}
+                className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition disabled:opacity-50"
+              >
+                Enable All
+              </button>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => handleSetAllFeatures(false)}
+                className="px-3 py-1.5 rounded-xl bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold transition disabled:opacity-50"
+              >
+                Disable All
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {FEATURE_TOGGLE_CATALOG.map((item) => {
+              const Icon = item.icon;
+              const isEnabled = currentToggles[item.key] !== false;
+              return (
+                <div
+                  key={item.key}
+                  className={`p-4 rounded-xl border flex items-center justify-between gap-3 transition ${
+                    isEnabled
+                      ? 'bg-emerald-50/70 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800'
+                      : 'bg-amber-50/70 dark:bg-amber-950/30 border-amber-300 dark:border-amber-800/70'
+                  }`}
+                >
+                  <div className="flex items-start gap-3 min-w-0">
+                    <div
+                      className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                        isEnabled
+                          ? 'bg-[#0E4B1D] text-white'
+                          : 'bg-amber-500/20 text-amber-700 dark:text-amber-300'
+                      }`}
+                    >
+                      <Icon className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-black text-emerald-950 dark:text-white truncate">
+                          {item.label}
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase ${
+                            isEnabled
+                              ? 'bg-emerald-600 text-white'
+                              : 'bg-amber-500 text-slate-950'
+                          }`}
+                        >
+                          {isEnabled ? 'Enabled' : 'Coming Soon'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-emerald-700 dark:text-emerald-300/90 mt-0.5 leading-snug">
+                        {item.description}
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={() => handleToggleFeature(item.key, item.label)}
+                    className={`px-3.5 py-2 rounded-xl text-xs font-extrabold shrink-0 transition disabled:opacity-50 ${
+                      isEnabled
+                        ? 'bg-rose-600 hover:bg-rose-500 text-white'
+                        : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                    }`}
+                  >
+                    {isEnabled ? 'Disable' : 'Enable'}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 

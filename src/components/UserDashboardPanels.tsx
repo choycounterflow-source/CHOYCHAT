@@ -352,8 +352,6 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
   const marketplacePromos = activePromos.filter((p) => p.appliesTo === 'all' || p.appliesTo === 'marketplace');
 
   const deliveryFee = deliveryDistanceKm <= 2 ? 25 : deliveryDistanceKm <= 5 ? 40 : deliveryDistanceKm <= 8 ? 65 : 90;
-  const deliveryDistanceLabel =
-    deliveryDistanceKm <= 2 ? '0-2 km' : deliveryDistanceKm <= 5 ? '2-5 km' : deliveryDistanceKm <= 8 ? '5-8 km' : '8+ km';
   const itemsSubtotal = cartItems.reduce((acc, ci) => acc + (ci.item.price * ci.quantity), 0);
   const totalCartAmount = Math.round((itemsSubtotal + deliveryFee) * 100) / 100;
 
@@ -2111,16 +2109,16 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                     />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-xs font-bold text-emerald-900 dark:text-emerald-200">Delivery Distance (KM)</label>
+                    <label className="text-xs font-bold text-emerald-900 dark:text-emerald-200">Delivery Fee</label>
                     <select
                       value={deliveryDistanceKm}
                       onChange={(e) => setDeliveryDistanceKm(Number(e.target.value))}
                       className="w-full p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-xs font-bold text-emerald-950 dark:text-white"
                     >
-                      <option value="2">0 - 2 km (Fee: ₱25)</option>
-                      <option value="5">2 - 5 km (Fee: ₱40)</option>
-                      <option value="8">5 - 8 km (Fee: ₱65)</option>
-                      <option value="10">8+ km (Fee: ₱90)</option>
+                      <option value="2">Delivery Fee: ₱25.00</option>
+                      <option value="5">Delivery Fee: ₱40.00</option>
+                      <option value="8">Delivery Fee: ₱65.00</option>
+                      <option value="10">Delivery Fee: ₱90.00</option>
                     </select>
                   </div>
                 </div>
@@ -2219,7 +2217,7 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                     <span>₱{(buyingItem.price * buyQuantity).toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between font-bold text-emerald-900 dark:text-emerald-200">
-                    <span>Delivery Fee ({deliveryDistanceLabel}):</span>
+                    <span>Delivery Fee:</span>
                     <span>₱{deliveryFee.toFixed(2)}</span>
                   </div>
                   <div className="pt-1.5 border-t border-orange-200 dark:border-orange-800 flex items-center justify-between font-black text-orange-950 dark:text-orange-200">
@@ -2320,7 +2318,6 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
             <div className="space-y-2">
               {marketplaceOrders.map((ord: any) => {
                 const distKm = Number(ord.deliveryDistanceKm || 2);
-                const distTier = distKm <= 2 ? '0-2 km' : distKm <= 5 ? '2-5 km' : distKm <= 8 ? '5-8 km' : '8+ km';
                 const feeVal = Number(ord.deliveryFee ?? (distKm <= 2 ? 25 : distKm <= 5 ? 40 : distKm <= 8 ? 65 : 90));
                 const statusVal = String(ord.status || 'pending');
                 const statusStyle =
@@ -2345,7 +2342,7 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                         </span>
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-200/80 dark:bg-emerald-900 text-emerald-900 dark:text-emerald-100 font-bold text-[10px]">
                           <Truck className="w-3 h-3" />
-                          <span>{distTier} · ₱{feeVal.toFixed(0)}</span>
+                          <span>Delivery Fee: ₱{feeVal.toFixed(2)}</span>
                         </span>
                         <span className={`px-2 py-0.5 rounded-lg font-black uppercase text-[10px] ${statusStyle}`}>
                           {statusVal.replace(/_/g, ' ')}
@@ -2528,16 +2525,16 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                   </div>
 
                   <div className="space-y-1">
-                    <label className="text-xs font-bold text-emerald-900 dark:text-emerald-200">Delivery Distance (KM)</label>
+                    <label className="text-xs font-bold text-emerald-900 dark:text-emerald-200">Delivery Fee</label>
                     <select
                       value={deliveryDistanceKm}
                       onChange={(e) => setDeliveryDistanceKm(Number(e.target.value))}
                       className="w-full p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-xs font-bold text-emerald-950 dark:text-white"
                     >
-                      <option value="2">0 - 2 km (Delivery Fee: ₱25)</option>
-                      <option value="5">2 - 5 km (Delivery Fee: ₱40)</option>
-                      <option value="8">5 - 8 km (Delivery Fee: ₱65)</option>
-                      <option value="10">8+ km (Delivery Fee: ₱90)</option>
+                      <option value="2">Delivery Fee: ₱25.00</option>
+                      <option value="5">Delivery Fee: ₱40.00</option>
+                      <option value="8">Delivery Fee: ₱65.00</option>
+                      <option value="10">Delivery Fee: ₱90.00</option>
                     </select>
                   </div>
 
@@ -2572,7 +2569,7 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                       <span>₱{itemsSubtotal.toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between font-bold text-emerald-900 dark:text-emerald-200">
-                      <span>Delivery Fee ({deliveryDistanceLabel}):</span>
+                      <span>Delivery Fee:</span>
                       <span>₱{deliveryFee.toFixed(2)}</span>
                     </div>
                     <div className="pt-1.5 border-t border-emerald-200 dark:border-emerald-800 flex justify-between font-black text-emerald-950 dark:text-white text-sm">

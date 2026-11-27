@@ -242,6 +242,20 @@ export interface ChoyPromoItem {
   expiresAt?: string;
 }
 
+export interface ChoyFeatureToggles {
+  marketplace: boolean;
+  wallet: boolean;
+  choyWallet: boolean;
+  choyPro: boolean;
+  subscription: boolean;
+  paymentTerminal: boolean;
+  groupchat: boolean;
+  messages: boolean;
+  choyAi: boolean;
+  acknowledgment: boolean;
+  rules: boolean;
+}
+
 export interface StoredChoyProgramsConfig {
   choyPro: {
     enabled: boolean;
@@ -263,6 +277,7 @@ export interface StoredChoyProgramsConfig {
     topUpInstructions: string;
   };
   promos: ChoyPromoItem[];
+  featureToggles: ChoyFeatureToggles;
   updatedAt: string;
 }
 
@@ -482,6 +497,19 @@ export const DEFAULT_CHOY_PROGRAMS_CONFIG: StoredChoyProgramsConfig = {
     topUpInstructions: 'Top up your Cash Wallet or message Admin for verified CHOY Coin top-ups.',
   },
   promos: [],
+  featureToggles: {
+    marketplace: true,
+    wallet: true,
+    choyWallet: true,
+    choyPro: true,
+    subscription: true,
+    paymentTerminal: true,
+    groupchat: true,
+    messages: true,
+    choyAi: true,
+    acknowledgment: true,
+    rules: true,
+  },
   updatedAt: new Date(0).toISOString(),
 };
 
@@ -489,6 +517,7 @@ function sanitizeChoyProgramsConfig(raw: unknown): StoredChoyProgramsConfig {
   const input = (raw && typeof raw === 'object' ? raw : {}) as Partial<StoredChoyProgramsConfig>;
   const rawPro = (input.choyPro && typeof input.choyPro === 'object' ? input.choyPro : {}) as Partial<StoredChoyProgramsConfig['choyPro']>;
   const rawWallet = (input.choyWallet && typeof input.choyWallet === 'object' ? input.choyWallet : {}) as Partial<StoredChoyProgramsConfig['choyWallet']>;
+  const rawToggles = (input.featureToggles && typeof input.featureToggles === 'object' ? input.featureToggles : {}) as Partial<ChoyFeatureToggles>;
 
   const perksList = Array.isArray(rawPro.perks)
     ? rawPro.perks
@@ -562,6 +591,19 @@ function sanitizeChoyProgramsConfig(raw: unknown): StoredChoyProgramsConfig {
           : DEFAULT_CHOY_PROGRAMS_CONFIG.choyWallet.topUpInstructions,
     },
     promos,
+    featureToggles: {
+      marketplace: rawToggles.marketplace !== false,
+      wallet: rawToggles.wallet !== false,
+      choyWallet: rawToggles.choyWallet !== false,
+      choyPro: rawToggles.choyPro !== false,
+      subscription: rawToggles.subscription !== false,
+      paymentTerminal: rawToggles.paymentTerminal !== false,
+      groupchat: rawToggles.groupchat !== false,
+      messages: rawToggles.messages !== false,
+      choyAi: rawToggles.choyAi !== false,
+      acknowledgment: rawToggles.acknowledgment !== false,
+      rules: rawToggles.rules !== false,
+    },
     updatedAt: typeof input.updatedAt === 'string' ? input.updatedAt : new Date().toISOString(),
   };
 }

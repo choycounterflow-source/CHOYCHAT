@@ -103,7 +103,9 @@ import { OfflineIndicator } from './components/OfflineIndicator';
 import {
   AdminChoySetupPanel,
   DEFAULT_CLIENT_CHOY_PROGRAMS_CONFIG,
+  DEFAULT_FEATURE_TOGGLES,
   type AdminChoySetupTab,
+  type ChoyFeatureToggles,
   type ChoyProgramsConfig,
 } from './components/AdminChoySetupPanel';
 import {
@@ -1732,6 +1734,28 @@ export default function App() {
     activeChatMobileView ||
     activeTab !== 'feed' ||
     feedCategoryFilter !== 'all';
+
+  const featureToggles: ChoyFeatureToggles = {
+    ...DEFAULT_FEATURE_TOGGLES,
+    ...(choyProgramsConfig.featureToggles || {}),
+  };
+
+  const isTabFeatureDisabled = (tab: AppTabId): boolean => {
+    if (tab === 'marketplace') return !featureToggles.marketplace;
+    if (tab === 'wallet') return !featureToggles.wallet;
+    if (tab === 'choy_wallet') return !featureToggles.choyWallet;
+    if (tab === 'choy_pro') return !featureToggles.choyPro;
+    if (tab === 'subscription') return !featureToggles.subscription;
+    if (tab === 'payment_terminal') return !featureToggles.paymentTerminal;
+    if (tab === 'groupchat') return !featureToggles.groupchat;
+    if (tab === 'messages') return !featureToggles.messages;
+    if (tab === 'choyai') return !featureToggles.choyAi;
+    if (tab === 'acknowledgment') return !featureToggles.acknowledgment;
+    if (tab === 'rules') return !featureToggles.rules;
+    return false;
+  };
+
+  const activeTabBlockedComingSoon = Boolean(currentUser && currentUser.role !== 'admin' && isTabFeatureDisabled(activeTab));
 
   const getTabDisplayName = (tab: AppTabId, feedFilter: AppNavSnapshot['feedFilter']): string => {
     if (tab === 'dashboard') return 'Newsfeed';
@@ -8263,7 +8287,20 @@ export default function App() {
                   }`}
                 >
                   <Icon className="w-[18px] h-[18px] shrink-0" />
-                  <span className="truncate">{item.label}</span>
+                  <span className="truncate flex-1">{item.label}</span>
+                  {isTabFeatureDisabled(item.id) && (
+                    <span
+                      className={`px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider shrink-0 ${
+                        isActive
+                          ? 'bg-white/25 text-white'
+                          : isAdmin
+                          ? 'bg-rose-500/80 text-white'
+                          : 'bg-amber-400 text-slate-950'
+                      }`}
+                    >
+                      {isAdmin ? 'OFF' : 'Soon'}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -8295,7 +8332,20 @@ export default function App() {
                       }`}
                     >
                       <Icon className="w-[18px] h-[18px] shrink-0" />
-                      <span className="truncate">{item.label}</span>
+                      <span className="truncate flex-1">{item.label}</span>
+                      {isTabFeatureDisabled(item.id) && (
+                        <span
+                          className={`px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider shrink-0 ${
+                            isActive
+                              ? 'bg-white/25 text-white'
+                              : isAdmin
+                              ? 'bg-rose-500/80 text-white'
+                              : 'bg-amber-400 text-slate-950'
+                          }`}
+                        >
+                          {isAdmin ? 'OFF' : 'Soon'}
+                        </span>
+                      )}
                     </button>
                   );
                 })}
@@ -8320,6 +8370,21 @@ export default function App() {
                   >
                     <Key className="w-[18px] h-[18px] shrink-0" />
                     <span className="truncate">Security Studio</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAdminChoySetupTab('feature_toggles');
+                      setActiveTab('admin_choy_setup');
+                    }}
+                    className={`w-full px-3.5 py-2.5 rounded-xl flex items-center gap-3 text-[13.5px] text-left transition whitespace-nowrap ${
+                      activeTab === 'admin_choy_setup' && adminChoySetupTab === 'feature_toggles'
+                        ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                        : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                    }`}
+                  >
+                    <Sliders className="w-[18px] h-[18px] shrink-0" />
+                    <span className="truncate">Set Up: Enable / Disable</span>
                   </button>
                   <button
                     type="button"
@@ -10120,16 +10185,50 @@ export default function App() {
               );
             })()}
 
+          {/* COMING SOON SCREEN WHEN ADMIN DISABLES A FEATURE */}
+          {activeTabBlockedComingSoon && (
+            <div className="max-w-xl mx-auto py-8 px-4">
+              <div className="rounded-3xl bg-white dark:bg-emerald-950/85 border border-emerald-200 dark:border-emerald-800 shadow-xl overflow-hidden text-center">
+                <div className="bg-[#0E4B1D] px-6 py-8 text-white space-y-3">
+                  <div className="w-14 h-14 rounded-2xl bg-[#FF5A1F] text-white mx-auto flex items-center justify-center shadow-lg">
+                    <Clock className="w-7 h-7" />
+                  </div>
+                  <div className="inline-block px-3 py-1 rounded-lg bg-amber-400 text-slate-950 text-[11px] font-black uppercase tracking-widest">
+                    Coming Soon
+                  </div>
+                  <h2 className="text-2xl font-black tracking-tight">
+                    {getTabDisplayName(activeTab, feedCategoryFilter)}
+                  </h2>
+                </div>
+                <div className="p-6 space-y-4">
+                  <p className="text-sm text-emerald-900 dark:text-emerald-200 leading-relaxed">
+                    <strong>{getTabDisplayName(activeTab, feedCategoryFilter)}</strong> is currently set to{' '}
+                    <strong>Coming Soon</strong> by Admin. Please check back later once it is enabled!
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('feed')}
+                    className="px-6 py-2.5 rounded-xl bg-[#FF5A1F] hover:bg-[#e54f18] text-white text-xs font-extrabold shadow transition inline-flex items-center gap-2"
+                  >
+                    <Home className="w-4 h-4" />
+                    Back to Newsfeed
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* INDIVIDUAL SIDEBAR PANEL VIEWS */}
-          {(activeTab === 'user_created_name' ||
-            activeTab === 'groupchat' ||
-            activeTab === 'wallet' ||
-            activeTab === 'choy_pro' ||
-            activeTab === 'choy_wallet' ||
-            activeTab === 'subscription' ||
-            activeTab === 'rules' ||
-            activeTab === 'acknowledgment' ||
-            activeTab === 'marketplace') && (
+          {!activeTabBlockedComingSoon &&
+            (activeTab === 'user_created_name' ||
+              activeTab === 'groupchat' ||
+              activeTab === 'wallet' ||
+              activeTab === 'choy_pro' ||
+              activeTab === 'choy_wallet' ||
+              activeTab === 'subscription' ||
+              activeTab === 'rules' ||
+              activeTab === 'acknowledgment' ||
+              activeTab === 'marketplace') && (
             <UserDashboardPanels
               section={activeTab as UserDashboardTabId}
               currentUser={currentUser}
@@ -10435,7 +10534,7 @@ export default function App() {
             })()}
 
           {/* MESSAGES WITH REAL-TIME SYNC & REACTIONS */}
-          {activeTab === 'messages' && (
+          {!activeTabBlockedComingSoon && activeTab === 'messages' && (
             <div className="max-w-4xl mx-auto space-y-3">
               {!pushBannerDismissed &&
                 pushPermission !== 'unsupported' &&
@@ -12749,7 +12848,7 @@ export default function App() {
           )}
 
           {/* CHOY AI */}
-          {activeTab === 'choyai' && (
+          {!activeTabBlockedComingSoon && activeTab === 'choyai' && (
             <div className="max-w-2xl mx-auto bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 sm:p-5 flex flex-col h-[540px] shadow-sm">
               <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-emerald-200 dark:border-emerald-800">
                 <div className="flex items-center gap-2 text-xs font-black text-cyan-800 dark:text-cyan-300">
@@ -13135,6 +13234,7 @@ export default function App() {
           {activeTab === 'admin_choy_setup' && isAdmin && (
             <AdminChoySetupPanel
               config={choyProgramsConfig}
+              authToken={authToken}
               initialTab={adminChoySetupTab}
               members={visibleUsersList.map((u) => ({ id: u.id, name: u.name, phone: u.phone, role: u.role }))}
               onConfigSaved={(next) => setChoyProgramsConfig(next)}
@@ -13144,7 +13244,7 @@ export default function App() {
           )}
 
           {/* ONLINE PAYMENT TERMINAL */}
-          {activeTab === 'payment_terminal' && currentUser && (
+          {!activeTabBlockedComingSoon && activeTab === 'payment_terminal' && currentUser && (
             <PaymentTerminalPanel
               currentUser={{
                 id: currentUser.id,
@@ -14341,7 +14441,20 @@ export default function App() {
                       }`}
                     >
                       <Icon className="w-5 h-5 shrink-0" />
-                      <span className="truncate">{item.label}</span>
+                      <span className="truncate flex-1">{item.label}</span>
+                      {isTabFeatureDisabled(item.id) && (
+                        <span
+                          className={`px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider shrink-0 ${
+                            isActive
+                              ? 'bg-white/25 text-white'
+                              : isAdmin
+                              ? 'bg-rose-500/80 text-white'
+                              : 'bg-amber-400 text-slate-950'
+                          }`}
+                        >
+                          {isAdmin ? 'OFF' : 'Soon'}
+                        </span>
+                      )}
                     </button>
                   );
                 })}
@@ -14376,7 +14489,20 @@ export default function App() {
                           }`}
                         >
                           <Icon className="w-5 h-5 shrink-0" />
-                          <span className="truncate">{item.label}</span>
+                          <span className="truncate flex-1">{item.label}</span>
+                          {isTabFeatureDisabled(item.id) && (
+                            <span
+                              className={`px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider shrink-0 ${
+                                isActive
+                                  ? 'bg-white/25 text-white'
+                                  : isAdmin
+                                  ? 'bg-rose-500/80 text-white'
+                                  : 'bg-amber-400 text-slate-950'
+                              }`}
+                            >
+                              {isAdmin ? 'OFF' : 'Soon'}
+                            </span>
+                          )}
                         </button>
                       );
                     })}
@@ -14404,6 +14530,23 @@ export default function App() {
                       >
                         <Key className="w-5 h-5 shrink-0" />
                         <span className="truncate">Security Studio</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAdminChoySetupTab('feature_toggles');
+                          setActiveTab('admin_choy_setup');
+                          setIsMenuDrawerOpen(false);
+                        }}
+                        className={`w-full px-4 py-3 rounded-xl flex items-center gap-3.5 text-[14px] text-left transition whitespace-nowrap ${
+                          activeTab === 'admin_choy_setup' && adminChoySetupTab === 'feature_toggles'
+                            ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                            : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                        }`}
+                      >
+                        <Sliders className="w-5 h-5 shrink-0" />
+                        <span className="truncate">Set Up: Enable / Disable</span>
                       </button>
 
                       <button
