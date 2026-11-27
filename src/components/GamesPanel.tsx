@@ -420,9 +420,13 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
       alert('Insufficient Choy Coins balance!');
       return;
     }
-    setScore((s) => s - betAmount);
     const combination = `${digit1}-${digit2}-${digit3}`;
     const potentialWin = betAmount * 400;
+
+    const confirmed = window.confirm(`Are you sure you want to place this Swertres bet?\n\nDraw: ${selectedDraw}\nCombination: ${combination}\nBet Stake: ₱${betAmount}\nPotential Win: ₱${potentialWin.toLocaleString()}`);
+    if (!confirmed) return;
+
+    setScore((s) => s - betAmount);
 
     const newTicket: SwertresTicket = {
       id: `swt-${Date.now()}`,
@@ -462,8 +466,11 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
       alert('Insufficient Choy Coins balance!');
       return;
     }
-    setScore((s) => s - topupAmount);
     const teamFullName = `${selectedTeam.city} ${selectedTeam.name}`;
+    const confirmed = window.confirm(`Are you sure you want to top up / bet ${topupAmount} Coins on ${teamFullName}?`);
+    if (!confirmed) return;
+
+    setScore((s) => s - topupAmount);
     setTeams((prev) =>
       prev.map((t) =>
         t.id === selectedTeam.id
@@ -956,36 +963,80 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
               </form>
             </div>
 
-            <div className={`p-6 rounded-2xl border ${theme.cardBg} ${theme.cardBorder} shadow-lg space-y-4`}>
-              <h3 className={`text-base font-extrabold ${theme.textMain} flex items-center gap-2`}>
-                <History className="w-4 h-4 text-emerald-500" />
-                My Swertres Tickets
-              </h3>
+            <div className={`p-6 rounded-2xl border ${theme.cardBg} ${theme.cardBorder} shadow-lg space-y-6`}>
               <div className="space-y-3">
-                {tickets.map((t) => (
-                  <div key={t.id} className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-extrabold text-sm">
-                        {t.digits}
-                      </div>
-                      <div>
-                        <div className={`font-bold text-sm ${theme.textMain}`}>Draw: {t.drawTime}</div>
-                        <div className={theme.textMuted}>Bet: ₱{t.betAmount} • Created: {t.createdAt}</div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-4">
-                      <div className="text-right">
-                        <div className={theme.textMuted}>Potential Win</div>
-                        <div className="font-extrabold text-emerald-500">₱{t.potentialWin.toLocaleString()}</div>
-                      </div>
-                      <span className={`px-3 py-1 rounded-full font-bold text-[11px] ${
-                        t.status === 'Won' ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20' : t.status === 'Pending' ? 'bg-amber-500/10 text-amber-500 border border-amber-500/20' : 'bg-slate-500/10 text-slate-500 border border-slate-500/20'
-                      }`}>
-                        {t.status}
-                      </span>
-                    </div>
-                  </div>
-                ))}
+                <h3 className={`text-base font-extrabold ${theme.textMain} flex items-center gap-2`}>
+                  <Trophy className="w-5 h-5 text-emerald-500" />
+                  Swertres Winning Rate &amp; Payout Rate Table
+                </h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 font-bold">
+                        <th className="py-2.5 px-3">Bet Type</th>
+                        <th className="py-2.5 px-3">Match Condition</th>
+                        <th className="py-2.5 px-3">Winning Rate / Payout Multiplier</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50">
+                      <tr>
+                        <td className="py-3 px-3 font-bold text-emerald-600">Direct 3-Digit</td>
+                        <td className="py-3 px-3">Exact order match (e.g., 7-4-2)</td>
+                        <td className="py-3 px-3 font-extrabold text-emerald-500">400x (₱1 win ₱400)</td>
+                      </tr>
+                      <tr>
+                        <td className="py-3 px-3 font-bold text-blue-600">Rambolito (Boxed)</td>
+                        <td className="py-3 px-3">Any digit order match (Permutation)</td>
+                        <td className="py-3 px-3 font-extrabold text-blue-500">66x to 200x payout rate</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="space-y-3 pt-4 border-t border-slate-200 dark:border-slate-800">
+                <h3 className={`text-base font-extrabold ${theme.textMain} flex items-center gap-2`}>
+                  <History className="w-4 h-4 text-emerald-500" />
+                  Complete Swertres Betting Amount Table ({realBets.filter(b => b.gameType === 'swertres').length})
+                </h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 font-bold">
+                        <th className="py-2 px-3">Player / User</th>
+                        <th className="py-2 px-3">Draw Time</th>
+                        <th className="py-2 px-3">Combination</th>
+                        <th className="py-2 px-3">Bet Stake</th>
+                        <th className="py-2 px-3">Potential Win</th>
+                        <th className="py-2 px-3">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50">
+                      {realBets.filter(b => b.gameType === 'swertres').length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="py-6 text-center text-slate-400">No Swertres bets placed yet.</td>
+                        </tr>
+                      ) : (
+                        realBets.filter(b => b.gameType === 'swertres').map((b) => (
+                          <tr key={b.id} className={theme.textMain}>
+                            <td className="py-2.5 px-3 font-bold">{b.userName}</td>
+                            <td className="py-2.5 px-3">{b.gameTitle}</td>
+                            <td className="py-2.5 px-3 font-mono font-extrabold text-emerald-500">{b.selection}</td>
+                            <td className="py-2.5 px-3 font-bold">₱{b.stake}</td>
+                            <td className="py-2.5 px-3 font-extrabold text-emerald-500">₱{b.potentialWin.toLocaleString()}</td>
+                            <td className="py-2.5 px-3">
+                              <span className={`px-2.5 py-1 rounded-full font-bold text-[10px] ${
+                                b.status === 'Won' ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20' : b.status === 'Pending' ? 'bg-amber-500/10 text-amber-500 border border-amber-500/20' : 'bg-slate-500/10 text-slate-500 border border-slate-500/20'
+                              }`}>
+                                {b.status}
+                              </span>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
           </div>
@@ -1163,6 +1214,90 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
                       </div>
                     ))}
                   </div>
+                </div>
+              </div>
+            </div>
+
+            {/* NBA Winning Rate & Odds Table + Complete NBA Betting Ledger */}
+            <div className={`p-6 rounded-2xl border ${theme.cardBg} ${theme.cardBorder} shadow-lg space-y-6`}>
+              <div className="space-y-3">
+                <h3 className={`text-base font-extrabold ${theme.textMain} flex items-center gap-2`}>
+                  <BarChart3 className="w-5 h-5 text-orange-500" />
+                  NBA Match Winning Rate &amp; Odds Table (Both Teams)
+                </h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 font-bold">
+                        <th className="py-2.5 px-3">Team Name</th>
+                        <th className="py-2.5 px-3">Fans Supported</th>
+                        <th className="py-2.5 px-3">Total Pool Coins</th>
+                        <th className="py-2.5 px-3">Dynamic Odds / Payout Multiplier</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50">
+                      {teams.map((t) => {
+                        const totalAll = teams.reduce((acc, curr) => acc + (curr.totalTopupCoins || 100), 0);
+                        const oddsMult = ((totalAll / (t.totalTopupCoins || 100)) * 1.5).toFixed(2);
+                        return (
+                          <tr key={t.id} className={theme.textMain}>
+                            <td className="py-3 px-3 font-bold flex items-center gap-2">
+                              <span className="w-3 h-3 rounded-full" style={{ backgroundColor: t.color }} />
+                              {t.city} {t.name} ({t.abbrev})
+                            </td>
+                            <td className="py-3 px-3 font-semibold">{t.fansSupported} fans</td>
+                            <td className="py-3 px-3 font-extrabold text-amber-500">{t.totalTopupCoins.toLocaleString()} Coins</td>
+                            <td className="py-3 px-3 font-black text-orange-500">{oddsMult}x Payout</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="space-y-3 pt-4 border-t border-slate-200 dark:border-slate-800">
+                <h3 className={`text-base font-extrabold ${theme.textMain} flex items-center gap-2`}>
+                  <History className="w-4 h-4 text-orange-500" />
+                  Complete NBA Match Betting Amount Table ({realBets.filter(b => b.gameType === 'nba').length})
+                </h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 font-bold">
+                        <th className="py-2 px-3">Player / User</th>
+                        <th className="py-2 px-3">Match / Team</th>
+                        <th className="py-2 px-3">Stake Amount</th>
+                        <th className="py-2 px-3">Odds</th>
+                        <th className="py-2 px-3">Potential Win</th>
+                        <th className="py-2 px-3">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50">
+                      {realBets.filter(b => b.gameType === 'nba').length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="py-6 text-center text-slate-400">No NBA match bets placed yet.</td>
+                        </tr>
+                      ) : (
+                        realBets.filter(b => b.gameType === 'nba').map((b) => (
+                          <tr key={b.id} className={theme.textMain}>
+                            <td className="py-2.5 px-3 font-bold">{b.userName}</td>
+                            <td className="py-2.5 px-3 font-semibold">{b.gameTitle}</td>
+                            <td className="py-2.5 px-3 font-bold">{b.stake} Coins</td>
+                            <td className="py-2.5 px-3 font-bold text-orange-500">{b.odds}x</td>
+                            <td className="py-2.5 px-3 font-extrabold text-amber-500">{(b.potentialWin).toLocaleString()} Coins</td>
+                            <td className="py-2.5 px-3">
+                              <span className={`px-2.5 py-1 rounded-full font-bold text-[10px] ${
+                                b.status === 'Won' ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20' : b.status === 'Pending' ? 'bg-amber-500/10 text-amber-500 border border-amber-500/20' : 'bg-slate-500/10 text-slate-500 border border-slate-500/20'
+                              }`}>
+                                {b.status}
+                              </span>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             </div>
