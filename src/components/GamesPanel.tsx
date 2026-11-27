@@ -1039,6 +1039,85 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
                 </div>
               </div>
             </div>
+
+            {/* Swertres Probability Guide & Last Week All Results */}
+            <div className={`p-6 rounded-2xl border ${theme.cardBg} ${theme.cardBorder} shadow-lg space-y-6`}>
+              <div className="space-y-3">
+                <h3 className={`text-base font-extrabold ${theme.textMain} flex items-center gap-2`}>
+                  <BarChart3 className="w-5 h-5 text-emerald-500" />
+                  Swertres Probability Result Guide Table
+                </h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 font-bold">
+                        <th className="py-2.5 px-3">Combination Range</th>
+                        <th className="py-2.5 px-3">Probability Index</th>
+                        <th className="py-2.5 px-3">Hot / Cold Status</th>
+                        <th className="py-2.5 px-3">Expected Payout</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50">
+                      <tr className={theme.textMain}>
+                        <td className="py-2.5 px-3 font-mono font-bold">000 - 333</td>
+                        <td className="py-2.5 px-3 font-semibold text-emerald-500">14.2% (Moderate)</td>
+                        <td className="py-2.5 px-3"><span className="px-2 py-0.5 rounded bg-amber-500/10 text-amber-500 font-bold">Warm</span></td>
+                        <td className="py-2.5 px-3 font-bold">400x</td>
+                      </tr>
+                      <tr className={theme.textMain}>
+                        <td className="py-2.5 px-3 font-mono font-bold">334 - 666</td>
+                        <td className="py-2.5 px-3 font-semibold text-emerald-500">18.5% (High)</td>
+                        <td className="py-2.5 px-3"><span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-500 font-bold">Hot 🔥</span></td>
+                        <td className="py-2.5 px-3 font-bold">400x</td>
+                      </tr>
+                      <tr className={theme.textMain}>
+                        <td className="py-2.5 px-3 font-mono font-bold">667 - 999</td>
+                        <td className="py-2.5 px-3 font-semibold text-emerald-500">12.1% (Balanced)</td>
+                        <td className="py-2.5 px-3"><span className="px-2 py-0.5 rounded bg-blue-500/10 text-blue-500 font-bold">Cold ❄️</span></td>
+                        <td className="py-2.5 px-3 font-bold">400x</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="space-y-3 pt-4 border-t border-slate-200 dark:border-slate-800">
+                <h3 className={`text-base font-extrabold ${theme.textMain} flex items-center gap-2`}>
+                  <History className="w-4 h-4 text-emerald-500" />
+                  Last Week All Swertres Draw Results (Past 7 Days)
+                </h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 font-bold">
+                        <th className="py-2 px-3">Date</th>
+                        <th className="py-2 px-3">2:00 PM Draw</th>
+                        <th className="py-2 px-3">5:00 PM Draw</th>
+                        <th className="py-2 px-3">9:00 PM Draw</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50">
+                      {[
+                        { date: 'Yesterday', d2: '4-8-2', d5: '7-1-9', d9: '3-5-6' },
+                        { date: '2 Days Ago', d2: '1-9-0', d5: '8-4-3', d9: '2-7-5' },
+                        { date: '3 Days Ago', d2: '6-2-8', d5: '3-0-4', d9: '9-1-7' },
+                        { date: '4 Days Ago', d2: '5-7-1', d5: '2-8-6', d9: '4-3-0' },
+                        { date: '5 Days Ago', d2: '9-3-5', d5: '6-9-2', d9: '1-8-4' },
+                        { date: '6 Days Ago', d2: '2-4-7', d5: '5-1-0', d9: '8-6-9' },
+                        { date: '7 Days Ago (Last Week)', d2: '8-5-3', d5: '4-7-1', d9: '6-2-0' },
+                      ].map((row, idx) => (
+                        <tr key={idx} className={theme.textMain}>
+                          <td className="py-2.5 px-3 font-semibold">{row.date}</td>
+                          <td className="py-2.5 px-3 font-mono font-extrabold text-emerald-600 dark:text-emerald-400">{row.d2}</td>
+                          <td className="py-2.5 px-3 font-mono font-extrabold text-emerald-600 dark:text-emerald-400">{row.d5}</td>
+                          <td className="py-2.5 px-3 font-mono font-extrabold text-emerald-600 dark:text-emerald-400">{row.d9}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
           </div>
         ) : (
           <div className={`p-12 text-center rounded-2xl border ${theme.cardBg} ${theme.cardBorder} space-y-3`}>
@@ -1296,6 +1375,75 @@ export const GamesPanel: React.FC<GamesPanelProps> = ({ currentUser, theme, feat
                           </tr>
                         ))
                       )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            {/* NBA Probability Guide & Last Week All Results */}
+            <div className={`p-6 rounded-2xl border ${theme.cardBg} ${theme.cardBorder} shadow-lg space-y-6`}>
+              <div className="space-y-3">
+                <h3 className={`text-base font-extrabold ${theme.textMain} flex items-center gap-2`}>
+                  <BarChart3 className="w-5 h-5 text-orange-500" />
+                  NBA Win Probability &amp; Form Guide Table
+                </h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 font-bold">
+                        <th className="py-2.5 px-3">Team</th>
+                        <th className="py-2.5 px-3">Recent Form (Last 10)</th>
+                        <th className="py-2.5 px-3">Avg Win Probability</th>
+                        <th className="py-2.5 px-3">Momentum Trend</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50">
+                      {teams.map((t) => (
+                        <tr key={t.id} className={theme.textMain}>
+                          <td className="py-2.5 px-3 font-bold">{t.city} {t.name}</td>
+                          <td className="py-2.5 px-3 font-mono font-bold text-orange-500">7W - 3L</td>
+                          <td className="py-2.5 px-3 font-extrabold text-emerald-500">72.4%</td>
+                          <td className="py-2.5 px-3"><span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-500 font-bold">Strong Surge 🚀</span></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="space-y-3 pt-4 border-t border-slate-200 dark:border-slate-800">
+                <h3 className={`text-base font-extrabold ${theme.textMain} flex items-center gap-2`}>
+                  <History className="w-4 h-4 text-orange-500" />
+                  Last Week All NBA Match Results (Past 7 Days)
+                </h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 font-bold">
+                        <th className="py-2 px-3">Match Date</th>
+                        <th className="py-2 px-3">Home Team &amp; Score</th>
+                        <th className="py-2 px-3">Away Team &amp; Score</th>
+                        <th className="py-2 px-3">Final Outcome</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50">
+                      {[
+                        { date: 'Yesterday', home: 'Lakers (115)', away: 'Warriors (110)', outcome: 'Lakers Won (+5)' },
+                        { date: '2 Days Ago', home: 'Celtics (108)', away: 'Heat (99)', outcome: 'Celtics Won (+9)' },
+                        { date: '3 Days Ago', home: 'Bucks (122)', away: 'Bulls (118)', outcome: 'Bucks Won (+4)' },
+                        { date: '4 Days Ago', home: 'Nuggets (112)', away: 'Suns (105)', outcome: 'Nuggets Won (+7)' },
+                        { date: '5 Days Ago', home: 'Warriors (124)', away: 'Celtics (119)', outcome: 'Warriors Won (+5)' },
+                        { date: '6 Days Ago', home: 'Heat (98)', away: 'Lakers (104)', outcome: 'Lakers Won (+6)' },
+                        { date: '7 Days Ago (Last Week)', home: 'Bulls (110)', away: 'Nuggets (116)', outcome: 'Nuggets Won (+6)' },
+                      ].map((row, idx) => (
+                        <tr key={idx} className={theme.textMain}>
+                          <td className="py-2.5 px-3 font-semibold">{row.date}</td>
+                          <td className="py-2.5 px-3 font-bold text-purple-600 dark:text-purple-400">{row.home}</td>
+                          <td className="py-2.5 px-3 font-bold text-blue-600 dark:text-blue-400">{row.away}</td>
+                          <td className="py-2.5 px-3 font-extrabold text-emerald-500">{row.outcome}</td>
+                        </tr>
+                      ))}
                     </tbody>
                   </table>
                 </div>

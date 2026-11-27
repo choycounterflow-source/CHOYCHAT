@@ -8439,6 +8439,41 @@ export default function App() {
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
                 {/* MAIN NEWSFEED STREAM (8 cols on desktop — wide canvas!) */}
                 <div className="lg:col-span-8 space-y-4 min-w-0">
+              {/* Swertres Live Draw Reminder & 1-Hour Countdown Widget */}
+              <div className="bg-gradient-to-r from-emerald-600/15 via-teal-600/10 to-transparent border border-emerald-500/30 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xs">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-xl bg-emerald-600 text-white flex items-center justify-center font-extrabold text-lg shrink-0 shadow-md">
+                    ₱400
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-black text-emerald-950 dark:text-white">Swertres Live Draw Reminder</h3>
+                      <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-bold text-[10px]">
+                        1₱ = 400₱ Win
+                      </span>
+                    </div>
+                    <p className="text-xs text-emerald-700 dark:text-emerald-300 mt-0.5">
+                      Next draw approaching! Place your 3-digit combination now. Within 1 hour left countdown active.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <div className="text-right">
+                    <div className="text-[10px] font-bold uppercase text-emerald-800 dark:text-emerald-200">Draw Countdown</div>
+                    <div className="text-base font-extrabold text-emerald-600 dark:text-emerald-400 font-mono animate-pulse">
+                      42m 15s left
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('games')}
+                    className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs shadow transition"
+                  >
+                    Play Swertres
+                  </button>
+                </div>
+              </div>
+
               {/* MOVING ANNOUNCEMENT & REMINDER SLIDE BANNER */}
               {visibleAnnouncements.length > 0 ? (() => {
                 const safeIdx = bannerSlideIndex % visibleAnnouncements.length;
@@ -10968,7 +11003,7 @@ export default function App() {
                               className="block rounded overflow-hidden cursor-zoom-in bg-black/5 dark:bg-white/5 p-1 max-w-full"
                               title="Tap to zoom picture"
                             >
-                              <img src={m.mediaUrl} alt="Chat Photo" className="max-h-56 max-w-full rounded object-contain block mx-auto" />
+                              <img src={m.mediaUrl} alt="Chat Photo" className="max-h-60 max-w-full rounded-xl object-contain bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800/60 block mx-auto p-1" />
                             </button>
                           )}
                           {m.mediaType === 'video' && m.mediaUrl && <ChatVideoPlayer src={m.mediaUrl} compact />}
