@@ -24,6 +24,9 @@ import {
   UserPlus,
   Users,
   Wallet,
+  Gamepad2,
+  Ticket,
+  Trophy,
 } from 'lucide-react';
 import type { UserDashboardData } from './UserDashboardPanels';
 
@@ -53,6 +56,9 @@ export interface ChoyFeatureToggles {
   acknowledgment: boolean;
   rules: boolean;
   invest: boolean;
+  games: boolean;
+  swertresLive: boolean;
+  nbaHub: boolean;
 }
 
 export const DEFAULT_FEATURE_TOGGLES: ChoyFeatureToggles = {
@@ -68,6 +74,9 @@ export const DEFAULT_FEATURE_TOGGLES: ChoyFeatureToggles = {
   acknowledgment: true,
   rules: true,
   invest: true,
+  games: true,
+  swertresLive: true,
+  nbaHub: true,
 };
 
 export interface ChoyProgramsConfig {
@@ -179,6 +188,24 @@ const FEATURE_TOGGLE_CATALOG: Array<{
     label: 'Invest',
     description: 'Investment products dashboard with 5% daily simple interest for 30 days & live per-minute earnings',
     icon: TrendingUp,
+  },
+  {
+    key: 'games',
+    label: 'Games Hub',
+    description: 'Arcade mini-games (Tic-Tac-Toe, Spinner, Reflex, Trivia)',
+    icon: Gamepad2,
+  },
+  {
+    key: 'swertresLive',
+    label: 'Swertres Live',
+    description: 'Swertres live 3-digit betting (1 peso win 400)',
+    icon: Ticket,
+  },
+  {
+    key: 'nbaHub',
+    label: 'NBA Live & Team Topup',
+    description: 'Live NBA scores, win probability, & team fan topups',
+    icon: Trophy,
   },
   {
     key: 'paymentTerminal',
@@ -333,6 +360,9 @@ export const AdminChoySetupPanel: React.FC<AdminChoySetupPanelProps> = ({
       acknowledgment: enabled,
       rules: enabled,
       invest: enabled,
+      games: enabled,
+      swertresLive: enabled,
+      nbaHub: enabled,
     };
     const nextConfig: ChoyProgramsConfig = {
       ...draft,

@@ -260,6 +260,9 @@ export interface ChoyFeatureToggles {
   acknowledgment: boolean;
   rules: boolean;
   invest: boolean;
+  games: boolean;
+  swertresLive: boolean;
+  nbaHub: boolean;
 }
 
 export interface StoredChoyProgramsConfig {
@@ -785,6 +788,9 @@ export const DEFAULT_CHOY_PROGRAMS_CONFIG: StoredChoyProgramsConfig = {
     acknowledgment: true,
     rules: true,
     invest: true,
+    games: true,
+    swertresLive: true,
+    nbaHub: true,
   },
   updatedAt: new Date(0).toISOString(),
 };
@@ -931,6 +937,9 @@ function sanitizeChoyProgramsConfig(raw: unknown): StoredChoyProgramsConfig {
       acknowledgment: rawToggles.acknowledgment !== false,
       rules: rawToggles.rules !== false,
       invest: rawToggles.invest !== false,
+      games: rawToggles.games !== false,
+      swertresLive: rawToggles.swertresLive !== false,
+      nbaHub: rawToggles.nbaHub !== false,
     },
     updatedAt: typeof input.updatedAt === 'string' ? input.updatedAt : new Date().toISOString(),
   };

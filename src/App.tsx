@@ -165,6 +165,7 @@ import { AdminCommandDashboard } from './components/AdminCommandDashboard';
 import { GamesPanel } from './components/GamesPanel';
 import { NbaHubPanel } from './components/NbaHubPanel';
 import { SwertresLivePanel } from './components/SwertresLivePanel';
+import { jsPDF } from 'jspdf';
 import type { CustomerRegistrationPayload } from './components/CustomerRegistrationForm';
 import {
   type EmojiLinkItem,
@@ -623,8 +624,6 @@ export default function App() {
     | 'profile'
     | 'messages'
     | 'games'
-    | 'nba_hub'
-    | 'swertres_live'
     | 'ledger'
     | 'analytics'
     | 'admin_dashboard'
@@ -656,6 +655,15 @@ export default function App() {
     transactions: [],
     updatedAt: new Date().toISOString(),
   });
+
+  const handleSetUserDashboardData = (next: Partial<UserDashboardData>) => {
+    setUserDashboardData((prev) => ({
+      ...prev,
+      ...next,
+      walletBalance: 0,
+      choyWalletBalance: 0,
+    }));
+  };
   const [userDashboardMeta, setUserDashboardMeta] = useState<
     Record<string, { publicShowName: boolean; choyProActive: boolean; subscriptionPlan: string }>
   >({});
@@ -1643,8 +1651,6 @@ export default function App() {
     | 'profile'
     | 'messages'
     | 'games'
-    | 'nba_hub'
-    | 'swertres_live'
     | 'ledger'
     | 'analytics'
     | 'admin_dashboard'
@@ -1756,6 +1762,7 @@ export default function App() {
     if (tab === 'acknowledgment') return !featureToggles.acknowledgment;
     if (tab === 'rules') return !featureToggles.rules;
     if (tab === 'invest') return !featureToggles.invest;
+    if (tab === 'games') return !featureToggles.games;
     return false;
   };
 
@@ -2251,7 +2258,7 @@ export default function App() {
         setLedgerRows(data.ledger);
       }
       if (data.userDashboard && typeof data.userDashboard === 'object') {
-        setUserDashboardData(data.userDashboard as UserDashboardData);
+        handleSetUserDashboardData(data.userDashboard as UserDashboardData);
       }
       if (data.userDashboardMeta && typeof data.userDashboardMeta === 'object') {
         setUserDashboardMeta(
@@ -6885,6 +6892,55 @@ export default function App() {
     document.body.removeChild(link);
   };
 
+  const handleDownloadLedgerPDF = () => {
+    try {
+      const doc = new jsPDF();
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(16);
+      doc.text('Choy Chat - Milestone Ledger & Inventory Report', 14, 20);
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Generated on: ${new Date().toLocaleString()}`, 14, 26);
+      doc.text(`Total Records: ${ledgerRows.length}`, 14, 32);
+
+      let startY = 40;
+      doc.setFont('helvetica', 'bold');
+      doc.text('Name', 14, startY);
+      doc.text('5H', 70, startY);
+      doc.text('Type', 90, startY);
+      doc.text('Bulig', 110, startY);
+      doc.text('Pt.5', 130, startY);
+      doc.text('Bal', 150, startY);
+      doc.text('Total', 175, startY);
+
+      doc.setFont('helvetica', 'normal');
+      startY += 6;
+      doc.line(14, startY, 195, startY);
+      startY += 6;
+
+      ledgerRows.forEach((r) => {
+        if (startY > 280) {
+          doc.addPage();
+          startY = 20;
+        }
+        const rowTotal = calculateRowTotal(r);
+        doc.text(String(r.name || '').substring(0, 25), 14, startY);
+        doc.text(String(r.fiveH || 0), 70, startY);
+        doc.text(String(r.fiveHType || ''), 90, startY);
+        doc.text(String(r.bulig || 0), 110, startY);
+        doc.text(String(r.point5 || 0), 130, startY);
+        doc.text(String(r.bal || 0), 150, startY);
+        doc.text(String(rowTotal || 0), 175, startY);
+        startY += 8;
+      });
+
+      doc.save(`choychat_ledger_${new Date().toISOString().slice(0, 10)}.pdf`);
+    } catch (err) {
+      console.error('PDF generation error:', err);
+      alert('Could not generate PDF report.');
+    }
+  };
+
   const totalBlue = ledgerRows
     .filter((r) => r.fiveHType === 'blue')
     .reduce((sum, r) => sum + calculateRowTotal(r), 0);
@@ -7904,9 +7960,7 @@ export default function App() {
               { id: 'acknowledgment' as const, label: 'Acknowledgement', icon: FileCheck2 },
               { id: 'profile' as const, label: 'Profile & PIN', icon: User },
               { id: 'user_created_name' as const, label: 'Created Name', icon: BadgeCheck },
-              { id: 'games' as const, label: 'Games', icon: Gamepad2 },
-              { id: 'nba_hub' as const, label: 'NBA Live & Team Topup', icon: Trophy },
-              { id: 'swertres_live' as const, label: 'Swertres Live (1₱=400)', icon: Ticket },
+              { id: 'games' as const, label: 'Games & Entertainment', icon: Gamepad2 },
               { id: 'rules' as const, label: 'Rules and regulations', icon: BookOpen },
             ].map((item) => {
               const Icon = item.icon;
@@ -9857,17 +9911,6 @@ export default function App() {
 
           {activeTab === 'games' && (
             <GamesPanel
-              theme={{
-                cardBg: resolvedTheme === 'dark' ? 'bg-slate-900' : 'bg-white',
-                cardBorder: resolvedTheme === 'dark' ? 'border-slate-800' : 'border-slate-200',
-                textMain: resolvedTheme === 'dark' ? 'text-slate-100' : 'text-slate-900',
-                textMuted: resolvedTheme === 'dark' ? 'text-slate-400' : 'text-slate-500',
-              }}
-            />
-          )}
-
-          {activeTab === 'nba_hub' && (
-            <NbaHubPanel
               currentUser={currentUser}
               theme={{
                 cardBg: resolvedTheme === 'dark' ? 'bg-slate-900' : 'bg-white',
@@ -9875,18 +9918,7 @@ export default function App() {
                 textMain: resolvedTheme === 'dark' ? 'text-slate-100' : 'text-slate-900',
                 textMuted: resolvedTheme === 'dark' ? 'text-slate-400' : 'text-slate-500',
               }}
-            />
-          )}
-
-          {activeTab === 'swertres_live' && (
-            <SwertresLivePanel
-              currentUser={currentUser}
-              theme={{
-                cardBg: resolvedTheme === 'dark' ? 'bg-slate-900' : 'bg-white',
-                cardBorder: resolvedTheme === 'dark' ? 'border-slate-800' : 'border-slate-200',
-                textMain: resolvedTheme === 'dark' ? 'text-slate-100' : 'text-slate-900',
-                textMuted: resolvedTheme === 'dark' ? 'text-slate-400' : 'text-slate-500',
-              }}
+              featureToggles={featureToggles}
             />
           )}
 
@@ -10099,7 +10131,7 @@ export default function App() {
                     }}
                     authToken={authToken}
                     dashboard={{ ...userDashboardData, userId: currentUser.id }}
-                    onDashboardUpdated={(next) => setUserDashboardData(next)}
+                    onDashboardUpdated={(next) => handleSetUserDashboardData(next)}
                     onZoomImage={(img) =>
                       setZoomedImage({
                         src: img.src,
@@ -10924,7 +10956,7 @@ export default function App() {
                             isJumpHighlighted ? 'ring-2 ring-amber-400 dark:ring-amber-300 shadow-lg' : ''
                           }`}
                         >
-                          {m.mediaType === 'image' && m.mediaUrl && (
+                          {((m.mediaType as string) === 'image' || String(m.mediaType).toLowerCase() === 'image' || String(m.mediaType).toLowerCase() === 'photo' || Boolean(m.mediaUrl && !m.mediaType && (m.mediaUrl.startsWith('data:image/') || m.mediaUrl.match(/\.(png|jpg|jpeg|webp|gif)$/i)))) && m.mediaUrl && (
                             <button
                               type="button"
                               onClick={() =>
@@ -10933,10 +10965,10 @@ export default function App() {
                                   caption: m.text || `${m.sender} • ${m.time}`
                                 })
                               }
-                              className="block rounded overflow-hidden cursor-zoom-in"
-                              title="Tap to zoom"
+                              className="block rounded overflow-hidden cursor-zoom-in bg-black/5 dark:bg-white/5 p-1 max-w-full"
+                              title="Tap to zoom picture"
                             >
-                              <img src={m.mediaUrl} alt="" className="max-h-40 rounded object-contain" />
+                              <img src={m.mediaUrl} alt="Chat Photo" className="max-h-56 max-w-full rounded object-contain block mx-auto" />
                             </button>
                           )}
                           {m.mediaType === 'video' && m.mediaUrl && <ChatVideoPlayer src={m.mediaUrl} compact />}
@@ -11623,6 +11655,13 @@ export default function App() {
                     className="px-3.5 py-2 bg-emerald-100 hover:bg-emerald-200 dark:bg-emerald-800 dark:hover:bg-emerald-700 text-emerald-950 dark:text-emerald-100 font-bold text-xs rounded-xl flex items-center gap-1.5 border border-emerald-300 dark:border-emerald-600 transition"
                   >
                     <Download className="w-3.5 h-3.5" /> CSV
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDownloadLedgerPDF}
+                    className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 shadow transition"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5" /> Download PDF
                   </button>
                 </div>
               </div>
@@ -12891,7 +12930,7 @@ export default function App() {
               initialTab={adminChoySetupTab}
               members={visibleUsersList.map((u) => ({ id: u.id, name: u.name, phone: u.phone, role: u.role }))}
               onConfigSaved={(next) => setChoyProgramsConfig(next)}
-              onOwnDashboardUpdated={(next) => setUserDashboardData(next)}
+              onOwnDashboardUpdated={(next) => handleSetUserDashboardData(next)}
               onNavigateTab={(tab) => setActiveTab(tab)}
             />
           )}
@@ -12909,7 +12948,7 @@ export default function App() {
               dashboard={userDashboardData}
               choyProgramsConfig={choyProgramsConfig}
               initialView={paymentTerminalView}
-              onOwnDashboardUpdated={(next) => setUserDashboardData(next)}
+              onOwnDashboardUpdated={(next) => handleSetUserDashboardData(next)}
             />
           )}
 
@@ -12926,7 +12965,7 @@ export default function App() {
               dashboard={userDashboardData}
               choyProgramsConfig={choyProgramsConfig}
               initialView={investView}
-              onOwnDashboardUpdated={(next) => setUserDashboardData(next)}
+              onOwnDashboardUpdated={(next) => handleSetUserDashboardData(next)}
               onConfigSaved={(next) => setChoyProgramsConfig(next)}
             />
           )}
@@ -14088,9 +14127,7 @@ export default function App() {
                   { id: 'acknowledgment' as const, label: 'Acknowledgement', icon: FileCheck2 },
                   { id: 'profile' as const, label: 'Profile & PIN', icon: User },
                   { id: 'user_created_name' as const, label: 'Created Name', icon: BadgeCheck },
-                  { id: 'games' as const, label: 'Games', icon: Gamepad2 },
-                  { id: 'nba_hub' as const, label: 'NBA Live & Team Topup', icon: Trophy },
-                  { id: 'swertres_live' as const, label: 'Swertres Live (1₱=400)', icon: Ticket },
+                  { id: 'games' as const, label: 'Games & Entertainment', icon: Gamepad2 },
                   { id: 'rules' as const, label: 'Rules and regulations', icon: BookOpen },
                 ].map((item) => {
                   const Icon = item.icon;
