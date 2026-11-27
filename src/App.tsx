@@ -608,7 +608,7 @@ export default function App() {
     userId: '',
     publicShowName: true,
     walletBalance: 500,
-    choyWalletBalance: 300,
+    choyWalletBalance: 0,
     choyProActive: false,
     subscriptionPlan: 'free',
     subscriptionStatus: 'active',
@@ -5336,7 +5336,6 @@ export default function App() {
         else if (act === 'wallet_topup') setUserDashboardNotice('Wallet cash-in completed!');
         else if (act === 'wallet_withdraw') setUserDashboardNotice('Wallet cash-out recorded!');
         else if (act === 'wallet_transfer') setUserDashboardNotice('Transfer completed successfully!');
-        else if (act === 'choy_wallet_claim_daily') setUserDashboardNotice('Daily Choy Coins claimed!');
         else if (act === 'choy_wallet_convert') setUserDashboardNotice('Converted to CHOY Coins!');
         else if (act === 'activate_choy_pro') setUserDashboardNotice('Choy Pro is now active!');
         else if (act === 'update_subscription') setUserDashboardNotice('Subscription plan updated!');
@@ -10142,6 +10141,7 @@ export default function App() {
                 }
               }}
               onOpenPrivacyModal={() => setIsPrivacyModalOpen(true)}
+              onDashboardUpdated={(next) => setUserDashboardData(next)}
             />
           )}
 

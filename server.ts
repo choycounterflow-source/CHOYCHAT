@@ -2579,28 +2579,6 @@ app.post('/api/choy/user-dashboard/action', requireAuth, async (req: AuthedReque
       return res.json({ ok: true, userDashboard: saved });
     }
 
-    if (action === 'choy_wallet_claim_daily') {
-      if (dash.lastDailyClaimAt) {
-        const lastMs = new Date(dash.lastDailyClaimAt).getTime();
-        if (Number.isFinite(lastMs) && Date.now() - lastMs < 20 * 60 * 60 * 1000) {
-          return res.status(400).json({ error: 'Daily Choy Coins reward already claimed today. Come back tomorrow!' });
-        }
-      }
-      const reward = dash.choyProActive ? 50 : 25;
-      dash.choyWalletBalance = Math.round((dash.choyWalletBalance + reward) * 100) / 100;
-      dash.lastDailyClaimAt = now;
-      dash.transactions = prependTx(dash.transactions, {
-        id: makeTxId(),
-        walletType: 'choy_wallet',
-        kind: 'reward',
-        amount: reward,
-        note: dash.choyProActive ? 'Daily Choy Pro Reward (+50 CHOY)' : 'Daily Check-In Reward (+25 CHOY)',
-        createdAt: now,
-      });
-      const saved = await store.saveUserDashboard(dash);
-      return res.json({ ok: true, userDashboard: saved });
-    }
-
     if (action === 'choy_wallet_convert') {
       const phpAmount = Math.round(Number(req.body?.amount) * 100) / 100;
       if (!Number.isFinite(phpAmount) || phpAmount <= 0) {
@@ -5321,14 +5299,49 @@ app.get('/api/marketplace/items', requireAuth, async (req: AuthedRequest, res: R
   }
 });
 
+function calcMarketplaceDeliveryFee(distanceKm: number): number {
+  if (distanceKm <= 2) return 25;
+  if (distanceKm <= 5) return 40;
+  if (distanceKm <= 8) return 65;
+  return 90;
+}
+
 app.get('/api/marketplace/orders', requireAuth, async (req: AuthedRequest, res: Response) => {
   try {
     const orders = await store.listMarketplaceOrders();
     const user = req.choyUser!;
-    const filtered = user.role === 'admin' ? orders : orders.filter(o => o.userId === user.id);
+    const filtered = user.role === 'admin' ? orders : orders.filter((o) => o.userId === user.id);
     return res.json({ ok: true, orders: filtered });
   } catch (err: unknown) {
     return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load orders' });
+  }
+});
+
+app.post('/api/marketplace/orders/status', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    if (user.role !== 'admin') {
+      return res.status(403).json({ error: 'Only admins can update order status.' });
+    }
+    const orderId = typeof req.body?.orderId === 'string' ? req.body.orderId.trim() : '';
+    const nextStatus = typeof req.body?.status === 'string' ? req.body.status.trim() : '';
+    const allowedStatuses = ['pending', 'preparing', 'out_for_delivery', 'completed', 'cancelled'] as const;
+    if (!orderId || !allowedStatuses.includes(nextStatus as (typeof allowedStatuses)[number])) {
+      return res.status(400).json({ error: 'Invalid order ID or status.' });
+    }
+    const orders = await store.listMarketplaceOrders();
+    const existing = orders.find((o) => o.id === orderId);
+    if (!existing) {
+      return res.status(404).json({ error: 'Order not found.' });
+    }
+    const updatedOrders = await store.saveMarketplaceOrder({
+      ...existing,
+      status: nextStatus as (typeof allowedStatuses)[number],
+    });
+    broadcastSync('marketplace');
+    return res.json({ ok: true, orders: updatedOrders });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update order status' });
   }
 });
 
@@ -5342,22 +5355,38 @@ app.post('/api/marketplace/checkout', requireAuth, async (req: AuthedRequest, re
       return res.status(400).json({ error: 'Shopping cart is empty.' });
     }
 
+    const customerName = typeof req.body?.customerName === 'string' ? req.body.customerName.trim().slice(0, 100) : '';
+    const customerPhone = typeof req.body?.customerPhone === 'string' ? req.body.customerPhone.trim().slice(0, 40) : '';
+    const deliveryAddress = typeof req.body?.deliveryAddress === 'string' ? req.body.deliveryAddress.trim().slice(0, 250) : '';
+    const deliveryNotes = typeof req.body?.deliveryNotes === 'string' ? req.body.deliveryNotes.trim().slice(0, 300) : '';
+
+    if (!customerName || !customerPhone || !deliveryAddress) {
+      return res.status(400).json({ error: 'Please fill in Full Name, Contact Number, and Delivery Address.' });
+    }
+
     const marketItems = await store.listMarketplaceItems();
-    let totalCost = 0;
-    const orderItems: Array<{ itemId: string; title: string; category: any; price: number; quantity: number; imageUrl?: string }> = [];
+    let subtotalCost = 0;
+    const orderItems: Array<{
+      itemId: string;
+      title: string;
+      category: 'food' | 'groceries' | 'medicines' | 'appliances';
+      price: number;
+      quantity: number;
+      imageUrl?: string;
+    }> = [];
+    const itemsToUpdate: Array<{ item: (typeof marketItems)[number]; qty: number }> = [];
 
     for (const ci of cartItems) {
       const itemId = String(ci.itemId || ci.id || '');
-      const qty = Math.max(1, Number(ci.quantity) || 1);
-      const mItem = marketItems.find(i => i.id === itemId);
+      const qty = Math.max(1, Math.floor(Number(ci.quantity) || 1));
+      const mItem = marketItems.find((i) => i.id === itemId);
       if (!mItem) {
         return res.status(400).json({ error: 'Item not found or unavailable.' });
       }
       if (mItem.stock < qty) {
         return res.status(400).json({ error: `Insufficient stock for ${mItem.title} (Available: ${mItem.stock}).` });
       }
-      const lineCost = Math.round(mItem.price * qty * 100) / 100;
-      totalCost += lineCost;
+      subtotalCost += Math.round(mItem.price * qty * 100) / 100;
       orderItems.push({
         itemId: mItem.id,
         title: mItem.title,
@@ -5366,19 +5395,20 @@ app.post('/api/marketplace/checkout', requireAuth, async (req: AuthedRequest, re
         quantity: qty,
         imageUrl: mItem.imageUrl,
       });
-
-      mItem.stock = Math.max(0, mItem.stock - qty);
-      await store.saveMarketplaceItem(mItem);
+      itemsToUpdate.push({ item: mItem, qty });
     }
 
-    totalCost = Math.round(totalCost * 100) / 100;
+    const deliveryDistanceKm = Math.max(1, Number(req.body?.deliveryDistanceKm) || 2);
+    const deliveryFee = calcMarketplaceDeliveryFee(deliveryDistanceKm);
+    const totalCost = Math.round((subtotalCost + deliveryFee) * 100) / 100;
+
     const dash = await store.getUserDashboard(user.id);
     const makeTxId = () => `tx_order_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const prependTx = (list: WalletTxItem[], item: WalletTxItem): WalletTxItem[] => [item, ...list].slice(0, 60);
 
     if (paymentMethod === 'wallet') {
       if (dash.walletBalance < totalCost) {
-        return res.status(400).json({ error: `Insufficient Cash Wallet balance (Need ₱${totalCost.toFixed(2)}).` });
+        return res.status(400).json({ error: `Insufficient Cash Wallet balance (Need ₱${totalCost.toFixed(2)} including ₱${deliveryFee} delivery).` });
       }
       dash.walletBalance = Math.round((dash.walletBalance - totalCost) * 100) / 100;
       dash.transactions = prependTx(dash.transactions, {
@@ -5386,12 +5416,12 @@ app.post('/api/marketplace/checkout', requireAuth, async (req: AuthedRequest, re
         walletType: 'wallet',
         kind: 'topup',
         amount: -totalCost,
-        note: `Checkout ${orderItems.length} marketplace item(s) (₱${totalCost.toFixed(2)})`,
+        note: `Checkout ${orderItems.length} item(s) + ₱${deliveryFee} delivery (${deliveryDistanceKm}km)`,
         createdAt: now,
       });
     } else {
       if (dash.choyWalletBalance < totalCost) {
-        return res.status(400).json({ error: `Insufficient Choy Wallet balance (Need ${totalCost} CHOY).` });
+        return res.status(400).json({ error: `Insufficient Choy Wallet balance (Need ${totalCost} CHOY including ₱${deliveryFee} delivery).` });
       }
       dash.choyWalletBalance = Math.round((dash.choyWalletBalance - totalCost) * 100) / 100;
       dash.transactions = prependTx(dash.transactions, {
@@ -5399,28 +5429,43 @@ app.post('/api/marketplace/checkout', requireAuth, async (req: AuthedRequest, re
         walletType: 'choy_wallet',
         kind: 'reward',
         amount: -totalCost,
-        note: `Checkout ${orderItems.length} marketplace item(s) with CHOY Coins (${totalCost})`,
+        note: `Checkout ${orderItems.length} item(s) + ₱${deliveryFee} delivery with CHOY Coins`,
         createdAt: now,
       });
     }
 
+    // Deduct stock only after balance check succeeds
+    let latestItems = marketItems;
+    for (const entry of itemsToUpdate) {
+      entry.item.stock = Math.max(0, entry.item.stock - entry.qty);
+      latestItems = await store.saveMarketplaceItem(entry.item);
+    }
+
     const savedDash = await store.saveUserDashboard(dash);
     const orderId = `ord_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+
     const newOrder = {
       id: orderId,
       userId: user.id,
       userName: user.name,
+      customerName,
+      customerPhone,
+      deliveryAddress,
+      deliveryNotes,
+      deliveryDistanceKm,
+      deliveryFee,
       items: orderItems,
       totalAmount: totalCost,
       paymentMethod: paymentMethod as 'wallet' | 'choy_wallet',
-      status: 'completed' as const,
+      status: 'pending' as const,
       createdAt: now,
     };
 
-    await store.saveMarketplaceOrder(newOrder);
+    const allOrders = await store.saveMarketplaceOrder(newOrder);
+    const visibleOrders = user.role === 'admin' ? allOrders : allOrders.filter((o) => o.userId === user.id);
     broadcastSync('marketplace');
 
-    return res.json({ ok: true, order: newOrder, userDashboard: savedDash });
+    return res.json({ ok: true, order: newOrder, items: latestItems, orders: visibleOrders, userDashboard: savedDash });
   } catch (err: unknown) {
     return res.status(500).json({ error: err instanceof Error ? err.message : 'Checkout failed.' });
   }
@@ -5448,7 +5493,16 @@ app.post('/api/marketplace/items', requireAuth, async (req: AuthedRequest, res: 
     if (action === 'buy') {
       const itemId = typeof req.body?.itemId === 'string' ? req.body.itemId.trim() : '';
       const paymentMethod = req.body?.paymentMethod === 'choy_wallet' ? 'choy_wallet' : 'wallet';
-      const quantity = Math.max(1, Number(req.body?.quantity) || 1);
+      const quantity = Math.max(1, Math.floor(Number(req.body?.quantity) || 1));
+      const customerName = typeof req.body?.customerName === 'string' ? req.body.customerName.trim().slice(0, 100) : '';
+      const customerPhone = typeof req.body?.customerPhone === 'string' ? req.body.customerPhone.trim().slice(0, 40) : '';
+      const deliveryAddress = typeof req.body?.deliveryAddress === 'string' ? req.body.deliveryAddress.trim().slice(0, 250) : '';
+      const deliveryNotes = typeof req.body?.deliveryNotes === 'string' ? req.body.deliveryNotes.trim().slice(0, 300) : '';
+
+      if (!customerName || !customerPhone || !deliveryAddress) {
+        return res.status(400).json({ error: 'Please fill in Full Name, Contact Number, and Delivery Address.' });
+      }
+
       const items = await store.listMarketplaceItems();
       const targetItem = items.find((i) => i.id === itemId);
       if (!targetItem) {
@@ -5458,7 +5512,9 @@ app.post('/api/marketplace/items', requireAuth, async (req: AuthedRequest, res: 
         return res.status(400).json({ error: `Insufficient stock (Available: ${targetItem.stock}).` });
       }
 
-      const totalCost = Math.round(targetItem.price * quantity * 100) / 100;
+      const deliveryDistanceKm = Math.max(1, Number(req.body?.deliveryDistanceKm) || 2);
+      const deliveryFee = calcMarketplaceDeliveryFee(deliveryDistanceKm);
+      const totalCost = Math.round((targetItem.price * quantity + deliveryFee) * 100) / 100;
       const dash = await store.getUserDashboard(user.id);
 
       const makeTxId = () => `tx_buy_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
@@ -5466,7 +5522,7 @@ app.post('/api/marketplace/items', requireAuth, async (req: AuthedRequest, res: 
 
       if (paymentMethod === 'wallet') {
         if (dash.walletBalance < totalCost) {
-          return res.status(400).json({ error: `Insufficient Cash Wallet balance (Need ₱${totalCost.toFixed(2)}).` });
+          return res.status(400).json({ error: `Insufficient Cash Wallet balance (Need ₱${totalCost.toFixed(2)} including ₱${deliveryFee} delivery).` });
         }
         dash.walletBalance = Math.round((dash.walletBalance - totalCost) * 100) / 100;
         dash.transactions = prependTx(dash.transactions, {
@@ -5474,12 +5530,12 @@ app.post('/api/marketplace/items', requireAuth, async (req: AuthedRequest, res: 
           walletType: 'wallet',
           kind: 'topup',
           amount: -totalCost,
-          note: `Purchased ${quantity}x ${targetItem.title} (${targetItem.category})`,
+          note: `Purchased ${quantity}x ${targetItem.title} + ₱${deliveryFee} delivery (${deliveryDistanceKm}km)`,
           createdAt: now,
         });
       } else {
         if (dash.choyWalletBalance < totalCost) {
-          return res.status(400).json({ error: `Insufficient Choy Wallet balance (Need ${totalCost} CHOY).` });
+          return res.status(400).json({ error: `Insufficient Choy Wallet balance (Need ${totalCost} CHOY including ₱${deliveryFee} delivery).` });
         }
         dash.choyWalletBalance = Math.round((dash.choyWalletBalance - totalCost) * 100) / 100;
         dash.transactions = prependTx(dash.transactions, {
@@ -5487,19 +5543,25 @@ app.post('/api/marketplace/items', requireAuth, async (req: AuthedRequest, res: 
           walletType: 'choy_wallet',
           kind: 'reward',
           amount: -totalCost,
-          note: `Purchased ${quantity}x ${targetItem.title} with CHOY Coins`,
+          note: `Purchased ${quantity}x ${targetItem.title} + ₱${deliveryFee} delivery with CHOY Coins`,
           createdAt: now,
         });
       }
 
       targetItem.stock = Math.max(0, targetItem.stock - quantity);
-      await store.saveMarketplaceItem(targetItem);
+      const latestItems = await store.saveMarketplaceItem(targetItem);
 
       const orderId = `ord_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-      await store.saveMarketplaceOrder({
+      const newOrder = {
         id: orderId,
         userId: user.id,
         userName: user.name,
+        customerName,
+        customerPhone,
+        deliveryAddress,
+        deliveryNotes,
+        deliveryDistanceKm,
+        deliveryFee,
         items: [{
           itemId: targetItem.id,
           title: targetItem.title,
@@ -5510,13 +5572,15 @@ app.post('/api/marketplace/items', requireAuth, async (req: AuthedRequest, res: 
         }],
         totalAmount: totalCost,
         paymentMethod: paymentMethod as 'wallet' | 'choy_wallet',
-        status: 'completed',
+        status: 'pending' as const,
         createdAt: now,
-      });
+      };
+      const allOrders = await store.saveMarketplaceOrder(newOrder);
+      const visibleOrders = user.role === 'admin' ? allOrders : allOrders.filter((o) => o.userId === user.id);
 
       const savedDash = await store.saveUserDashboard(dash);
       broadcastSync('marketplace');
-      return res.json({ ok: true, userDashboard: savedDash });
+      return res.json({ ok: true, order: newOrder, items: latestItems, orders: visibleOrders, userDashboard: savedDash });
     }
 
     if (user.role !== 'admin') {
@@ -5528,8 +5592,9 @@ app.post('/api/marketplace/items', requireAuth, async (req: AuthedRequest, res: 
     const title = typeof req.body?.title === 'string' ? req.body.title.trim().slice(0, 120) : '';
     const description = typeof req.body?.description === 'string' ? req.body.description.trim().slice(0, 500) : '';
     const price = Math.max(0, Number(req.body?.price) || 0);
-    const imageUrl = typeof req.body?.imageUrl === 'string' ? req.body.imageUrl.trim().slice(0, 1000) : undefined;
-    const stock = Math.max(0, Number(req.body?.stock) || 100);
+    const rawImageUrl = typeof req.body?.imageUrl === 'string' ? req.body.imageUrl.trim() : '';
+    const imageUrl = sanitizeMediaUrl(rawImageUrl) || (rawImageUrl.startsWith('https://') ? rawImageUrl.slice(0, 1000) : undefined);
+    const stock = Math.max(0, Math.floor(Number(req.body?.stock) || 0));
     const sellerName = typeof req.body?.sellerName === 'string' ? req.body.sellerName.trim().slice(0, 80) : 'Choy Store';
 
     if (!title) {

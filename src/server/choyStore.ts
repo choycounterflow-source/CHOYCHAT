@@ -285,10 +285,16 @@ export interface StoredMarketplaceOrder {
   id: string;
   userId: string;
   userName: string;
+  customerName?: string;
+  customerPhone?: string;
+  deliveryAddress?: string;
+  deliveryNotes?: string;
+  deliveryDistanceKm?: number;
+  deliveryFee?: number;
   items: StoredMarketplaceOrderItem[];
   totalAmount: number;
   paymentMethod: 'wallet' | 'choy_wallet';
-  status: 'completed' | 'pending' | 'cancelled';
+  status: 'pending' | 'preparing' | 'out_for_delivery' | 'completed' | 'cancelled';
   createdAt: string;
 }
 
@@ -534,7 +540,7 @@ export function sanitizeMediaUrl(url: unknown): string | undefined {
   if (trimmed.startsWith('/assets/') && trimmed.length <= 500) return trimmed;
   if (
     trimmed.length <= 500 &&
-    /^\/api\/media\/r2\/(posts|messages|voice|avatars)\/\d{4}-\d{2}\/[a-zA-Z0-9_-]+\.(mp4|webm|mov|m4v|3gp|mkv|ogv|jpg|jpeg|png|webp|gif|mp3|ogg|m4a|wav|aac)$/i.test(
+    /^\/api\/media\/r2\/(posts|messages|voice|avatars|marketplace)\/\d{4}-\d{2}\/[a-zA-Z0-9_-]+\.(mp4|webm|mov|m4v|3gp|mkv|ogv|jpg|jpeg|png|webp|gif|mp3|ogg|m4a|wav|aac)$/i.test(
       trimmed
     )
   ) {
@@ -1147,12 +1153,24 @@ export class ChoyStore {
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
         user_name TEXT NOT NULL,
+        customer_name TEXT,
+        customer_phone TEXT,
+        delivery_address TEXT,
+        delivery_notes TEXT,
+        delivery_distance_km INT NOT NULL DEFAULT 2,
+        delivery_fee NUMERIC(12,2) NOT NULL DEFAULT 25,
         items JSONB NOT NULL,
         total_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
         payment_method TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'completed',
+        status TEXT NOT NULL DEFAULT 'pending',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE app_marketplace_orders ADD COLUMN IF NOT EXISTS customer_name TEXT;
+      ALTER TABLE app_marketplace_orders ADD COLUMN IF NOT EXISTS customer_phone TEXT;
+      ALTER TABLE app_marketplace_orders ADD COLUMN IF NOT EXISTS delivery_address TEXT;
+      ALTER TABLE app_marketplace_orders ADD COLUMN IF NOT EXISTS delivery_notes TEXT;
+      ALTER TABLE app_marketplace_orders ADD COLUMN IF NOT EXISTS delivery_distance_km INT NOT NULL DEFAULT 2;
+      ALTER TABLE app_marketplace_orders ADD COLUMN IF NOT EXISTS delivery_fee NUMERIC(12,2) NOT NULL DEFAULT 25;
 
       CREATE TABLE IF NOT EXISTS app_settings (
         id TEXT PRIMARY KEY,
@@ -3810,7 +3828,7 @@ export class ChoyStore {
     const walletBalance = Number.isFinite(Number(raw?.walletBalance)) ? Math.max(0, Number(raw?.walletBalance)) : 500;
     const choyWalletBalance = Number.isFinite(Number(raw?.choyWalletBalance))
       ? Math.max(0, Number(raw?.choyWalletBalance))
-      : 300;
+      : 0;
     const plan =
       raw?.subscriptionPlan === 'choy_pro_monthly' ||
       raw?.subscriptionPlan === 'choy_pro_annual' ||
@@ -3826,14 +3844,6 @@ export class ChoyStore {
     const transactions = Array.isArray(raw?.transactions)
       ? raw.transactions.slice(0, 60)
       : [
-          {
-            id: 'tx_welcome_' + userId.slice(-6),
-            walletType: 'choy_wallet' as const,
-            kind: 'reward' as const,
-            amount: 300,
-            note: 'Welcome Choy Wallet Starter Bonus',
-            createdAt: now,
-          },
           {
             id: 'tx_wallet_init_' + userId.slice(-6),
             walletType: 'wallet' as const,
@@ -4038,10 +4048,16 @@ export class ChoyStore {
         id: String(r.id),
         userId: String(r.user_id),
         userName: String(r.user_name),
+        customerName: typeof r.customer_name === 'string' ? r.customer_name : undefined,
+        customerPhone: typeof r.customer_phone === 'string' ? r.customer_phone : undefined,
+        deliveryAddress: typeof r.delivery_address === 'string' ? r.delivery_address : undefined,
+        deliveryNotes: typeof r.delivery_notes === 'string' ? r.delivery_notes : undefined,
+        deliveryDistanceKm: Number(r.delivery_distance_km ?? 2),
+        deliveryFee: Number(r.delivery_fee ?? 25),
         items: typeof r.items === 'string' ? JSON.parse(r.items) : (r.items || []),
         totalAmount: Number(r.total_amount || 0),
         paymentMethod: (['wallet', 'choy_wallet'].includes(String(r.payment_method)) ? r.payment_method : 'wallet') as any,
-        status: (['completed', 'pending', 'cancelled'].includes(String(r.status)) ? r.status : 'completed') as any,
+        status: (['pending', 'preparing', 'out_for_delivery', 'completed', 'cancelled'].includes(String(r.status)) ? r.status : 'pending') as any,
         createdAt: new Date(String(r.created_at)).toISOString(),
       }));
     }
@@ -4052,10 +4068,10 @@ export class ChoyStore {
     await this.ready();
     if (this.usePostgres && this.pool) {
       await this.pool.query(
-        `INSERT INTO app_marketplace_orders (id, user_id, user_name, items, total_amount, payment_method, status, created_at)
-         VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8::timestamptz)
-         ON CONFLICT (id) DO UPDATE SET items = EXCLUDED.items, total_amount = EXCLUDED.total_amount, status = EXCLUDED.status`,
-        [order.id, order.userId, order.userName, JSON.stringify(order.items), order.totalAmount, order.paymentMethod, order.status, order.createdAt]
+        `INSERT INTO app_marketplace_orders (id, user_id, user_name, customer_name, customer_phone, delivery_address, delivery_notes, delivery_distance_km, delivery_fee, items, total_amount, payment_method, status, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14::timestamptz)
+         ON CONFLICT (id) DO UPDATE SET items = EXCLUDED.items, total_amount = EXCLUDED.total_amount, status = EXCLUDED.status, customer_name = EXCLUDED.customer_name, customer_phone = EXCLUDED.customer_phone, delivery_address = EXCLUDED.delivery_address, delivery_notes = EXCLUDED.delivery_notes`,
+        [order.id, order.userId, order.userName, order.customerName || null, order.customerPhone || null, order.deliveryAddress || null, order.deliveryNotes || null, order.deliveryDistanceKm || 2, order.deliveryFee || 25, JSON.stringify(order.items), order.totalAmount, order.paymentMethod, order.status, order.createdAt]
       );
       return this.listMarketplaceOrders();
     }

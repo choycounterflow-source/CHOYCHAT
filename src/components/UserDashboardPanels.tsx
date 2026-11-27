@@ -44,6 +44,10 @@ import {
   Package,
   X,
   TrendingUp,
+  Upload,
+  Truck,
+  MapPin,
+  Phone,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -166,6 +170,7 @@ interface UserDashboardSectionProps {
   onOpenGroupMembers: (groupId: string) => void;
   onJoinOrStartGroupCall: (groupId: string) => void;
   onOpenPrivacyModal?: () => void;
+  onDashboardUpdated?: (next: UserDashboardData) => void;
 }
 
 export function buildAdminProfileCopyText(
@@ -287,6 +292,7 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
   onOpenCreateGroup,
   onOpenGroupMembers,
   onJoinOrStartGroupCall,
+  onDashboardUpdated,
 }) => {
   const [nameInput, setNameInput] = useState(currentUser.name);
   const [nameSaving, setNameSaving] = useState(false);
@@ -319,7 +325,21 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
   const [cartItems, setCartItems] = React.useState<Array<{ item: MarketplaceItem; quantity: number }>>([]);
   const [isCartOpen, setIsCartOpen] = React.useState(false);
   const [cartPaymentMethod, setCartPaymentMethod] = React.useState<'wallet' | 'choy_wallet'>('wallet');
+  const [deliveryDistanceKm, setDeliveryDistanceKm] = React.useState<number>(2);
+  const [customerName, setCustomerName] = React.useState(currentUser.name);
+  const [customerPhone, setCustomerPhone] = React.useState(currentUser.phone || '');
+  const [deliveryAddress, setDeliveryAddress] = React.useState('');
+  const [deliveryNotes, setDeliveryNotes] = React.useState('');
   const [marketplaceOrders, setMarketplaceOrders] = React.useState<any[]>([]);
+  const [uploadingItemImage, setUploadingItemImage] = React.useState(false);
+  const [checkoutError, setCheckoutError] = React.useState<string | null>(null);
+  const [updatingOrderId, setUpdatingOrderId] = React.useState<string | null>(null);
+
+  const deliveryFee = deliveryDistanceKm <= 2 ? 25 : deliveryDistanceKm <= 5 ? 40 : deliveryDistanceKm <= 8 ? 65 : 90;
+  const deliveryDistanceLabel =
+    deliveryDistanceKm <= 2 ? '0-2 km' : deliveryDistanceKm <= 5 ? '2-5 km' : deliveryDistanceKm <= 8 ? '5-8 km' : '8+ km';
+  const itemsSubtotal = cartItems.reduce((acc, ci) => acc + (ci.item.price * ci.quantity), 0);
+  const totalCartAmount = Math.round((itemsSubtotal + deliveryFee) * 100) / 100;
 
   React.useEffect(() => {
     if (section === 'marketplace') {
@@ -359,8 +379,14 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
     }
   };
 
-  const handleCartCheckout = async () => {
+  const handleCartCheckout = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (cartItems.length === 0) return;
+    setCheckoutError(null);
+    if (!customerName.trim() || !customerPhone.trim() || !deliveryAddress.trim()) {
+      setCheckoutError('Please fill in Full Name, Contact Number, and Delivery Address.');
+      return;
+    }
     try {
       setMarketLoading(true);
       const payloadItems = cartItems.map(ci => ({ itemId: ci.item.id, quantity: ci.quantity }));
@@ -368,21 +394,94 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ items: payloadItems, paymentMethod: cartPaymentMethod }),
+        body: JSON.stringify({
+          items: payloadItems,
+          paymentMethod: cartPaymentMethod,
+          deliveryDistanceKm,
+          customerName: customerName.trim(),
+          customerPhone: customerPhone.trim(),
+          deliveryAddress: deliveryAddress.trim(),
+          deliveryNotes: deliveryNotes.trim(),
+        }),
       });
       const data = await res.json();
       if (res.ok) {
+        if (Array.isArray(data.items)) setMarketItems(data.items);
+        if (Array.isArray(data.orders)) setMarketplaceOrders(data.orders);
+        if (data.userDashboard) onDashboardUpdated?.(data.userDashboard);
         setCartItems([]);
         setIsCartOpen(false);
+        setCheckoutError(null);
         setMarketNotice('Cart checkout completed successfully!');
-        window.location.reload();
       } else {
-        setMarketNotice(data.error || 'Checkout failed.');
+        setCheckoutError(data.error || 'Checkout failed.');
       }
     } catch (err: unknown) {
-      setMarketNotice(err instanceof Error ? err.message : 'Checkout failed.');
+      setCheckoutError(err instanceof Error ? err.message : 'Checkout failed.');
     } finally {
       setMarketLoading(false);
+    }
+  };
+
+  const handleUploadMarketplaceImage = async (file: File) => {
+    if (!file || !file.type.startsWith('image/')) {
+      setMarketNotice('Please select a valid image file.');
+      return;
+    }
+    try {
+      setUploadingItemImage(true);
+      const res = await fetch('/api/media/upload', {
+        method: 'POST',
+        headers: {
+          'Content-Type': file.type || 'image/jpeg',
+          'X-Media-Folder': 'marketplace',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        credentials: 'include',
+        body: file,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.uploaded && typeof data?.url === 'string') {
+        setEditingItem((prev) => (prev ? { ...prev, imageUrl: data.url } : prev));
+        setMarketNotice('Photo uploaded to Cloudflare R2.');
+        return;
+      }
+      // Fallback to local Data URL when cloud storage is not configured locally
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(new Error('Failed to read image file.'));
+        reader.readAsDataURL(file);
+      });
+      setEditingItem((prev) => (prev ? { ...prev, imageUrl: dataUrl } : prev));
+      setMarketNotice('Photo attached from device.');
+    } catch (err: unknown) {
+      setMarketNotice(err instanceof Error ? err.message : 'Image upload failed.');
+    } finally {
+      setUploadingItemImage(false);
+    }
+  };
+
+  const handleUpdateOrderStatus = async (orderId: string, status: string) => {
+    try {
+      setUpdatingOrderId(orderId);
+      const res = await fetch('/api/marketplace/orders/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ orderId, status }),
+      });
+      const data = await res.json();
+      if (res.ok && Array.isArray(data.orders)) {
+        setMarketplaceOrders(data.orders);
+        setMarketNotice(`Order #${orderId.slice(-6)} status updated to ${status.replace(/_/g, ' ')}.`);
+      } else {
+        setMarketNotice(data.error || 'Failed to update order status.');
+      }
+    } catch (err: unknown) {
+      setMarketNotice(err instanceof Error ? err.message : 'Failed to update order status.');
+    } finally {
+      setUpdatingOrderId(null);
     }
   };
 
@@ -482,6 +581,11 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
   const handleBuyMarketplaceItem = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!buyingItem) return;
+    setCheckoutError(null);
+    if (!customerName.trim() || !customerPhone.trim() || !deliveryAddress.trim()) {
+      setCheckoutError('Please fill in Full Name, Contact Number, and Delivery Address.');
+      return;
+    }
     try {
       setMarketLoading(true);
       const res = await fetch('/api/marketplace/items', {
@@ -493,19 +597,27 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
           itemId: buyingItem.id,
           paymentMethod: buyPaymentMethod,
           quantity: buyQuantity,
+          deliveryDistanceKm,
+          customerName: customerName.trim(),
+          customerPhone: customerPhone.trim(),
+          deliveryAddress: deliveryAddress.trim(),
+          deliveryNotes: deliveryNotes.trim(),
         }),
       });
       const data = await res.json();
       if (res.ok) {
+        if (Array.isArray(data.items)) setMarketItems(data.items);
+        if (Array.isArray(data.orders)) setMarketplaceOrders(data.orders);
+        if (data.userDashboard) onDashboardUpdated?.(data.userDashboard);
         setBuyingItem(null);
         setBuyQuantity(1);
+        setCheckoutError(null);
         setMarketNotice(`Successfully purchased ${buyQuantity}x ${buyingItem.title}!`);
-        window.location.reload();
       } else {
-        setMarketNotice(data.error || 'Failed to complete purchase.');
+        setCheckoutError(data.error || 'Failed to complete purchase.');
       }
     } catch (err: unknown) {
-      setMarketNotice(err instanceof Error ? err.message : 'Purchase failed.');
+      setCheckoutError(err instanceof Error ? err.message : 'Purchase failed.');
     } finally {
       setMarketLoading(false);
     }
@@ -1333,7 +1445,7 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
       <div className="max-w-4xl mx-auto space-y-4">
         {renderSectionBackBar(
           'Choy Wallet',
-          'Earn daily CHOY Coins, convert Wallet funds, and tip or send CHOY to friends',
+          'Top up or convert Wallet funds to CHOY Coins for store purchases and tipping',
           <Coins className="w-5 h-5" />
         )}
         {renderFeedbackBanner()}
@@ -1347,18 +1459,9 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
               {dashboard.choyWalletBalance.toLocaleString()} <span className="text-base">CHOY</span>
             </div>
             <div className="text-xs font-bold opacity-85 mt-1">
-              {dashboard.choyProActive ? 'Choy Pro 2× Daily Reward Active (+50 CHOY/day)' : 'Daily Check-In Reward: +25 CHOY/day'}
+              Top up or convert Cash Wallet funds for purchase purposes.
             </div>
           </div>
-          <button
-            type="button"
-            disabled={isBusy}
-            onClick={() => void onDashboardAction({ action: 'choy_wallet_claim_daily' })}
-            className="px-4 py-2.5 rounded-xl bg-slate-950 hover:bg-slate-900 text-amber-300 text-xs font-black inline-flex items-center gap-1.5 shrink-0 shadow transition disabled:opacity-50"
-          >
-            <Sparkles className="w-4 h-4" />
-            <span>Claim Daily +{dashboard.choyProActive ? '50' : '25'} CHOY</span>
-          </button>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1884,7 +1987,11 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                     <div className="p-4 pt-0 flex items-center gap-2 border-t border-emerald-100 dark:border-emerald-800/60 mt-2">
                       <button
                         type="button"
-                        onClick={() => setBuyingItem(item)}
+                        onClick={() => {
+                          setCheckoutError(null);
+                          setBuyQuantity(1);
+                          setBuyingItem(item);
+                        }}
                         className="flex-1 py-2 rounded-xl bg-orange-500 hover:bg-orange-400 text-slate-950 text-xs font-black inline-flex items-center justify-center gap-1.5 shadow transition"
                       >
                         <ShoppingBag className="w-3.5 h-3.5" />
@@ -1934,12 +2041,13 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
 
         {isEditItemModalOpen && editingItem && (
           <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
-            <div className="bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-2xl max-w-lg w-full p-6 shadow-xl space-y-4">
+            <div className="bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-6 shadow-xl space-y-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-base font-black text-emerald-950 dark:text-white">
                   {editingItem.id ? 'Admin Set Up: Edit Item' : 'Admin Set Up: Add New Item'}
                 </h3>
                 <button
+                  type="button"
                   onClick={() => setIsEditItemModalOpen(false)}
                   className="p-1 rounded-xl text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900"
                 >
@@ -1948,18 +2056,30 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
               </div>
 
               <form onSubmit={handleSaveMarketplaceItem} className="space-y-3">
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-emerald-900 dark:text-emerald-200">Category</label>
-                  <select
-                    value={editingItem.category || 'food'}
-                    onChange={(e) => setEditingItem({ ...editingItem, category: e.target.value as any })}
-                    className="w-full p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-xs font-bold text-emerald-950 dark:text-white"
-                  >
-                    <option value="food">Food (with images)</option>
-                    <option value="groceries">Groceries</option>
-                    <option value="medicines">Medicines</option>
-                    <option value="appliances">Appliances</option>
-                  </select>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-emerald-900 dark:text-emerald-200">Category</label>
+                    <select
+                      value={editingItem.category || 'food'}
+                      onChange={(e) => setEditingItem({ ...editingItem, category: e.target.value as any })}
+                      className="w-full p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-xs font-bold text-emerald-950 dark:text-white"
+                    >
+                      <option value="food">Food (with images)</option>
+                      <option value="groceries">Groceries</option>
+                      <option value="medicines">Medicines</option>
+                      <option value="appliances">Appliances</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-emerald-900 dark:text-emerald-200">Seller / Store Name</label>
+                    <input
+                      type="text"
+                      value={editingItem.sellerName || ''}
+                      onChange={(e) => setEditingItem({ ...editingItem, sellerName: e.target.value })}
+                      placeholder="e.g. Choy Kitchen"
+                      className="w-full p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white"
+                    />
+                  </div>
                 </div>
 
                 <div className="space-y-1">
@@ -2000,15 +2120,43 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                   </div>
                 </div>
 
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-emerald-900 dark:text-emerald-200">Image URL (Cloudinary / Unsplash / Web)</label>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-bold text-emerald-900 dark:text-emerald-200">
+                      Item Photo (Cloudflare R2 Upload or Image URL)
+                    </label>
+                    <label className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-black inline-flex items-center gap-1.5 cursor-pointer shadow-xs">
+                      {uploadingItemImage ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                      <span>{uploadingItemImage ? 'Uploading...' : 'Upload Photo (R2)'}</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        disabled={uploadingItemImage}
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) void handleUploadMarketplaceImage(file);
+                          e.target.value = '';
+                        }}
+                      />
+                    </label>
+                  </div>
                   <input
-                    type="url"
+                    type="text"
                     value={editingItem.imageUrl || ''}
                     onChange={(e) => setEditingItem({ ...editingItem, imageUrl: e.target.value })}
-                    placeholder="https://images.unsplash.com/..."
+                    placeholder="https://... or upload via Cloudflare R2"
                     className="w-full p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white"
                   />
+                  {editingItem.imageUrl && (
+                    <div className="relative rounded-xl overflow-hidden border border-emerald-200 dark:border-emerald-800 h-32 bg-emerald-100 dark:bg-emerald-900/50">
+                      <img
+                        src={editingItem.imageUrl}
+                        alt={editingItem.title || 'Preview'}
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-1">
@@ -2032,7 +2180,7 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                   </button>
                   <button
                     type="submit"
-                    disabled={marketLoading}
+                    disabled={marketLoading || uploadingItemImage}
                     className="px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-400 text-slate-950 text-xs font-black inline-flex items-center gap-1.5"
                   >
                     <span>Save Item</span>
@@ -2045,16 +2193,29 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
 
         {buyingItem && (
           <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
-            <div className="bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-2xl max-w-md w-full p-6 shadow-xl space-y-4">
+            <div className="bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-6 shadow-xl space-y-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-base font-black text-emerald-950 dark:text-white">Checkout: {buyingItem.title}</h3>
                 <button
-                  onClick={() => setBuyingItem(null)}
+                  type="button"
+                  onClick={() => {
+                    setBuyingItem(null);
+                    setCheckoutError(null);
+                  }}
                   className="p-1 rounded-xl text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
+
+              {checkoutError && (
+                <div
+                  role="alert"
+                  className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/70 border border-rose-300 dark:border-rose-700 text-xs font-semibold text-rose-800 dark:text-rose-200"
+                >
+                  {checkoutError}
+                </div>
+              )}
 
               <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-800 space-y-2">
                 <div className="flex justify-between text-xs font-bold text-emerald-950 dark:text-white">
@@ -2068,16 +2229,82 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
               </div>
 
               <form onSubmit={handleBuyMarketplaceItem} className="space-y-3">
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-emerald-900 dark:text-emerald-200">Quantity</label>
-                  <input
-                    type="number"
-                    min="1"
-                    max={Math.max(1, buyingItem.stock)}
-                    value={buyQuantity}
-                    onChange={(e) => setBuyQuantity(Math.max(1, Number(e.target.value)))}
-                    className="w-full p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white"
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-emerald-900 dark:text-emerald-200">Quantity</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max={Math.max(1, buyingItem.stock)}
+                      value={buyQuantity}
+                      onChange={(e) => setBuyQuantity(Math.max(1, Number(e.target.value)))}
+                      className="w-full p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-emerald-900 dark:text-emerald-200">Delivery Distance (KM)</label>
+                    <select
+                      value={deliveryDistanceKm}
+                      onChange={(e) => setDeliveryDistanceKm(Number(e.target.value))}
+                      className="w-full p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-xs font-bold text-emerald-950 dark:text-white"
+                    >
+                      <option value="2">0 - 2 km (Fee: ₱25)</option>
+                      <option value="5">2 - 5 km (Fee: ₱40)</option>
+                      <option value="8">5 - 8 km (Fee: ₱65)</option>
+                      <option value="10">8+ km (Fee: ₱90)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="space-y-3 p-3 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800">
+                  <h4 className="text-xs font-black uppercase tracking-wider text-emerald-900 dark:text-emerald-200">
+                    Customer & Delivery Details
+                  </h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-emerald-950 dark:text-emerald-100">Full Name</label>
+                      <input
+                        type="text"
+                        required
+                        value={customerName}
+                        onChange={(e) => setCustomerName(e.target.value)}
+                        placeholder="e.g. Juan dela Cruz"
+                        className="w-full p-2 rounded-xl bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-emerald-950 dark:text-emerald-100">Contact Number</label>
+                      <input
+                        type="text"
+                        required
+                        value={customerPhone}
+                        onChange={(e) => setCustomerPhone(e.target.value)}
+                        placeholder="e.g. 09123456789"
+                        className="w-full p-2 rounded-xl bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white"
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-bold text-emerald-950 dark:text-emerald-100">Delivery Address / Landmark</label>
+                    <input
+                      type="text"
+                      required
+                      value={deliveryAddress}
+                      onChange={(e) => setDeliveryAddress(e.target.value)}
+                      placeholder="e.g. Purok 3, Brgy. Central, Near Chapel"
+                      className="w-full p-2 rounded-xl bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-bold text-emerald-950 dark:text-emerald-100">Delivery Notes (Optional)</label>
+                    <input
+                      type="text"
+                      value={deliveryNotes}
+                      onChange={(e) => setDeliveryNotes(e.target.value)}
+                      placeholder="e.g. Please call upon arrival"
+                      className="w-full p-2 rounded-xl bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white"
+                    />
+                  </div>
                 </div>
 
                 <div className="space-y-1">
@@ -2092,15 +2319,28 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                   </select>
                 </div>
 
-                <div className="p-3 rounded-xl bg-orange-50 dark:bg-orange-950/40 border border-orange-200 dark:border-orange-800 text-xs font-black text-orange-950 dark:text-orange-200 flex items-center justify-between">
-                  <span>Total Amount Due:</span>
-                  <span className="text-sm">₱{(buyingItem.price * buyQuantity).toFixed(2)}</span>
+                <div className="p-3 rounded-xl bg-orange-50 dark:bg-orange-950/40 border border-orange-200 dark:border-orange-800 space-y-1.5 text-xs">
+                  <div className="flex justify-between font-bold text-emerald-900 dark:text-emerald-200">
+                    <span>Item Subtotal ({buyQuantity}x):</span>
+                    <span>₱{(buyingItem.price * buyQuantity).toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between font-bold text-emerald-900 dark:text-emerald-200">
+                    <span>Delivery Fee ({deliveryDistanceLabel}):</span>
+                    <span>₱{deliveryFee.toFixed(2)}</span>
+                  </div>
+                  <div className="pt-1.5 border-t border-orange-200 dark:border-orange-800 flex items-center justify-between font-black text-orange-950 dark:text-orange-200">
+                    <span>Total Amount Due:</span>
+                    <span className="text-sm">₱{(buyingItem.price * buyQuantity + deliveryFee).toFixed(2)}</span>
+                  </div>
                 </div>
 
                 <div className="flex justify-end gap-2 pt-2">
                   <button
                     type="button"
-                    onClick={() => setBuyingItem(null)}
+                    onClick={() => {
+                      setBuyingItem(null);
+                      setCheckoutError(null);
+                    }}
                     className="px-4 py-2 rounded-xl bg-emerald-100 dark:bg-emerald-900 text-emerald-900 dark:text-emerald-100 text-xs font-bold"
                   >
                     Cancel
@@ -2126,6 +2366,31 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
               <span>Orders & Spending Analytics</span>
             </h3>
             <span className="text-xs text-emerald-700 dark:text-emerald-300">Last 30 Days Activity</span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800">
+              <p className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300">Total Orders</p>
+              <p className="text-lg font-black text-emerald-950 dark:text-white">{marketplaceOrders.length}</p>
+            </div>
+            <div className="p-3 rounded-xl bg-orange-50 dark:bg-orange-950/40 border border-orange-200 dark:border-orange-800">
+              <p className="text-[11px] font-bold text-orange-700 dark:text-orange-300">Order Volume</p>
+              <p className="text-lg font-black text-orange-600 dark:text-orange-400">
+                ₱{marketplaceOrders.reduce((acc, o: any) => acc + Number(o.totalAmount || 0), 0).toFixed(2)}
+              </p>
+            </div>
+            <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800">
+              <p className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300">Delivery Fees</p>
+              <p className="text-lg font-black text-emerald-950 dark:text-white">
+                ₱{marketplaceOrders.reduce((acc, o: any) => acc + Number(o.deliveryFee || 0), 0).toFixed(2)}
+              </p>
+            </div>
+            <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800">
+              <p className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300">Active / Pending</p>
+              <p className="text-lg font-black text-emerald-950 dark:text-white">
+                {marketplaceOrders.filter((o: any) => ['pending', 'preparing', 'out_for_delivery'].includes(String(o.status || 'pending'))).length}
+              </p>
+            </div>
           </div>
 
           <div className="h-64 w-full">
@@ -2159,52 +2424,116 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
             <p className="text-xs text-emerald-700 dark:text-emerald-300">No orders placed yet.</p>
           ) : (
             <div className="space-y-2">
-              {marketplaceOrders.map((ord: any) => (
-                <div key={ord.id} className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/80 border border-emerald-200 dark:border-emerald-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-2 text-xs">
-                  <div>
-                    <span className="font-bold text-emerald-950 dark:text-white">Order #{ord.id.slice(-6)}</span>
-                    <span className="text-emerald-700 dark:text-emerald-300 ml-2">by {ord.userName}</span>
-                    <p className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-0.5">
-                      {ord.items.map((it: any) => `${it.quantity}x ${it.title}`).join(', ')}
-                    </p>
+              {marketplaceOrders.map((ord: any) => {
+                const distKm = Number(ord.deliveryDistanceKm || 2);
+                const distTier = distKm <= 2 ? '0-2 km' : distKm <= 5 ? '2-5 km' : distKm <= 8 ? '5-8 km' : '8+ km';
+                const feeVal = Number(ord.deliveryFee ?? (distKm <= 2 ? 25 : distKm <= 5 ? 40 : distKm <= 8 ? 65 : 90));
+                const statusVal = String(ord.status || 'pending');
+                const statusStyle =
+                  statusVal === 'completed'
+                    ? 'bg-emerald-600 text-white'
+                    : statusVal === 'cancelled'
+                    ? 'bg-rose-600 text-white'
+                    : statusVal === 'out_for_delivery'
+                    ? 'bg-sky-600 text-white'
+                    : statusVal === 'preparing'
+                    ? 'bg-amber-500 text-slate-950'
+                    : 'bg-orange-500 text-slate-950';
+
+                return (
+                  <div key={ord.id} className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/80 border border-emerald-200 dark:border-emerald-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-xs">
+                    <div className="space-y-1.5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-black text-emerald-950 dark:text-white">Order #{ord.id.slice(-6)}</span>
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-orange-100 dark:bg-orange-950 text-orange-800 dark:text-orange-200 font-bold text-[10px]">
+                          <Phone className="w-3 h-3" />
+                          <span>{ord.customerName || ord.userName} ({ord.customerPhone || 'No contact'})</span>
+                        </span>
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-200/80 dark:bg-emerald-900 text-emerald-900 dark:text-emerald-100 font-bold text-[10px]">
+                          <Truck className="w-3 h-3" />
+                          <span>{distTier} · ₱{feeVal.toFixed(0)}</span>
+                        </span>
+                        <span className={`px-2 py-0.5 rounded-lg font-black uppercase text-[10px] ${statusStyle}`}>
+                          {statusVal.replace(/_/g, ' ')}
+                        </span>
+                      </div>
+                      <p className="text-xs font-bold text-emerald-900 dark:text-emerald-100 flex items-start gap-1">
+                        <MapPin className="w-3.5 h-3.5 mt-0.5 shrink-0 text-orange-500" />
+                        <span>
+                          {ord.deliveryAddress || 'No delivery address provided'}
+                          {ord.deliveryNotes ? ` (Note: ${ord.deliveryNotes})` : ''}
+                        </span>
+                      </p>
+                      <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
+                        Items: {ord.items.map((it: any) => `${it.quantity}x ${it.title}`).join(', ')}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                      <span className="font-black text-sm text-orange-600 dark:text-orange-400">₱{Number(ord.totalAmount).toFixed(2)}</span>
+                      <span className="px-2 py-0.5 rounded-lg bg-emerald-500 text-slate-950 font-bold uppercase text-[10px]">
+                        {ord.paymentMethod}
+                      </span>
+                      {currentUser.role === 'admin' && (
+                        <select
+                          aria-label={`Update status for order ${ord.id.slice(-6)}`}
+                          value={statusVal}
+                          disabled={updatingOrderId === ord.id}
+                          onChange={(e) => void handleUpdateOrderStatus(ord.id, e.target.value)}
+                          className="px-2 py-1 rounded-lg bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-[11px] font-bold text-emerald-950 dark:text-white"
+                        >
+                          <option value="pending">Pending</option>
+                          <option value="preparing">Preparing</option>
+                          <option value="out_for_delivery">Out for Delivery</option>
+                          <option value="completed">Completed</option>
+                          <option value="cancelled">Cancelled</option>
+                        </select>
+                      )}
+                      <span className="text-[10px] text-emerald-600 dark:text-emerald-400">
+                        {new Date(ord.createdAt).toLocaleDateString()}
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-3">
-                    <span className="font-black text-orange-600 dark:text-orange-400">₱{Number(ord.totalAmount).toFixed(2)}</span>
-                    <span className="px-2 py-0.5 rounded-full bg-emerald-500 text-slate-950 font-bold uppercase text-[10px]">
-                      {ord.paymentMethod}
-                    </span>
-                    <span className="text-[10px] text-emerald-600 dark:text-emerald-400">
-                      {new Date(ord.createdAt).toLocaleDateString()}
-                    </span>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
 
         {isCartOpen && (
           <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
-            <div className="bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-2xl max-w-lg w-full p-6 shadow-xl space-y-4">
+            <div className="bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-6 shadow-xl space-y-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-base font-black text-emerald-950 dark:text-white flex items-center gap-2">
                   <ShoppingBag className="w-5 h-5 text-orange-500" />
                   <span>Shopping Cart ({cartItems.reduce((acc, ci) => acc + ci.quantity, 0)})</span>
                 </h3>
                 <button
-                  onClick={() => setIsCartOpen(false)}
+                  type="button"
+                  onClick={() => {
+                    setIsCartOpen(false);
+                    setCheckoutError(null);
+                  }}
                   className="p-1 rounded-xl text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
+              {checkoutError && (
+                <div
+                  role="alert"
+                  className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/70 border border-rose-300 dark:border-rose-700 text-xs font-semibold text-rose-800 dark:text-rose-200"
+                >
+                  {checkoutError}
+                </div>
+              )}
+
               {cartItems.length === 0 ? (
                 <div className="py-8 text-center text-xs text-emerald-700 dark:text-emerald-300">
                   Your shopping cart is empty. Add items from the store!
                 </div>
               ) : (
-                <div className="space-y-3 max-h-64 overflow-y-auto pr-1">
+                <div className="space-y-3 max-h-56 overflow-y-auto pr-1">
                   {cartItems.map((ci) => (
                     <div key={ci.item.id} className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-800 flex items-center justify-between gap-3">
                       <div className="flex items-center gap-3">
@@ -2242,7 +2571,56 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
               )}
 
               {cartItems.length > 0 && (
-                <div className="space-y-3 pt-3 border-t border-emerald-200 dark:border-emerald-800">
+                <form onSubmit={handleCartCheckout} className="space-y-3 pt-3 border-t border-emerald-200 dark:border-emerald-800">
+                  <div className="space-y-3 p-3 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-emerald-900 dark:text-emerald-200">Customer & Delivery Details</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-bold text-emerald-950 dark:text-emerald-100">Full Name</label>
+                        <input
+                          type="text"
+                          required
+                          value={customerName}
+                          onChange={(e) => setCustomerName(e.target.value)}
+                          placeholder="e.g. Juan dela Cruz"
+                          className="w-full p-2 rounded-xl bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-bold text-emerald-950 dark:text-emerald-100">Contact Number</label>
+                        <input
+                          type="text"
+                          required
+                          value={customerPhone}
+                          onChange={(e) => setCustomerPhone(e.target.value)}
+                          placeholder="e.g. 09123456789"
+                          className="w-full p-2 rounded-xl bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-emerald-950 dark:text-emerald-100">Delivery Address / Landmark</label>
+                      <input
+                        type="text"
+                        required
+                        value={deliveryAddress}
+                        onChange={(e) => setDeliveryAddress(e.target.value)}
+                        placeholder="e.g. Purok 3, Brgy. Central, Near Chapel"
+                        className="w-full p-2 rounded-xl bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-emerald-950 dark:text-emerald-100">Delivery Notes (Optional)</label>
+                      <input
+                        type="text"
+                        value={deliveryNotes}
+                        onChange={(e) => setDeliveryNotes(e.target.value)}
+                        placeholder="e.g. Please leave at front door, ring doorbell"
+                        className="w-full p-2 rounded-xl bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white"
+                      />
+                    </div>
+                  </div>
+
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-emerald-900 dark:text-emerald-200">Checkout Payment Source</label>
                     <select
@@ -2255,30 +2633,56 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                     </select>
                   </div>
 
-                  <div className="p-3 rounded-xl bg-orange-50 dark:bg-orange-950/40 border border-orange-200 dark:border-orange-800 text-xs font-black text-orange-950 dark:text-orange-200 flex items-center justify-between">
-                    <span>Total Cart Amount:</span>
-                    <span className="text-sm">₱{cartItems.reduce((acc, ci) => acc + (ci.item.price * ci.quantity), 0).toFixed(2)}</span>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-emerald-900 dark:text-emerald-200">Delivery Distance (KM)</label>
+                    <select
+                      value={deliveryDistanceKm}
+                      onChange={(e) => setDeliveryDistanceKm(Number(e.target.value))}
+                      className="w-full p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-xs font-bold text-emerald-950 dark:text-white"
+                    >
+                      <option value="2">0 - 2 km (Delivery Fee: ₱25)</option>
+                      <option value="5">2 - 5 km (Delivery Fee: ₱40)</option>
+                      <option value="8">5 - 8 km (Delivery Fee: ₱65)</option>
+                      <option value="10">8+ km (Delivery Fee: ₱90)</option>
+                    </select>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-800 space-y-1.5 text-xs">
+                    <div className="flex justify-between font-bold text-emerald-900 dark:text-emerald-200">
+                      <span>Items Subtotal:</span>
+                      <span>₱{itemsSubtotal.toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between font-bold text-emerald-900 dark:text-emerald-200">
+                      <span>Delivery Fee ({deliveryDistanceLabel}):</span>
+                      <span>₱{deliveryFee.toFixed(2)}</span>
+                    </div>
+                    <div className="pt-1.5 border-t border-emerald-200 dark:border-emerald-800 flex justify-between font-black text-emerald-950 dark:text-white text-sm">
+                      <span>Total Amount Due:</span>
+                      <span className="text-orange-600 dark:text-orange-400">₱{totalCartAmount.toFixed(2)}</span>
+                    </div>
                   </div>
 
                   <div className="flex justify-end gap-2 pt-2">
                     <button
                       type="button"
-                      onClick={() => setIsCartOpen(false)}
+                      onClick={() => {
+                        setIsCartOpen(false);
+                        setCheckoutError(null);
+                      }}
                       className="px-4 py-2 rounded-xl bg-emerald-100 dark:bg-emerald-900 text-emerald-900 dark:text-emerald-100 text-xs font-bold"
                     >
                       Continue Shopping
                     </button>
                     <button
-                      type="button"
+                      type="submit"
                       disabled={marketLoading}
-                      onClick={() => void handleCartCheckout()}
                       className="px-5 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-400 text-slate-950 text-xs font-black inline-flex items-center gap-1.5 shadow"
                     >
                       <ShoppingBag className="w-4 h-4" />
                       <span>Complete Checkout</span>
                     </button>
                   </div>
-                </div>
+                </form>
               )}
             </div>
           </div>

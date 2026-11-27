@@ -332,7 +332,7 @@ export async function uploadToR2Storage(
 }
 
 const SAFE_MEDIA_STREAM_PATH_REGEX =
-  /^(posts|messages|voice|avatars)\/\d{4}-\d{2}\/[a-zA-Z0-9_-]+\.(mp4|webm|mov|m4v|3gp|mkv|ogv|jpg|jpeg|png|webp|gif|mp3|ogg|m4a|wav|aac)$/i;
+  /^(posts|messages|voice|avatars|marketplace)\/\d{4}-\d{2}\/[a-zA-Z0-9_-]+\.(mp4|webm|mov|m4v|3gp|mkv|ogv|jpg|jpeg|png|webp|gif|mp3|ogg|m4a|wav|aac)$/i;
 
 export function extractR2MediaStreamPath(rawUrl: string | undefined): string | null {
   if (!rawUrl || typeof rawUrl !== 'string') return null;
