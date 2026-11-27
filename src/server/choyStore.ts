@@ -69,6 +69,11 @@ export interface StoredUser {
   blockedUsers: string[];
   avatar?: string;
   newsfeed: SelectableNewsfeedChannel;
+  encryptedRealName?: string;
+  privateValidIdAssetId?: string;
+  privateRealAvatarAssetId?: string;
+  privacyConsentAccepted?: boolean;
+  privacyConsentAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -254,6 +259,7 @@ export interface ChoyFeatureToggles {
   choyAi: boolean;
   acknowledgment: boolean;
   rules: boolean;
+  invest: boolean;
 }
 
 export interface StoredChoyProgramsConfig {
@@ -291,6 +297,8 @@ export interface WalletTxItem {
   createdAt: string;
 }
 
+export type KycVerificationStatus = 'unsubmitted' | 'pending' | 'approved' | 'rejected';
+
 export interface StoredUserDashboard {
   userId: string;
   publicShowName: boolean;
@@ -306,9 +314,283 @@ export interface StoredUserDashboard {
   rulesAcceptedAt?: string;
   acknowledgmentSignedName?: string;
   acknowledgmentSignedAt?: string;
+  kycCompleteName?: string;
+  kycAddress?: string;
+  kycAge?: number;
+  kycSex?: 'Male' | 'Female' | 'Other';
+  kycValidIdType?: string;
+  kycValidIdName?: string;
+  kycValidIdImageUrl?: string;
+  kycStatus?: KycVerificationStatus;
+  kycSubmittedAt?: string;
+  kycReviewedBy?: string;
+  kycReviewedAt?: string;
+  kycRejectionReason?: string;
   transactions: WalletTxItem[];
   updatedAt: string;
 }
+
+export interface StoredMusicTrack {
+  id: string;
+  title: string;
+  artist: string;
+  audioUrl: string;
+  fileName: string;
+  durationSec: number;
+  sizeBytes: number;
+  uploadedById: string;
+  uploadedByName: string;
+  createdAt: string;
+}
+
+export interface StoredLongVideo {
+  id: string;
+  title: string;
+  description: string;
+  videoUrl: string;
+  fileName: string;
+  durationSec: number;
+  sizeBytes: number;
+  uploadedById: string;
+  uploadedByName: string;
+  createdAt: string;
+}
+
+export interface StoredInvestProduct {
+  id: string;
+  title: string;
+  description: string;
+  price: number;
+  dailyRatePercent: number;
+  durationDays: number;
+  badge?: string;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StoredUserInvestment {
+  id: string;
+  userId: string;
+  userName: string;
+  productId: string;
+  productTitle: string;
+  principalAmount: number;
+  dailyRatePercent: number;
+  durationDays: number;
+  dailyEarning: number;
+  totalTargetEarnings: number;
+  claimedEarnings: number;
+  startedAt: string;
+  endsAt: string;
+}
+
+export interface StoredPrivateKycAsset {
+  id: string;
+  ownerUserId?: string;
+  kind: 'valid_id' | 'real_avatar';
+  storage: 'supabase_private' | 'local_private';
+  bucket: string;
+  path: string;
+  mimeType: string;
+  sizeBytes: number;
+  createdAt: string;
+}
+
+export interface StoredSystemActivityLog {
+  id: string;
+  category: 'auth' | 'order' | 'kyc' | 'payment' | 'system' | 'blog' | 'contact';
+  actor: string;
+  message: string;
+  createdAt: string;
+}
+
+export interface StoredSystemErrorLog {
+  id: string;
+  source: 'backend' | 'stripe_webhook' | 'database' | 'storage' | 'auth';
+  severity: 'warning' | 'error' | 'critical';
+  message: string;
+  resolved: boolean;
+  createdAt: string;
+}
+
+export interface StoredBlogPost {
+  id: string;
+  slug: string;
+  title: string;
+  excerpt: string;
+  content: string[];
+  category: 'Delivery Tips' | 'Restaurant Spotlight' | 'Rider Stories' | 'Safety & Privacy';
+  author: string;
+  readTimeMin: number;
+  coverImage: string;
+  publishedAt: string;
+  updatedAt: string;
+}
+
+export interface StoredVisitorStats {
+  totalVisits: number;
+  dailyCounts: Record<string, number>;
+  lastVisitAt: string;
+}
+
+export interface StoredContactMessage {
+  id: string;
+  name: string;
+  email: string;
+  subject: string;
+  message: string;
+  createdAt: string;
+}
+
+export interface StoredAbandonedCart {
+  id: string;
+  sessionKey: string;
+  itemCount: number;
+  createdAt: string;
+}
+
+const EPHEMERAL_KYC_FALLBACK = crypto.randomBytes(32).toString('hex');
+
+function getKycAesKey(): Buffer {
+  const secret = (process.env.KYC_ENCRYPTION_KEY || process.env.SESSION_SECRET || EPHEMERAL_KYC_FALLBACK).trim();
+  return crypto.scryptSync(secret, 'choychat_admin_kyc_salt_v1', 32);
+}
+
+export function encryptSensitiveField(plaintext: string): string {
+  const clean = plaintext.trim();
+  if (!clean) return '';
+  const key = getKycAesKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(clean, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `enc_v1:${iv.toString('base64')}:${tag.toString('base64')}:${encrypted.toString('base64')}`;
+}
+
+export function decryptSensitiveField(ciphertext: string | undefined | null): string {
+  if (!ciphertext || typeof ciphertext !== 'string') return '';
+  if (!ciphertext.startsWith('enc_v1:')) return ciphertext;
+  try {
+    const parts = ciphertext.split(':');
+    if (parts.length !== 4) return '';
+    const key = getKycAesKey();
+    const iv = Buffer.from(parts[1], 'base64');
+    const tag = Buffer.from(parts[2], 'base64');
+    const encrypted = Buffer.from(parts[3], 'base64');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(tag);
+    const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
+    return decrypted.toString('utf8');
+  } catch {
+    return '[Encrypted — Key Rotated]';
+  }
+}
+
+export const DEFAULT_BLOG_POSTS: StoredBlogPost[] = [
+  {
+    id: 'blog_1',
+    slug: 'choy-chat-and-food-all-in-one-local-community-app',
+    title: 'Welcome to Choy Chat & Food: Chat with Your Community and Order Fresh Local Meals',
+    excerpt: 'Discover how Choy Chat brings real-time messaging, neighborhood group chats, and freshly cooked local food delivery together inside one fast app.',
+    content: [
+      'Choy Chat was built to be more than a messaging app—it is your everyday neighborhood hub where chatting with friends, family, and local sellers connects directly to freshly cooked food delivered straight to your doorstep.',
+      'Inside the Choy Chat Food Store, you can browse signature rice meals, charcoal-grilled favorites, merienda snacks, hot noodle bowls, and sharing platters prepared daily by trusted neighborhood kitchens. No switching apps or juggling separate delivery trackers.',
+      'Whether you are coordinating a family dinner inside a Choy Chat Groupchat, paying smoothly with your Choy Wallet, or checking live order updates with your rider, Choy Chat keeps local connection and great food side by side.'
+    ],
+    category: 'Restaurant Spotlight',
+    author: 'Choy Chat Editorial Team',
+    readTimeMin: 4,
+    coverImage: '/assets/images/hero_local_food_delivery_1795763680017.jpg',
+    publishedAt: '2026-11-26T08:00:00.000Z',
+    updatedAt: '2026-11-26T08:00:00.000Z',
+  },
+  {
+    id: 'blog_2',
+    slug: 'top-must-try-comfort-food-dishes-on-choy-chat-food-store',
+    title: 'Top Must-Try Local Comfort Food Dishes on the Choy Chat Food Store',
+    excerpt: 'From smoky chicken inasal and crispy pork sisig to steaming beef mami and family bilao platters—explore the local favorites everyone is ordering on Choy Chat.',
+    content: [
+      'Craving honest, freshly cooked comfort food without leaving home? The Choy Chat Food Store highlights independent neighborhood kitchens cooking small-batch dishes to order every day.',
+      'Popular customer picks include flame-grilled Chicken Inasal with garlic rice, Crispy Lechon Kawali packed in vented kraft boxes to stay crunchy, hearty Beef Batchoy with broth sealed separately, and afternoon Halo-Halo or freshly baked pandesal bundles.',
+      'Every food listing on Choy Chat displays transparent pricing, live stock availability, and clear Delivery Fee visibility—so you always know exactly what you are getting before tapping checkout.'
+    ],
+    category: 'Restaurant Spotlight',
+    author: 'Choy Chat Food Desk',
+    readTimeMin: 5,
+    coverImage: '/assets/images/blog_restaurant_kitchen_1795763680437.jpg',
+    publishedAt: '2026-11-25T09:30:00.000Z',
+    updatedAt: '2026-11-25T09:30:00.000Z',
+  },
+  {
+    id: 'blog_3',
+    slug: 'choy-chat-group-food-ordering-for-barkada-and-office-lunches',
+    title: 'How to Plan Barkada & Office Food Orders Right Inside Choy Chat Groupchats',
+    excerpt: 'Use Choy Chat Groupchats to collect lunch cravings in minutes, pick one neighborhood kitchen, and check out fast with Choy Wallet.',
+    content: [
+      'Planning lunch for the office or a weekend barkada hangout is effortless when everyone is already talking in the same Choy Chat Groupchat. Drop your favorite Food Store dishes into the thread, agree on spice levels and extra rice, and send one consolidated order.',
+      'Ordering together from a single Choy Chat partner kitchen saves on delivery trips and ensures every meal box arrives hot at the exact same time.',
+      'With Choy Wallet cashless checkout and instant order confirmations, your group can skip hunting for loose change and enjoy lunch the moment the rider pulls up.'
+    ],
+    category: 'Delivery Tips',
+    author: 'Choy Chat Editorial Team',
+    readTimeMin: 4,
+    coverImage: '/assets/images/blog_packaging_tips_1795763682155.jpg',
+    publishedAt: '2026-11-24T11:00:00.000Z',
+    updatedAt: '2026-11-24T11:00:00.000Z',
+  },
+  {
+    id: 'blog_4',
+    slug: 'meet-the-choy-chat-community-food-delivery-riders',
+    title: 'Meet the Choy Chat Riders Bringing Hot Food Across Our Neighborhoods',
+    excerpt: 'How direct Choy Chat messaging, verified customer accounts, and insulated food bags help our local riders deliver meals fast and safely.',
+    content: [
+      'Every hot meal delivered through Choy Chat depends on dedicated local riders who know every shortcut, barangay landmark, and rainy-day route across town.',
+      'Before peak lunch and dinner hours, Choy Chat riders inspect their insulated thermal bags, seal beverage carriers, and coordinate drop-off timing directly through in-app chat so your soup stays piping hot and fried dishes stay crisp.',
+      'Because Choy Chat verifies accounts privately before ordering is unlocked, local kitchens and riders are protected from fake bookings and can focus on delivering great service.'
+    ],
+    category: 'Rider Stories',
+    author: 'Choy Chat Rider Community',
+    readTimeMin: 4,
+    coverImage: '/assets/images/blog_delivery_rider_1795763682277.jpg',
+    publishedAt: '2026-11-22T10:15:00.000Z',
+    updatedAt: '2026-11-22T10:15:00.000Z',
+  },
+  {
+    id: 'blog_5',
+    slug: 'keep-choy-chat-food-deliveries-hot-and-crispy-every-time',
+    title: '5 Quick Tips to Keep Your Choy Chat Food Deliveries Piping Hot & Crispy',
+    excerpt: 'Simple ordering habits—from vented packaging notes to clear gate landmarks—that make every Choy Chat food order taste fresh from the stove.',
+    content: [
+      'Great food delivery starts with a few smart habits inside Choy Chat. Ordering 15 to 20 minutes before the 12:00 PM lunch rush or 6:30 PM dinner peak lets partner kitchens cook each dish fresh without backlog delays.',
+      'When ordering crispy fried chicken, lumpia, or grilled pork on the Choy Chat Food Store, look for vented kraft packaging and broth-on-the-side packing so steam never softens crunchy crusts during transit.',
+      'Adding a clear gate color or street landmark to your Choy Chat delivery note shaves minutes off the handoff and brings your meal to the table while it is still steaming.'
+    ],
+    category: 'Delivery Tips',
+    author: 'Choy Chat Food Desk',
+    readTimeMin: 3,
+    coverImage: '/assets/images/blog_packaging_tips_1795763682155.jpg',
+    publishedAt: '2026-11-20T08:00:00.000Z',
+    updatedAt: '2026-11-20T08:00:00.000Z',
+  },
+  {
+    id: 'blog_6',
+    slug: 'privacy-first-food-ordering-on-choy-chat',
+    title: 'Order Food with Confidence: How Choy Chat Protects Your Real Name & Valid ID',
+    excerpt: 'Chat and order food using your public Display Name while Choy Chat secures your encrypted real name and Valid ID inside a private Admin-only vault.',
+    content: [
+      'Ordering food online should feel safe for both customers and local merchants. Choy Chat protects your everyday privacy by displaying only your chosen Display Name on public feeds, chat rooms, kitchen tickets, and rider screens.',
+      'When you register or verify your Choy Chat account for food orders, your Valid ID and real profile photo are uploaded to a locked PRIVATE storage bucket with zero public access—regular users, restaurants, and riders cannot open them.',
+      'Your legal real name stays AES-256 encrypted in an Admin-only database column strictly for fraud prevention, giving you peace of mind every time you chat or order your next meal on Choy Chat.'
+    ],
+    category: 'Safety & Privacy',
+    author: 'Choy Chat Trust & Safety',
+    readTimeMin: 3,
+    coverImage: '/assets/images/hero_local_food_delivery_1795763680017.jpg',
+    publishedAt: '2026-11-18T14:00:00.000Z',
+    updatedAt: '2026-11-18T14:00:00.000Z',
+  },
+];
 
 export interface StoredMarketplaceItem {
   id: string;
@@ -509,9 +791,61 @@ export const DEFAULT_CHOY_PROGRAMS_CONFIG: StoredChoyProgramsConfig = {
     choyAi: true,
     acknowledgment: true,
     rules: true,
+    invest: true,
   },
   updatedAt: new Date(0).toISOString(),
 };
+
+export const DEFAULT_INVEST_PRODUCTS: StoredInvestProduct[] = [
+  {
+    id: 'inv_starter_500',
+    title: 'Starter Yield Plan',
+    description: '5% daily simple interest for 30 days. Live per-minute earning counter.',
+    price: 500,
+    dailyRatePercent: 5,
+    durationDays: 30,
+    badge: 'STARTER',
+    active: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  },
+  {
+    id: 'inv_standard_1000',
+    title: 'Silver Yield Plan',
+    description: 'Popular 30-day plan — earns ₱50/day for 30 days (₱1,500 total earnings).',
+    price: 1000,
+    dailyRatePercent: 5,
+    durationDays: 30,
+    badge: 'POPULAR',
+    active: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  },
+  {
+    id: 'inv_growth_2500',
+    title: 'Gold Yield Plan',
+    description: 'Higher daily yield — earns ₱125/day for 30 days (₱3,750 total earnings).',
+    price: 2500,
+    dailyRatePercent: 5,
+    durationDays: 30,
+    badge: 'GROWTH',
+    active: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  },
+  {
+    id: 'inv_pro_5000',
+    title: 'Diamond Yield Plan',
+    description: 'Premium 30-day yield — earns ₱250/day for 30 days (₱7,500 total earnings).',
+    price: 5000,
+    dailyRatePercent: 5,
+    durationDays: 30,
+    badge: 'VIP',
+    active: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  },
+];
 
 function sanitizeChoyProgramsConfig(raw: unknown): StoredChoyProgramsConfig {
   const input = (raw && typeof raw === 'object' ? raw : {}) as Partial<StoredChoyProgramsConfig>;
@@ -603,6 +937,7 @@ function sanitizeChoyProgramsConfig(raw: unknown): StoredChoyProgramsConfig {
       choyAi: rawToggles.choyAi !== false,
       acknowledgment: rawToggles.acknowledgment !== false,
       rules: rawToggles.rules !== false,
+      invest: rawToggles.invest !== false,
     },
     updatedAt: typeof input.updatedAt === 'string' ? input.updatedAt : new Date().toISOString(),
   };
@@ -873,7 +1208,15 @@ export function sanitizeMediaUrl(url: unknown): string | undefined {
   if (trimmed.startsWith('/assets/') && trimmed.length <= 500) return trimmed;
   if (
     trimmed.length <= 500 &&
-    /^\/api\/media\/r2\/(posts|messages|voice|avatars|marketplace)\/\d{4}-\d{2}\/[a-zA-Z0-9_-]+\.(mp4|webm|mov|m4v|3gp|mkv|ogv|jpg|jpeg|png|webp|gif|mp3|ogg|m4a|wav|aac)$/i.test(
+    /^\/api\/media\/r2\/(posts|messages|voice|avatars|marketplace|music|videos|kyc|receipts)\/\d{4}-\d{2}\/[a-zA-Z0-9_-]+\.(mp4|webm|mov|m4v|3gp|mkv|ogv|jpg|jpeg|png|webp|gif|mp3|ogg|m4a|wav|aac|flac)$/i.test(
+      trimmed
+    )
+  ) {
+    return trimmed;
+  }
+  if (
+    trimmed.length <= 500 &&
+    /^\/api\/media\/local\/(posts|messages|voice|avatars|marketplace|music|videos|kyc|receipts)\/[a-zA-Z0-9_-]+\.(mp4|webm|mov|m4v|3gp|mkv|ogv|jpg|jpeg|png|webp|gif|mp3|ogg|m4a|wav|aac|flac)$/i.test(
       trimmed
     )
   ) {
@@ -960,6 +1303,29 @@ export class ChoyStore {
   private memChoyProgramsConfig: StoredChoyProgramsConfig = sanitizeChoyProgramsConfig(DEFAULT_CHOY_PROGRAMS_CONFIG);
   private memPaymentTerminalConfig: StoredPaymentTerminalConfig = sanitizePaymentTerminalConfig(DEFAULT_PAYMENT_TERMINAL_CONFIG);
   private memPaymentTerminalTxs: StoredPaymentTerminalTx[] = [];
+  private memMusicLibrary: StoredMusicTrack[] = [];
+  private memVideoLibrary: StoredLongVideo[] = [];
+  private memInvestProducts: StoredInvestProduct[] = [...DEFAULT_INVEST_PRODUCTS];
+  private memUserInvestments: StoredUserInvestment[] = [];
+  private memPrivateKycAssets: StoredPrivateKycAsset[] = [];
+  private memActivityLogs: StoredSystemActivityLog[] = [
+    {
+      id: 'act_boot_1',
+      category: 'system',
+      actor: 'System',
+      message: 'Private KYC storage rules and encrypted real-name vault initialized.',
+      createdAt: new Date().toISOString(),
+    },
+  ];
+  private memErrorLogs: StoredSystemErrorLog[] = [];
+  private memBlogPosts: StoredBlogPost[] = [...DEFAULT_BLOG_POSTS];
+  private memVisitorStats: StoredVisitorStats = {
+    totalVisits: 1,
+    dailyCounts: { [new Date().toISOString().slice(0, 10)]: 1 },
+    lastVisitAt: new Date().toISOString(),
+  };
+  private memContactMessages: StoredContactMessage[] = [];
+  private memAbandonedCarts: StoredAbandonedCart[] = [];
   private memPushSubs: StoredPushSubscription[] = [];
   private memVapidKeys: VapidKeyPair | null = null;
   private memLocations: Array<{
@@ -1190,6 +1556,35 @@ export class ChoyStore {
       if (Array.isArray(data.userDashboards)) this.memUserDashboards = data.userDashboards as StoredUserDashboard[];
       if (Array.isArray(data.marketplaceItems)) this.memMarketplaceItems = data.marketplaceItems as StoredMarketplaceItem[];
       if (Array.isArray(data.marketplaceOrders)) this.memMarketplaceOrders = data.marketplaceOrders as StoredMarketplaceOrder[];
+      if (Array.isArray(data.musicLibrary)) this.memMusicLibrary = data.musicLibrary as StoredMusicTrack[];
+      if (Array.isArray(data.videoLibrary)) this.memVideoLibrary = data.videoLibrary as StoredLongVideo[];
+      if (Array.isArray(data.investProducts) && data.investProducts.length > 0) {
+        this.memInvestProducts = data.investProducts as StoredInvestProduct[];
+      }
+      if (Array.isArray(data.userInvestments)) {
+        this.memUserInvestments = data.userInvestments as StoredUserInvestment[];
+      }
+      if (Array.isArray(data.privateKycAssets)) {
+        this.memPrivateKycAssets = data.privateKycAssets as StoredPrivateKycAsset[];
+      }
+      if (Array.isArray(data.activityLogs) && data.activityLogs.length > 0) {
+        this.memActivityLogs = data.activityLogs as StoredSystemActivityLog[];
+      }
+      if (Array.isArray(data.errorLogs)) {
+        this.memErrorLogs = data.errorLogs as StoredSystemErrorLog[];
+      }
+      if (Array.isArray(data.blogPosts) && data.blogPosts.length > 0) {
+        this.memBlogPosts = data.blogPosts as StoredBlogPost[];
+      }
+      if (data.visitorStats && typeof data.visitorStats === 'object') {
+        this.memVisitorStats = data.visitorStats as StoredVisitorStats;
+      }
+      if (Array.isArray(data.contactMessages)) {
+        this.memContactMessages = data.contactMessages as StoredContactMessage[];
+      }
+      if (Array.isArray(data.abandonedCarts)) {
+        this.memAbandonedCarts = data.abandonedCarts as StoredAbandonedCart[];
+      }
       if (data.zeroStarterBalancesV1 === true) this.zeroStarterBalancesV1 = true;
       this.memSeeded = true;
       console.log(
@@ -1244,6 +1639,17 @@ export class ChoyStore {
           userDashboards: this.memUserDashboards,
           marketplaceItems: this.memMarketplaceItems,
           marketplaceOrders: this.memMarketplaceOrders,
+          musicLibrary: this.memMusicLibrary,
+          videoLibrary: this.memVideoLibrary,
+          investProducts: this.memInvestProducts,
+          userInvestments: this.memUserInvestments,
+          privateKycAssets: this.memPrivateKycAssets,
+          activityLogs: this.memActivityLogs,
+          errorLogs: this.memErrorLogs,
+          blogPosts: this.memBlogPosts,
+          visitorStats: this.memVisitorStats,
+          contactMessages: this.memContactMessages,
+          abandonedCarts: this.memAbandonedCarts,
           zeroStarterBalancesV1: this.zeroStarterBalancesV1,
         };
         const tmpPath = `${LOCAL_DATA_FILE}.tmp.${process.pid}`;
@@ -1498,6 +1904,8 @@ export class ChoyStore {
       );
       ALTER TABLE app_users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
       ALTER TABLE app_users ADD COLUMN IF NOT EXISTS newsfeed TEXT NOT NULL DEFAULT 'feed_a';
+      ALTER TABLE app_users ADD COLUMN IF NOT EXISTS encrypted_real_name TEXT;
+      ALTER TABLE app_users ADD COLUMN IF NOT EXISTS private_kyc_meta JSONB NOT NULL DEFAULT '{}'::jsonb;
       CREATE TABLE IF NOT EXISTS app_posts (
         id TEXT PRIMARY KEY,
         author_id TEXT NOT NULL,
@@ -1942,11 +2350,22 @@ export class ChoyStore {
     role: 'admin' | 'member';
     status: 'pending' | 'approved';
     newsfeed?: SelectableNewsfeedChannel;
+    realNamePlaintext?: string;
+    privateValidIdAssetId?: string;
+    privateRealAvatarAssetId?: string;
+    privacyConsentAccepted?: boolean;
   }): Promise<StoredUser> {
     await this.ready();
     const id = (params.role === 'admin' ? 'admin_' : 'u_') + crypto.randomUUID().slice(0, 10);
     const now = new Date().toISOString();
     const newsfeed = normalizeUserNewsfeed(params.newsfeed);
+    const encryptedRealName = params.realNamePlaintext ? encryptSensitiveField(params.realNamePlaintext) : undefined;
+    const privateKycMeta = {
+      privateValidIdAssetId: params.privateValidIdAssetId || undefined,
+      privateRealAvatarAssetId: params.privateRealAvatarAssetId || undefined,
+      privacyConsentAccepted: Boolean(params.privacyConsentAccepted),
+      privacyConsentAt: params.privacyConsentAccepted ? now : undefined,
+    };
     const user: StoredUser = {
       id,
       name: params.name.slice(0, 80),
@@ -1956,14 +2375,30 @@ export class ChoyStore {
       status: params.status,
       blockedUsers: [],
       newsfeed,
+      encryptedRealName,
+      privateValidIdAssetId: privateKycMeta.privateValidIdAssetId,
+      privateRealAvatarAssetId: privateKycMeta.privateRealAvatarAssetId,
+      privacyConsentAccepted: privateKycMeta.privacyConsentAccepted,
+      privacyConsentAt: privateKycMeta.privacyConsentAt,
       createdAt: now,
       updatedAt: now,
     };
     if (this.usePostgres && this.pool) {
       await this.pool.query(
-        `INSERT INTO app_users (id, name, phone, pin_hash, role, status, blocked_users, newsfeed)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)`,
-        [user.id, user.name, user.phone, user.pinHash, user.role, user.status, JSON.stringify(user.blockedUsers), user.newsfeed]
+        `INSERT INTO app_users (id, name, phone, pin_hash, role, status, blocked_users, newsfeed, encrypted_real_name, private_kyc_meta)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10::jsonb)`,
+        [
+          user.id,
+          user.name,
+          user.phone,
+          user.pinHash,
+          user.role,
+          user.status,
+          JSON.stringify(user.blockedUsers),
+          user.newsfeed,
+          user.encryptedRealName || null,
+          JSON.stringify(privateKycMeta),
+        ]
       );
     } else {
       this.memUsers.push(user);
@@ -2029,6 +2464,15 @@ export class ChoyStore {
       newsfeed: normalizeUserNewsfeed(u.newsfeed),
       loginDate: u.updatedAt.slice(0, 16).replace('T', ' '),
     }));
+  }
+
+  public async listAllStoredUsersForAdmin(): Promise<StoredUser[]> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT * FROM app_users ORDER BY created_at DESC');
+      return res.rows.map((r) => this.mapUserRow(r));
+    }
+    return [...this.memUsers];
   }
 
   public async updateUserAvatar(userId: string, avatarUrl?: string): Promise<StoredUser | null> {
@@ -4282,6 +4726,8 @@ export class ChoyStore {
   private mapUserRow(r: Record<string, unknown>): StoredUser {
     const rawAvatar = typeof r.avatar_url === 'string' ? r.avatar_url.trim() : '';
     const newsfeed = normalizeUserNewsfeed(r.newsfeed);
+    const encReal = typeof r.encrypted_real_name === 'string' && r.encrypted_real_name.trim() ? r.encrypted_real_name.trim() : undefined;
+    const meta = (r.private_kyc_meta && typeof r.private_kyc_meta === 'object' ? r.private_kyc_meta : {}) as Record<string, unknown>;
     return {
       id: String(r.id),
       name: String(r.name),
@@ -4292,6 +4738,11 @@ export class ChoyStore {
       blockedUsers: Array.isArray(r.blocked_users) ? (r.blocked_users as string[]) : [],
       avatar: rawAvatar || undefined,
       newsfeed,
+      encryptedRealName: encReal,
+      privateValidIdAssetId: typeof meta.privateValidIdAssetId === 'string' ? meta.privateValidIdAssetId : undefined,
+      privateRealAvatarAssetId: typeof meta.privateRealAvatarAssetId === 'string' ? meta.privateRealAvatarAssetId : undefined,
+      privacyConsentAccepted: Boolean(meta.privacyConsentAccepted),
+      privacyConsentAt: typeof meta.privacyConsentAt === 'string' ? meta.privacyConsentAt : undefined,
       createdAt: new Date(String(r.created_at)).toISOString(),
       updatedAt: new Date(String(r.updated_at)).toISOString(),
     };
@@ -4317,6 +4768,17 @@ export class ChoyStore {
         : 'inactive';
     const transactions = Array.isArray(raw?.transactions) ? raw.transactions.slice(0, 60) : [];
 
+    const rawKycStatus = raw?.kycStatus;
+    const kycStatus: KycVerificationStatus =
+      rawKycStatus === 'pending' || rawKycStatus === 'approved' || rawKycStatus === 'rejected'
+        ? rawKycStatus
+        : 'unsubmitted';
+    const rawKycSex = raw?.kycSex;
+    const kycSex: 'Male' | 'Female' | 'Other' | undefined =
+      rawKycSex === 'Male' || rawKycSex === 'Female' || rawKycSex === 'Other' ? rawKycSex : undefined;
+    const rawKycAge = Number(raw?.kycAge);
+    const kycAge = Number.isInteger(rawKycAge) && rawKycAge >= 13 && rawKycAge <= 120 ? rawKycAge : undefined;
+
     return {
       userId,
       publicShowName: raw?.publicShowName !== false,
@@ -4334,6 +4796,36 @@ export class ChoyStore {
         typeof raw?.acknowledgmentSignedName === 'string' ? raw.acknowledgmentSignedName : undefined,
       acknowledgmentSignedAt:
         typeof raw?.acknowledgmentSignedAt === 'string' ? raw.acknowledgmentSignedAt : undefined,
+      kycCompleteName:
+        typeof raw?.kycCompleteName === 'string' && raw.kycCompleteName.trim()
+          ? raw.kycCompleteName.trim().slice(0, 120)
+          : undefined,
+      kycAddress:
+        typeof raw?.kycAddress === 'string' && raw.kycAddress.trim()
+          ? raw.kycAddress.trim().slice(0, 260)
+          : undefined,
+      kycAge,
+      kycSex,
+      kycValidIdType:
+        typeof raw?.kycValidIdType === 'string' && raw.kycValidIdType.trim()
+          ? raw.kycValidIdType.trim().slice(0, 80)
+          : undefined,
+      kycValidIdName:
+        typeof raw?.kycValidIdName === 'string' && raw.kycValidIdName.trim()
+          ? raw.kycValidIdName.trim().slice(0, 120)
+          : undefined,
+      kycValidIdImageUrl:
+        typeof raw?.kycValidIdImageUrl === 'string' && raw.kycValidIdImageUrl.trim()
+          ? raw.kycValidIdImageUrl.trim()
+          : undefined,
+      kycStatus,
+      kycSubmittedAt: typeof raw?.kycSubmittedAt === 'string' ? raw.kycSubmittedAt : undefined,
+      kycReviewedBy: typeof raw?.kycReviewedBy === 'string' ? raw.kycReviewedBy : undefined,
+      kycReviewedAt: typeof raw?.kycReviewedAt === 'string' ? raw.kycReviewedAt : undefined,
+      kycRejectionReason:
+        typeof raw?.kycRejectionReason === 'string' && raw.kycRejectionReason.trim()
+          ? raw.kycRejectionReason.trim().slice(0, 260)
+          : undefined,
       transactions,
       updatedAt: typeof raw?.updatedAt === 'string' ? raw.updatedAt : now,
     };
@@ -4416,6 +4908,21 @@ export class ChoyStore {
       };
     }
     return map;
+  }
+
+  public async listAllUserDashboards(): Promise<StoredUserDashboard[]> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT user_id, data FROM app_user_dashboards ORDER BY updated_at DESC');
+      return res.rows
+        .map((row) => {
+          const uid = String(row.user_id || '').trim();
+          if (!uid) return null;
+          return this.normalizeUserDashboard(uid, (row.data || {}) as Partial<StoredUserDashboard>);
+        })
+        .filter((d): d is StoredUserDashboard => Boolean(d));
+    }
+    return this.memUserDashboards.map((d) => this.normalizeUserDashboard(d.userId, d));
   }
 
   public async listMarketplaceItems(): Promise<StoredMarketplaceItem[]> {
@@ -4591,6 +5098,117 @@ export class ChoyStore {
     return sanitized;
   }
 
+  public async listMusicTracks(): Promise<StoredMusicTrack[]> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT data FROM app_settings WHERE id = $1', ['media_music_library']);
+      const list = Array.isArray(res.rows[0]?.data) ? (res.rows[0].data as StoredMusicTrack[]) : [];
+      return list.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    }
+    return [...this.memMusicLibrary].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  }
+
+  public async saveMusicTracks(tracks: StoredMusicTrack[]): Promise<StoredMusicTrack[]> {
+    await this.ready();
+    const cleaned = tracks.slice(0, 300);
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_settings (id, data, updated_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        ['media_music_library', JSON.stringify(cleaned)]
+      );
+      return cleaned;
+    }
+    this.memMusicLibrary = cleaned;
+    await this.persistMemory();
+    return cleaned;
+  }
+
+  public async listLongVideos(): Promise<StoredLongVideo[]> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT data FROM app_settings WHERE id = $1', ['media_video_library']);
+      const list = Array.isArray(res.rows[0]?.data) ? (res.rows[0].data as StoredLongVideo[]) : [];
+      return list.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    }
+    return [...this.memVideoLibrary].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  }
+
+  public async saveLongVideos(videos: StoredLongVideo[]): Promise<StoredLongVideo[]> {
+    await this.ready();
+    const cleaned = videos.slice(0, 200);
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_settings (id, data, updated_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        ['media_video_library', JSON.stringify(cleaned)]
+      );
+      return cleaned;
+    }
+    this.memVideoLibrary = cleaned;
+    await this.persistMemory();
+    return cleaned;
+  }
+
+  public async listInvestProducts(): Promise<StoredInvestProduct[]> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT data FROM app_settings WHERE id = $1', ['invest_products']);
+      if (Array.isArray(res.rows[0]?.data)) {
+        return res.rows[0].data as StoredInvestProduct[];
+      }
+      await this.saveInvestProducts(DEFAULT_INVEST_PRODUCTS);
+      return [...DEFAULT_INVEST_PRODUCTS];
+    }
+    return [...this.memInvestProducts];
+  }
+
+  public async saveInvestProducts(products: StoredInvestProduct[]): Promise<StoredInvestProduct[]> {
+    await this.ready();
+    const cleaned = products.slice(0, 100);
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_settings (id, data, updated_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        ['invest_products', JSON.stringify(cleaned)]
+      );
+      return cleaned;
+    }
+    this.memInvestProducts = cleaned;
+    await this.persistMemory();
+    return cleaned;
+  }
+
+  public async listUserInvestments(): Promise<StoredUserInvestment[]> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT data FROM app_settings WHERE id = $1', ['user_investments']);
+      const list = Array.isArray(res.rows[0]?.data) ? (res.rows[0].data as StoredUserInvestment[]) : [];
+      return list.sort((a, b) => String(b.startedAt || '').localeCompare(String(a.startedAt || '')));
+    }
+    return [...this.memUserInvestments].sort((a, b) => String(b.startedAt || '').localeCompare(String(a.startedAt || '')));
+  }
+
+  public async saveUserInvestments(investments: StoredUserInvestment[]): Promise<StoredUserInvestment[]> {
+    await this.ready();
+    const cleaned = investments.slice(0, 2000);
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_settings (id, data, updated_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        ['user_investments', JSON.stringify(cleaned)]
+      );
+      return cleaned;
+    }
+    this.memUserInvestments = cleaned;
+    await this.persistMemory();
+    return cleaned;
+  }
+
   private mapPaymentTerminalTxRow(r: Record<string, unknown>): StoredPaymentTerminalTx {
     const rawPurpose = String(r.purpose || 'wallet_topup');
     const purpose: PaymentTerminalPurpose =
@@ -4722,5 +5340,385 @@ export class ChoyStore {
     await this.persistMemory();
     return tx;
   }
+
+  // ==========================================================================
+  // PRIVATE KYC ASSETS, ADMIN ANALYTICS LOGS, BLOG, VISITORS & SYSTEM CLEANER
+  // ==========================================================================
+  public async updateUserPrivateKyc(
+    userId: string,
+    patch: {
+      realNamePlaintext?: string;
+      privateValidIdAssetId?: string;
+      privateRealAvatarAssetId?: string;
+      privacyConsentAccepted?: boolean;
+    }
+  ): Promise<StoredUser | null> {
+    await this.ready();
+    const encryptedRealName = patch.realNamePlaintext ? encryptSensitiveField(patch.realNamePlaintext) : undefined;
+    const now = new Date().toISOString();
+    if (this.usePostgres && this.pool) {
+      const existingRes = await this.pool.query('SELECT * FROM app_users WHERE id = $1 LIMIT 1', [userId]);
+      if (!existingRes.rows[0]) return null;
+      const current = this.mapUserRow(existingRes.rows[0] as Record<string, unknown>);
+      const nextEnc = encryptedRealName || current.encryptedRealName || null;
+      const nextMeta = {
+        privateValidIdAssetId: patch.privateValidIdAssetId || current.privateValidIdAssetId,
+        privateRealAvatarAssetId: patch.privateRealAvatarAssetId || current.privateRealAvatarAssetId,
+        privacyConsentAccepted: patch.privacyConsentAccepted ?? current.privacyConsentAccepted ?? false,
+        privacyConsentAt: patch.privacyConsentAccepted ? now : current.privacyConsentAt,
+      };
+      const updated = await this.pool.query(
+        'UPDATE app_users SET encrypted_real_name = $1, private_kyc_meta = $2::jsonb, updated_at = NOW() WHERE id = $3 RETURNING *',
+        [nextEnc, JSON.stringify(nextMeta), userId]
+      );
+      return updated.rows[0] ? this.mapUserRow(updated.rows[0] as Record<string, unknown>) : null;
+    }
+    const found = this.memUsers.find((u) => u.id === userId);
+    if (!found) return null;
+    if (encryptedRealName) found.encryptedRealName = encryptedRealName;
+    if (patch.privateValidIdAssetId) found.privateValidIdAssetId = patch.privateValidIdAssetId;
+    if (patch.privateRealAvatarAssetId) found.privateRealAvatarAssetId = patch.privateRealAvatarAssetId;
+    if (patch.privacyConsentAccepted !== undefined) {
+      found.privacyConsentAccepted = patch.privacyConsentAccepted;
+      if (patch.privacyConsentAccepted) found.privacyConsentAt = now;
+    }
+    found.updatedAt = now;
+    await this.persistMemory();
+    return found;
+  }
+
+  public async listPrivateKycAssets(): Promise<StoredPrivateKycAsset[]> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT data FROM app_settings WHERE id = $1', ['private_kyc_assets']);
+      return Array.isArray(res.rows[0]?.data) ? (res.rows[0].data as StoredPrivateKycAsset[]) : [];
+    }
+    return [...this.memPrivateKycAssets];
+  }
+
+  public async savePrivateKycAsset(asset: StoredPrivateKycAsset): Promise<StoredPrivateKycAsset> {
+    await this.ready();
+    const existing = await this.listPrivateKycAssets();
+    const next = [asset, ...existing.filter((a) => a.id !== asset.id)].slice(0, 5000);
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_settings (id, data, updated_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        ['private_kyc_assets', JSON.stringify(next)]
+      );
+      return asset;
+    }
+    this.memPrivateKycAssets = next;
+    await this.persistMemory();
+    return asset;
+  }
+
+  public async getPrivateKycAssetById(assetId: string): Promise<StoredPrivateKycAsset | null> {
+    const assets = await this.listPrivateKycAssets();
+    return assets.find((a) => a.id === assetId) || null;
+  }
+
+  public async bindPrivateKycAssetOwner(assetId: string, ownerUserId: string): Promise<void> {
+    await this.ready();
+    const existing = await this.listPrivateKycAssets();
+    let changed = false;
+    const next = existing.map((a) => {
+      if (a.id === assetId && !a.ownerUserId) {
+        changed = true;
+        return { ...a, ownerUserId };
+      }
+      return a;
+    });
+    if (!changed) return;
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_settings (id, data, updated_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        ['private_kyc_assets', JSON.stringify(next)]
+      );
+      return;
+    }
+    this.memPrivateKycAssets = next;
+    await this.persistMemory();
+  }
+
+  public async listActivityLogs(): Promise<StoredSystemActivityLog[]> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT data FROM app_settings WHERE id = $1', ['system_activity_logs']);
+      return Array.isArray(res.rows[0]?.data) ? (res.rows[0].data as StoredSystemActivityLog[]) : [];
+    }
+    return [...this.memActivityLogs];
+  }
+
+  public async appendActivityLog(entry: Omit<StoredSystemActivityLog, 'id' | 'createdAt'>): Promise<StoredSystemActivityLog> {
+    await this.ready();
+    const item: StoredSystemActivityLog = {
+      id: `act_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`,
+      category: entry.category,
+      actor: entry.actor.slice(0, 80),
+      message: entry.message.slice(0, 240),
+      createdAt: new Date().toISOString(),
+    };
+    const existing = await this.listActivityLogs();
+    const next = [item, ...existing].slice(0, 200);
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_settings (id, data, updated_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        ['system_activity_logs', JSON.stringify(next)]
+      );
+      return item;
+    }
+    this.memActivityLogs = next;
+    await this.persistMemory();
+    return item;
+  }
+
+  public async listErrorLogs(): Promise<StoredSystemErrorLog[]> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT data FROM app_settings WHERE id = $1', ['system_error_logs']);
+      return Array.isArray(res.rows[0]?.data) ? (res.rows[0].data as StoredSystemErrorLog[]) : [];
+    }
+    return [...this.memErrorLogs];
+  }
+
+  public async appendErrorLog(entry: Omit<StoredSystemErrorLog, 'id' | 'createdAt' | 'resolved'>): Promise<StoredSystemErrorLog> {
+    await this.ready();
+    const item: StoredSystemErrorLog = {
+      id: `err_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`,
+      source: entry.source,
+      severity: entry.severity,
+      message: entry.message.slice(0, 300),
+      resolved: false,
+      createdAt: new Date().toISOString(),
+    };
+    const existing = await this.listErrorLogs();
+    const next = [item, ...existing].slice(0, 150);
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_settings (id, data, updated_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        ['system_error_logs', JSON.stringify(next)]
+      );
+      return item;
+    }
+    this.memErrorLogs = next;
+    await this.persistMemory();
+    return item;
+  }
+
+  public async resolveErrorLog(id: string): Promise<StoredSystemErrorLog[]> {
+    await this.ready();
+    const existing = await this.listErrorLogs();
+    const next = existing.map((e) => (e.id === id ? { ...e, resolved: true } : e));
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_settings (id, data, updated_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        ['system_error_logs', JSON.stringify(next)]
+      );
+      return next;
+    }
+    this.memErrorLogs = next;
+    await this.persistMemory();
+    return next;
+  }
+
+  public async getVisitorStats(): Promise<StoredVisitorStats> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT data FROM app_settings WHERE id = $1', ['visitor_stats']);
+      if (res.rows[0]?.data && typeof res.rows[0].data === 'object') {
+        return res.rows[0].data as StoredVisitorStats;
+      }
+    }
+    return { ...this.memVisitorStats, dailyCounts: { ...this.memVisitorStats.dailyCounts } };
+  }
+
+  public async recordSiteVisit(): Promise<StoredVisitorStats> {
+    await this.ready();
+    const current = await this.getVisitorStats();
+    const today = new Date().toISOString().slice(0, 10);
+    const nextDaily: Record<string, number> = { ...(current.dailyCounts || {}) };
+    nextDaily[today] = (Number(nextDaily[today]) || 0) + 1;
+    // Keep last 45 days of daily keys
+    const keys = Object.keys(nextDaily).sort();
+    while (keys.length > 45) {
+      const oldest = keys.shift();
+      if (oldest) delete nextDaily[oldest];
+    }
+    const updated: StoredVisitorStats = {
+      totalVisits: (Number(current.totalVisits) || 0) + 1,
+      dailyCounts: nextDaily,
+      lastVisitAt: new Date().toISOString(),
+    };
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_settings (id, data, updated_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        ['visitor_stats', JSON.stringify(updated)]
+      );
+      return updated;
+    }
+    this.memVisitorStats = updated;
+    await this.persistMemory();
+    return updated;
+  }
+
+  public async listBlogPosts(): Promise<StoredBlogPost[]> {
+    await this.ready();
+    const legacyDefaultSlugs = new Set([
+      'five-ways-to-keep-local-food-deliveries-piping-hot',
+      'inside-family-owned-neighborhood-kitchens',
+      'a-day-with-verified-community-delivery-riders',
+      'why-private-id-verification-protects-customers-and-riders',
+      'smart-group-ordering-tips-for-office-lunches',
+      'sustainable-packaging-choices-for-daily-takeout',
+    ]);
+    const upgradeLegacyDefaults = (posts: StoredBlogPost[]): { changed: boolean; next: StoredBlogPost[] } => {
+      const hasLegacy = posts.some((p) => legacyDefaultSlugs.has(p.slug));
+      if (!hasLegacy) return { changed: false, next: posts };
+      const customPosts = posts.filter((p) => !legacyDefaultSlugs.has(p.slug));
+      return { changed: true, next: [...customPosts, ...DEFAULT_BLOG_POSTS] };
+    };
+
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT data FROM app_settings WHERE id = $1', ['public_blog_posts']);
+      if (Array.isArray(res.rows[0]?.data) && res.rows[0].data.length > 0) {
+        const existing = res.rows[0].data as StoredBlogPost[];
+        const upgraded = upgradeLegacyDefaults(existing);
+        if (upgraded.changed) {
+          await this.saveBlogPosts(upgraded.next);
+        }
+        return upgraded.next;
+      }
+      await this.saveBlogPosts(DEFAULT_BLOG_POSTS);
+      return [...DEFAULT_BLOG_POSTS];
+    }
+    if (this.memBlogPosts.length === 0) {
+      this.memBlogPosts = [...DEFAULT_BLOG_POSTS];
+      return [...this.memBlogPosts];
+    }
+    const upgradedMem = upgradeLegacyDefaults(this.memBlogPosts);
+    if (upgradedMem.changed) {
+      this.memBlogPosts = upgradedMem.next;
+      await this.persistMemory();
+    }
+    return [...this.memBlogPosts];
+  }
+
+  public async saveBlogPosts(posts: StoredBlogPost[]): Promise<StoredBlogPost[]> {
+    await this.ready();
+    const cleaned = posts.slice(0, 100);
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_settings (id, data, updated_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        ['public_blog_posts', JSON.stringify(cleaned)]
+      );
+      return cleaned;
+    }
+    this.memBlogPosts = cleaned;
+    await this.persistMemory();
+    return cleaned;
+  }
+
+  public async saveContactMessage(msg: Omit<StoredContactMessage, 'id' | 'createdAt'>): Promise<StoredContactMessage> {
+    await this.ready();
+    const saved: StoredContactMessage = {
+      id: `ct_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`,
+      name: msg.name.slice(0, 100),
+      email: msg.email.slice(0, 140),
+      subject: msg.subject.slice(0, 140),
+      message: msg.message.slice(0, 1500),
+      createdAt: new Date().toISOString(),
+    };
+    const existing = await this.listContactMessages();
+    const next = [saved, ...existing].slice(0, 200);
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_settings (id, data, updated_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        ['public_contact_messages', JSON.stringify(next)]
+      );
+      return saved;
+    }
+    this.memContactMessages = next;
+    await this.persistMemory();
+    return saved;
+  }
+
+  public async listContactMessages(): Promise<StoredContactMessage[]> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT data FROM app_settings WHERE id = $1', ['public_contact_messages']);
+      return Array.isArray(res.rows[0]?.data) ? (res.rows[0].data as StoredContactMessage[]) : [];
+    }
+    return [...this.memContactMessages];
+  }
+
+  public async runSystemCleaner(): Promise<{
+    purgedErrorLogs: number;
+    purgedActivityLogs: number;
+    purgedAbandonedCarts: number;
+    purgedExpiredSessions: number;
+    cleanedAt: string;
+  }> {
+    await this.ready();
+    const cutoffMs = Date.now() - 30 * 24 * 60 * 60 * 1000;
+
+    const allErrors = await this.listErrorLogs();
+    const keptErrors = allErrors.filter((e) => {
+      const ts = Date.parse(e.createdAt) || Date.now();
+      return !e.resolved && ts >= cutoffMs;
+    });
+    const purgedErrorLogs = allErrors.length - keptErrors.length;
+
+    const allActivities = await this.listActivityLogs();
+    const keptActivities = allActivities.filter((a) => (Date.parse(a.createdAt) || Date.now()) >= cutoffMs);
+    const purgedActivityLogs = allActivities.length - keptActivities.length;
+
+    const purgedAbandonedCarts = this.memAbandonedCarts.length;
+    this.memAbandonedCarts = [];
+
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_settings (id, data, updated_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        ['system_error_logs', JSON.stringify(keptErrors)]
+      );
+      await this.pool.query(
+        `INSERT INTO app_settings (id, data, updated_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        ['system_activity_logs', JSON.stringify(keptActivities)]
+      );
+    } else {
+      this.memErrorLogs = keptErrors;
+      this.memActivityLogs = keptActivities;
+      await this.persistMemory();
+    }
+
+    const cleanedAt = new Date().toISOString();
+    return {
+      purgedErrorLogs,
+      purgedActivityLogs,
+      purgedAbandonedCarts,
+      purgedExpiredSessions: 0,
+      cleanedAt,
+    };
+  }
 }
+
 

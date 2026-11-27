@@ -1,5 +1,6 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import crypto from 'crypto';
+import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import { Readable } from 'stream';
@@ -28,6 +29,7 @@ import {
   sanitizeWebsiteUrl,
   sanitizePaymentTerminalConfig,
   clampNum,
+  decryptSensitiveField,
   type StoredUser,
   type NewsfeedChannel,
   type StoredAnnouncement,
@@ -36,11 +38,22 @@ import {
   type PaymentTerminalChannelId,
   type PaymentTerminalPurpose,
   type StoredPaymentTerminalTx,
+  type StoredMusicTrack,
+  type StoredLongVideo,
+  type StoredInvestProduct,
+  type StoredUserInvestment,
+  type StoredPrivateKycAsset,
+  type StoredBlogPost,
 } from './src/server/choyStore.ts';
 import {
   getSupabaseStorageStatus,
+  getSupabasePrivateKycStatus,
+  getSanitizedPrivateKycBucket,
   normalizeMediaMime,
   uploadToSupabaseStorage,
+  uploadToSupabasePrivateKycBucket,
+  downloadFromSupabasePrivateKycBucket,
+  type PrivateKycSubfolder,
 } from './src/server/supabaseStorage.ts';
 import {
   fetchR2MediaStream,
@@ -701,7 +714,360 @@ app.get('/api/media/r2/:folder/:ym/:filename', async (req: Request, res: Respons
   }
 });
 
-// ---- CLOUDFLARE R2 + SUPABASE STORAGE MEDIA UPLOAD ENDPOINT ----
+// ---- LOCAL DISK MEDIA STORAGE (CHUNKED UP TO 500MB FOR 25-30+ MIN VIDEOS & MP3s + HTTP 206 RANGE STREAMING) ----
+const LOCAL_MEDIA_ROOT = path.resolve(process.cwd(), '.choychat-media');
+const LOCAL_MEDIA_TMP_ROOT = path.resolve(LOCAL_MEDIA_ROOT, '.tmp');
+const ALLOWED_LOCAL_MEDIA_FOLDERS = new Set([
+  'posts',
+  'messages',
+  'voice',
+  'avatars',
+  'music',
+  'videos',
+  'kyc',
+  'marketplace',
+  'receipts',
+]);
+
+const MAX_VIDEO_UPLOAD_BYTES = 500 * 1024 * 1024; // 500 MB (25-30+ minute videos)
+const MAX_AUDIO_UPLOAD_BYTES = 60 * 1024 * 1024;  // 60 MB (MP3/audio)
+const MAX_IMAGE_UPLOAD_BYTES = 20 * 1024 * 1024;  // 20 MB
+
+function resolveMediaExtAndKind(
+  mimeType: string,
+  originalFileName?: string
+): { ext: string; mediaType: 'image' | 'video' | 'audio'; maxBytes: number } | null {
+  const mime = normalizeMediaMime(mimeType || '').toLowerCase();
+  const extFromName = (originalFileName || '').split('.').pop()?.toLowerCase() || '';
+
+  if (mime.startsWith('video/') || ['mp4', 'webm', 'mov', 'm4v', 'mkv', '3gp', 'ogv'].includes(extFromName)) {
+    const extMap: Record<string, string> = {
+      'video/mp4': 'mp4',
+      'video/webm': 'webm',
+      'video/quicktime': 'mp4',
+      'video/x-m4v': 'm4v',
+      'video/x-matroska': 'mkv',
+      'video/3gpp': '3gp',
+      'video/ogg': 'ogv',
+    };
+    const safeExt =
+      ['mp4', 'webm', 'mov', 'm4v', 'mkv', '3gp', 'ogv'].includes(extFromName)
+        ? extFromName
+        : extMap[mime] || 'mp4';
+    return { ext: safeExt, mediaType: 'video', maxBytes: MAX_VIDEO_UPLOAD_BYTES };
+  }
+
+  if (mime.startsWith('audio/') || ['mp3', 'm4a', 'wav', 'ogg', 'aac', 'flac'].includes(extFromName)) {
+    const extMap: Record<string, string> = {
+      'audio/mpeg': 'mp3',
+      'audio/mp3': 'mp3',
+      'audio/mp4': 'm4a',
+      'audio/x-m4a': 'm4a',
+      'audio/wav': 'wav',
+      'audio/x-wav': 'wav',
+      'audio/ogg': 'ogg',
+      'audio/aac': 'aac',
+      'audio/flac': 'flac',
+    };
+    const safeExt =
+      ['mp3', 'm4a', 'wav', 'ogg', 'aac', 'flac'].includes(extFromName)
+        ? extFromName
+        : extMap[mime] || 'mp3';
+    return { ext: safeExt, mediaType: 'audio', maxBytes: MAX_AUDIO_UPLOAD_BYTES };
+  }
+
+  if (mime.startsWith('image/') || ['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(extFromName)) {
+    const extMap: Record<string, string> = {
+      'image/jpeg': 'jpg',
+      'image/png': 'png',
+      'image/webp': 'webp',
+      'image/gif': 'gif',
+    };
+    const safeExt =
+      ['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(extFromName)
+        ? extFromName === 'jpeg'
+          ? 'jpg'
+          : extFromName
+        : extMap[mime] || 'jpg';
+    return { ext: safeExt, mediaType: 'image', maxBytes: MAX_IMAGE_UPLOAD_BYTES };
+  }
+
+  return null;
+}
+
+function sanitizeLocalFolder(raw: unknown): string {
+  const clean = String(raw || 'posts').trim().toLowerCase();
+  return ALLOWED_LOCAL_MEDIA_FOLDERS.has(clean) ? clean : 'posts';
+}
+
+function resolveConfinedLocalMediaPath(folder: string, filename: string): string | null {
+  if (!ALLOWED_LOCAL_MEDIA_FOLDERS.has(folder)) return null;
+  if (!/^[a-zA-Z0-9._-]{1,120}$/.test(filename) || filename.includes('..')) return null;
+  const resolved = path.resolve(LOCAL_MEDIA_ROOT, folder, filename);
+  if (!resolved.startsWith(LOCAL_MEDIA_ROOT + path.sep)) return null;
+  return resolved;
+}
+
+function sanitizeDownloadFileName(raw: unknown, fallback: string): string {
+  const cleaned = String(raw || '')
+    .replace(/[\r\n"\\/:*?<>|]/g, '_')
+    .replace(/[^a-zA-Z0-9 ._-]/g, '')
+    .trim()
+    .slice(0, 100);
+  return cleaned || fallback;
+}
+
+interface ChunkedUploadSession {
+  uploadId: string;
+  userId: string;
+  folder: string;
+  ext: string;
+  mediaType: 'image' | 'video' | 'audio';
+  totalSize: number;
+  receivedBytes: number;
+  tmpPath: string;
+  createdAtMs: number;
+}
+
+const activeChunkedUploads = new Map<string, ChunkedUploadSession>();
+
+function cleanupExpiredChunkedUploads() {
+  const cutoff = Date.now() - 30 * 60 * 1000;
+  for (const [id, sess] of activeChunkedUploads.entries()) {
+    if (sess.createdAtMs < cutoff) {
+      activeChunkedUploads.delete(id);
+      void fs.promises.unlink(sess.tmpPath).catch(() => {});
+    }
+  }
+}
+
+app.get('/api/media/local/:folder/:filename', async (req: Request, res: Response) => {
+  try {
+    const folder = String(req.params.folder || '').trim().toLowerCase();
+    // STRICT SECURITY RULE: Valid IDs & Real Profile Pictures are PRIVATE — never readable via public media URLs
+    if (folder === 'kyc' || folder === 'private_kyc' || folder === 'valid-ids' || folder === 'real-avatars') {
+      return res.status(403).json({
+        error: 'Access denied. Valid IDs and private profile photos are restricted to Admin review only.',
+      });
+    }
+    const filename = String(req.params.filename || '').trim();
+    const fullPath = resolveConfinedLocalMediaPath(folder, filename);
+    if (!fullPath) {
+      return res.status(400).json({ error: 'Invalid media path' });
+    }
+
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.stat(fullPath);
+      if (!stat.isFile()) return res.status(404).json({ error: 'Media file not found' });
+    } catch {
+      return res.status(404).json({ error: 'Media file not found' });
+    }
+
+    const totalSize = stat.size;
+    const contentType = inferMediaContentTypeFromPath(filename);
+    const wantsDownload = req.query.download === '1' || req.query.download === 'true';
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    if (wantsDownload) {
+      const safeName = sanitizeDownloadFileName(req.query.name, filename);
+      res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+    }
+
+    const rangeHeader = req.headers.range;
+    if (rangeHeader && typeof rangeHeader === 'string' && rangeHeader.startsWith('bytes=')) {
+      const [startRaw, endRaw] = rangeHeader.replace(/^bytes=/, '').split('-');
+      const start = startRaw ? Number.parseInt(startRaw, 10) : 0;
+      const end = endRaw ? Number.parseInt(endRaw, 10) : Math.min(totalSize - 1, start + 2 * 1024 * 1024 - 1);
+      if (
+        !Number.isFinite(start) ||
+        !Number.isFinite(end) ||
+        start < 0 ||
+        end >= totalSize ||
+        start > end
+      ) {
+        res.setHeader('Content-Range', `bytes */${totalSize}`);
+        return res.status(416).end();
+      }
+      const chunkLen = end - start + 1;
+      res.status(206);
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${totalSize}`);
+      res.setHeader('Content-Length', String(chunkLen));
+      const stream = fs.createReadStream(fullPath, { start, end });
+      stream.on('error', () => {
+        if (!res.headersSent) res.status(500).end();
+        else res.end();
+      });
+      req.on('close', () => stream.destroy());
+      return stream.pipe(res);
+    }
+
+    res.status(200);
+    res.setHeader('Content-Length', String(totalSize));
+    const stream = fs.createReadStream(fullPath);
+    stream.on('error', () => {
+      if (!res.headersSent) res.status(500).end();
+      else res.end();
+    });
+    req.on('close', () => stream.destroy());
+    return stream.pipe(res);
+  } catch (err: unknown) {
+    if (!res.headersSent) {
+      return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to stream local media' });
+    }
+    res.end();
+  }
+});
+
+function isSafeUploadOrigin(req: Request): boolean {
+  if (req.headers.authorization?.startsWith('Bearer ')) return true;
+  if (req.headers['x-requested-with'] === 'XMLHttpRequest') return true;
+  const origin = req.headers.origin;
+  const expectedHost = (req.headers['x-forwarded-host'] || req.headers.host || '').toString().split(',')[0].trim();
+  if (typeof origin === 'string' && expectedHost) {
+    try {
+      return new URL(origin).host === expectedHost;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+app.post('/api/media/chunked/init', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    if (!isSafeUploadOrigin(req)) {
+      return res.status(403).json({ error: 'Cross-origin upload blocked' });
+    }
+    cleanupExpiredChunkedUploads();
+    const user = req.choyUser!;
+    const folder = sanitizeLocalFolder(req.body?.folder);
+    const fileName = typeof req.body?.fileName === 'string' ? req.body.fileName.trim().slice(0, 180) : '';
+    const mimeType = typeof req.body?.mimeType === 'string' ? req.body.mimeType.trim().slice(0, 120) : '';
+    const totalSize = Math.floor(Number(req.body?.totalSize));
+
+    const resolved = resolveMediaExtAndKind(mimeType, fileName);
+    if (!resolved) {
+      return res.status(400).json({ error: 'Unsupported media file format. Use MP3/audio, MP4/WebM video, or JPG/PNG image.' });
+    }
+    if (!Number.isFinite(totalSize) || totalSize <= 0) {
+      return res.status(400).json({ error: 'File is empty.' });
+    }
+    if (totalSize > resolved.maxBytes) {
+      const maxMb = Math.round(resolved.maxBytes / (1024 * 1024));
+      return res.status(400).json({ error: `File exceeds maximum allowed size of ${maxMb} MB.` });
+    }
+
+    await fs.promises.mkdir(LOCAL_MEDIA_TMP_ROOT, { recursive: true });
+    const uploadId = `up_${Date.now().toString(36)}_${crypto.randomBytes(10).toString('hex')}`;
+    const tmpPath = path.resolve(LOCAL_MEDIA_TMP_ROOT, `${uploadId}.part`);
+    if (!tmpPath.startsWith(LOCAL_MEDIA_TMP_ROOT + path.sep)) {
+      return res.status(400).json({ error: 'Invalid upload path' });
+    }
+    await fs.promises.writeFile(tmpPath, Buffer.alloc(0));
+
+    activeChunkedUploads.set(uploadId, {
+      uploadId,
+      userId: user.id,
+      folder,
+      ext: resolved.ext,
+      mediaType: resolved.mediaType,
+      totalSize,
+      receivedBytes: 0,
+      tmpPath,
+      createdAtMs: Date.now(),
+    });
+
+    return res.status(201).json({
+      ok: true,
+      uploadId,
+      chunkSize: 4 * 1024 * 1024,
+      mediaType: resolved.mediaType,
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to initialize upload' });
+  }
+});
+
+app.post(
+  '/api/media/chunked/:uploadId/chunk',
+  requireAuth,
+  express.raw({ type: () => true, limit: '8mb' }),
+  async (req: AuthedRequest, res: Response) => {
+    try {
+      if (!isSafeUploadOrigin(req)) {
+        return res.status(403).json({ error: 'Cross-origin upload blocked' });
+      }
+      const user = req.choyUser!;
+      const uploadId = String(req.params.uploadId || '').trim();
+      const session = activeChunkedUploads.get(uploadId);
+      if (!session || session.userId !== user.id) {
+        return res.status(404).json({ error: 'Upload session not found or expired.' });
+      }
+      if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+        return res.status(400).json({ error: 'Empty chunk received.' });
+      }
+      if (session.receivedBytes + req.body.length > session.totalSize + 1024) {
+        activeChunkedUploads.delete(uploadId);
+        void fs.promises.unlink(session.tmpPath).catch(() => {});
+        return res.status(400).json({ error: 'Uploaded data exceeds declared file size.' });
+      }
+
+      await fs.promises.appendFile(session.tmpPath, req.body);
+      session.receivedBytes += req.body.length;
+      return res.json({ ok: true, receivedBytes: session.receivedBytes, totalSize: session.totalSize });
+    } catch (err: unknown) {
+      return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to store upload chunk' });
+    }
+  }
+);
+
+app.post('/api/media/chunked/:uploadId/complete', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    if (!isSafeUploadOrigin(req)) {
+      return res.status(403).json({ error: 'Cross-origin upload blocked' });
+    }
+    const user = req.choyUser!;
+    const uploadId = String(req.params.uploadId || '').trim();
+    const session = activeChunkedUploads.get(uploadId);
+    if (!session || session.userId !== user.id) {
+      return res.status(404).json({ error: 'Upload session not found or expired.' });
+    }
+    activeChunkedUploads.delete(uploadId);
+
+    const folderDir = path.resolve(LOCAL_MEDIA_ROOT, session.folder);
+    if (!folderDir.startsWith(LOCAL_MEDIA_ROOT + path.sep)) {
+      void fs.promises.unlink(session.tmpPath).catch(() => {});
+      return res.status(400).json({ error: 'Invalid media folder' });
+    }
+    await fs.promises.mkdir(folderDir, { recursive: true });
+
+    const finalName = `${Date.now().toString(36)}_${crypto.randomBytes(8).toString('hex')}.${session.ext}`;
+    const finalPath = resolveConfinedLocalMediaPath(session.folder, finalName);
+    if (!finalPath) {
+      void fs.promises.unlink(session.tmpPath).catch(() => {});
+      return res.status(400).json({ error: 'Invalid destination path' });
+    }
+
+    await fs.promises.rename(session.tmpPath, finalPath);
+    const stat = await fs.promises.stat(finalPath);
+    const url = `/api/media/local/${session.folder}/${finalName}`;
+    return res.status(201).json({
+      ok: true,
+      uploaded: true,
+      provider: 'local',
+      url,
+      mediaType: session.mediaType,
+      sizeBytes: stat.size,
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to complete upload' });
+  }
+});
+
+// ---- CLOUDFLARE R2 + SUPABASE + LOCAL DISK MEDIA UPLOAD ENDPOINT ----
 app.post(
   '/api/media/upload',
   requireAuth,
@@ -732,17 +1098,6 @@ app.post(
         }
       }
 
-      const r2Status = getR2StorageStatus();
-      const supabaseStatus = getSupabaseStorageStatus();
-      if (!r2Status.configured && !supabaseStatus.configured) {
-        return res.json({
-          uploaded: false,
-          configured: false,
-          fallback: true,
-          bucket: r2Status.bucket || supabaseStatus.bucket,
-        });
-      }
-
       if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
         return res.status(400).json({ error: 'No media data received' });
       }
@@ -750,7 +1105,38 @@ app.post(
       const contentType = String(req.headers['content-type'] || '');
       const normalizedMime = normalizeMediaMime(contentType);
       const isVideo = normalizedMime.startsWith('video/');
-      const folder = String(req.headers['x-media-folder'] || 'posts');
+      const folder = sanitizeLocalFolder(req.headers['x-media-folder'] || 'posts');
+
+      const r2Status = getR2StorageStatus();
+      const supabaseStatus = getSupabaseStorageStatus();
+      if (!r2Status.configured && !supabaseStatus.configured) {
+        const resolved = resolveMediaExtAndKind(contentType);
+        if (!resolved) {
+          return res.status(400).json({ error: 'Unsupported media format.' });
+        }
+        if (req.body.length > resolved.maxBytes) {
+          return res.status(400).json({ error: 'File exceeds maximum allowed size.' });
+        }
+        const folderDir = path.resolve(LOCAL_MEDIA_ROOT, folder);
+        if (!folderDir.startsWith(LOCAL_MEDIA_ROOT + path.sep)) {
+          return res.status(400).json({ error: 'Invalid upload folder.' });
+        }
+        await fs.promises.mkdir(folderDir, { recursive: true });
+        const finalName = `${Date.now().toString(36)}_${crypto.randomBytes(8).toString('hex')}.${resolved.ext}`;
+        const finalPath = resolveConfinedLocalMediaPath(folder, finalName);
+        if (!finalPath) {
+          return res.status(400).json({ error: 'Invalid media path.' });
+        }
+        await fs.promises.writeFile(finalPath, req.body);
+        return res.status(201).json({
+          uploaded: true,
+          configured: true,
+          provider: 'local',
+          url: `/api/media/local/${folder}/${finalName}`,
+          mediaType: resolved.mediaType,
+          sizeBytes: req.body.length,
+        });
+      }
       const r2VideosOnly = (process.env.R2_VIDEOS_ONLY || '').trim().toLowerCase() === 'true';
 
       // Priority: Videos always go to Cloudflare R2 first when configured (keeps Supabase small & zero egress).
@@ -900,32 +1286,279 @@ app.post('/api/auth/setup-admin', async (req, res) => {
   }
 });
 
+// ============================================================================
+// PRIVATE KYC STORAGE UPLOAD & ADMIN-ONLY FETCH (Valid IDs & Real Profile Pics)
+// ============================================================================
+const PRIVATE_KYC_VAULT_DIR = path.resolve(process.cwd(), '.choy_private_kyc_vault');
+const privateUploadRateMap = new Map<string, { count: number; resetAt: number }>();
+
+function checkPrivateUploadRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const entry = privateUploadRateMap.get(ip);
+  if (!entry || entry.resetAt <= now) {
+    privateUploadRateMap.set(ip, { count: 1, resetAt: now + 15 * 60_000 });
+    return true;
+  }
+  if (entry.count >= 25) return false;
+  entry.count += 1;
+  return true;
+}
+
+async function storePrivateKycImage(
+  buffer: Buffer,
+  contentType: string,
+  kind: 'valid_id' | 'real_avatar',
+  ownerUserId?: string
+): Promise<StoredPrivateKycAsset> {
+  const mime = normalizeMediaMime(contentType);
+  const extMap: Record<string, string> = {
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+    'image/png': '.png',
+    'image/webp': '.webp',
+  };
+  const ext = extMap[mime];
+  if (!ext) {
+    throw new Error('Only JPG, PNG, or WebP images are accepted for Valid ID and Profile Picture.');
+  }
+  if (!buffer || buffer.length === 0) {
+    throw new Error('Empty file upload.');
+  }
+  if (buffer.length > 8 * 1024 * 1024) {
+    throw new Error('Image exceeds maximum allowed size of 8 MB.');
+  }
+
+  const subfolder: PrivateKycSubfolder = kind === 'real_avatar' ? 'real-avatars' : 'valid-ids';
+  const id = `priv_kyc_${Date.now().toString(36)}_${crypto.randomBytes(6).toString('hex')}`;
+  const createdAt = new Date().toISOString();
+  const supaPrivate = getSupabasePrivateKycStatus();
+
+  if (supaPrivate.configured) {
+    try {
+      const uploaded = await uploadToSupabasePrivateKycBucket(buffer, mime, subfolder);
+      const asset: StoredPrivateKycAsset = {
+        id,
+        ownerUserId,
+        kind,
+        storage: 'supabase_private',
+        bucket: uploaded.bucket,
+        path: uploaded.path,
+        mimeType: uploaded.mimeType,
+        sizeBytes: uploaded.sizeBytes,
+        createdAt,
+      };
+      return await store.savePrivateKycAsset(asset);
+    } catch (supaErr) {
+      await store.appendErrorLog({
+        source: 'storage',
+        severity: 'warning',
+        message: `Supabase private bucket upload fallback to local vault: ${supaErr instanceof Error ? supaErr.message : 'unknown error'}`,
+      });
+    }
+  }
+
+  // Confined local private vault (strictly outside public media folders; never served publicly)
+  const targetDir = path.resolve(PRIVATE_KYC_VAULT_DIR, subfolder);
+  if (!targetDir.startsWith(PRIVATE_KYC_VAULT_DIR + path.sep)) {
+    throw new Error('Invalid private vault directory');
+  }
+  await fs.promises.mkdir(targetDir, { recursive: true });
+  const fileName = `${id}${ext}`;
+  const fullPath = path.resolve(targetDir, fileName);
+  if (!fullPath.startsWith(targetDir + path.sep)) {
+    throw new Error('Invalid private vault path');
+  }
+  await fs.promises.writeFile(fullPath, buffer);
+
+  const asset: StoredPrivateKycAsset = {
+    id,
+    ownerUserId,
+    kind,
+    storage: 'local_private',
+    bucket: getSanitizedPrivateKycBucket(),
+    path: `${subfolder}/${fileName}`,
+    mimeType: mime === 'image/jpg' ? 'image/jpeg' : mime,
+    sizeBytes: buffer.length,
+    createdAt,
+  };
+  return await store.savePrivateKycAsset(asset);
+}
+
+app.post(
+  '/api/auth/register/private-upload',
+  express.raw({ type: () => true, limit: '9mb' }),
+  async (req: Request, res: Response) => {
+    try {
+      const clientIp = String(req.headers['x-forwarded-for'] || req.ip || 'unknown').split(',')[0].trim();
+      if (!checkPrivateUploadRateLimit(clientIp)) {
+        return res.status(429).json({ error: 'Too many uploads. Please wait a few minutes and try again.' });
+      }
+      if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+        return res.status(400).json({ error: 'No image data received.' });
+      }
+      const rawKind = String(req.headers['x-kyc-kind'] || 'valid_id').trim().toLowerCase();
+      const kind: 'valid_id' | 'real_avatar' = rawKind === 'real_avatar' ? 'real_avatar' : 'valid_id';
+      const contentType = String(req.headers['content-type'] || 'image/jpeg');
+      const asset = await storePrivateKycImage(req.body, contentType, kind);
+      // NEVER return a public URL — only an opaque assetId locked to Admin review
+      return res.status(201).json({
+        ok: true,
+        assetId: asset.id,
+        kind: asset.kind,
+        bucket: asset.bucket,
+        isPrivate: true,
+        sizeBytes: asset.sizeBytes,
+      });
+    } catch (err: unknown) {
+      return res.status(400).json({ error: err instanceof Error ? err.message : 'Private upload failed' });
+    }
+  }
+);
+
+app.post(
+  '/api/choy/profile-kyc/private-upload',
+  requireAuth,
+  express.raw({ type: () => true, limit: '9mb' }),
+  async (req: AuthedRequest, res: Response) => {
+    try {
+      if (!isSafeUploadOrigin(req)) {
+        return res.status(403).json({ error: 'Cross-origin upload blocked' });
+      }
+      if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+        return res.status(400).json({ error: 'No image data received.' });
+      }
+      const rawKind = String(req.headers['x-kyc-kind'] || 'valid_id').trim().toLowerCase();
+      const kind: 'valid_id' | 'real_avatar' = rawKind === 'real_avatar' ? 'real_avatar' : 'valid_id';
+      const contentType = String(req.headers['content-type'] || 'image/jpeg');
+      const asset = await storePrivateKycImage(req.body, contentType, kind, req.choyUser!.id);
+      return res.status(201).json({
+        ok: true,
+        assetId: asset.id,
+        kind: asset.kind,
+        bucket: asset.bucket,
+        isPrivate: true,
+        sizeBytes: asset.sizeBytes,
+      });
+    } catch (err: unknown) {
+      return res.status(400).json({ error: err instanceof Error ? err.message : 'Private KYC upload failed' });
+    }
+  }
+);
+
+// ADMIN-ONLY PRIVATE KYC IMAGE STREAM: Regular users, customers, and riders get 403 Forbidden!
+app.get('/api/admin/private-kyc/file/:assetId', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const assetId = String(req.params.assetId || '').trim();
+    if (!/^priv_kyc_[a-zA-Z0-9_-]{6,64}$/.test(assetId)) {
+      return res.status(400).json({ error: 'Invalid private KYC asset ID.' });
+    }
+    const asset = await store.getPrivateKycAssetById(assetId);
+    if (!asset) {
+      return res.status(404).json({ error: 'Private KYC file not found.' });
+    }
+
+    res.setHeader('Cache-Control', 'private, no-store, max-age=0');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+
+    if (asset.storage === 'supabase_private') {
+      const { buffer, contentType } = await downloadFromSupabasePrivateKycBucket(asset.bucket, asset.path);
+      res.setHeader('Content-Type', contentType || asset.mimeType || 'image/jpeg');
+      res.setHeader('Content-Length', String(buffer.length));
+      return res.status(200).send(buffer);
+    }
+
+    const cleanRel = asset.path.replace(/^\/+/, '');
+    const resolved = path.resolve(PRIVATE_KYC_VAULT_DIR, cleanRel);
+    if (!resolved.startsWith(PRIVATE_KYC_VAULT_DIR + path.sep)) {
+      return res.status(400).json({ error: 'Invalid private file path.' });
+    }
+    const stat = await fs.promises.stat(resolved).catch(() => null);
+    if (!stat || !stat.isFile()) {
+      return res.status(404).json({ error: 'Private KYC file missing on disk.' });
+    }
+    res.setHeader('Content-Type', asset.mimeType || 'image/jpeg');
+    res.setHeader('Content-Length', String(stat.size));
+    return fs.createReadStream(resolved).pipe(res);
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to fetch private KYC file.' });
+  }
+});
+
 app.post('/api/auth/register', async (req, res) => {
   try {
     await store.ready();
     const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    const realName = typeof req.body?.realName === 'string' ? req.body.realName.trim().slice(0, 120) : '';
     const phone = typeof req.body?.phone === 'string' ? normalizePhone(req.body.phone) : '';
     const pin = typeof req.body?.pin === 'string' ? req.body.pin.trim() : '';
+    const privateValidIdAssetId =
+      typeof req.body?.privateValidIdAssetId === 'string' ? req.body.privateValidIdAssetId.trim() : '';
+    const privateRealAvatarAssetId =
+      typeof req.body?.privateRealAvatarAssetId === 'string' ? req.body.privateRealAvatarAssetId.trim() : '';
+    const privacyConsentAccepted = req.body?.privacyConsentAccepted === true;
+
     if (!name || name.length > 80) {
-      return res.status(400).json({ error: 'Name is required (max 80 chars)' });
+      return res.status(400).json({ error: 'Display Name / Username is required (max 80 chars)' });
     }
     if (!phone || phone.length < 4 || phone.length > 40) {
-      return res.status(400).json({ error: 'Phone number is required' });
+      return res.status(400).json({ error: 'Cellphone number is required' });
     }
     if (!pin || pin.length < 4 || pin.length > 64) {
       return res.status(400).json({ error: 'PIN must be at least 4 characters' });
     }
+    if ((privateValidIdAssetId || privateRealAvatarAssetId) && !privacyConsentAccepted) {
+      return res.status(400).json({
+        error: 'You must accept the Privacy Policy consent checkbox before uploading your Valid ID or profile picture.',
+      });
+    }
+    if (privateValidIdAssetId && !/^priv_kyc_[a-zA-Z0-9_-]{6,64}$/.test(privateValidIdAssetId)) {
+      return res.status(400).json({ error: 'Invalid Valid ID reference.' });
+    }
+    if (privateRealAvatarAssetId && !/^priv_kyc_[a-zA-Z0-9_-]{6,64}$/.test(privateRealAvatarAssetId)) {
+      return res.status(400).json({ error: 'Invalid Profile Picture reference.' });
+    }
+
     const existing = await store.getUserByPhone(phone);
     if (existing) {
       return res.status(409).json({ error: 'Phone number is already registered. Please log in.' });
     }
+
     const user = await store.createUser({
       name,
       phone,
       pin,
       role: 'member',
       status: 'approved',
+      realNamePlaintext: realName || undefined,
+      privateValidIdAssetId: privateValidIdAssetId || undefined,
+      privateRealAvatarAssetId: privateRealAvatarAssetId || undefined,
+      privacyConsentAccepted,
     });
+
+    if (privateValidIdAssetId) {
+      await store.bindPrivateKycAssetOwner(privateValidIdAssetId, user.id);
+    }
+    if (privateRealAvatarAssetId) {
+      await store.bindPrivateKycAssetOwner(privateRealAvatarAssetId, user.id);
+    }
+
+    // If customer uploaded a Valid ID during registration, queue it for Admin User Verification
+    if (privateValidIdAssetId || realName) {
+      const dash = await store.getUserDashboard(user.id);
+      dash.kycCompleteName = realName || name;
+      dash.kycValidIdName = realName || name;
+      dash.kycValidIdType = 'Registration Valid ID';
+      dash.kycStatus = 'pending';
+      dash.kycSubmittedAt = new Date().toISOString();
+      await store.saveUserDashboard(dash);
+    }
+
+    await store.appendActivityLog({
+      category: 'auth',
+      actor: user.name,
+      message: `${user.name} registered a new customer account${privateValidIdAssetId ? ' with private KYC upload' : ''}.`,
+    });
+
     const token = signSessionToken(user.id, user.role);
     setSessionCookie(req, res, token);
     broadcastSync('users');
@@ -943,6 +1576,11 @@ app.post('/api/auth/register', async (req, res) => {
       },
     });
   } catch (err: unknown) {
+    await store.appendErrorLog({
+      source: 'auth',
+      severity: 'error',
+      message: `Registration error: ${err instanceof Error ? err.message : 'Unknown error'}`,
+    });
     return res.status(500).json({ error: err instanceof Error ? err.message : 'Registration failed' });
   }
 });
@@ -1879,7 +2517,7 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
     const user = req.choyUser!;
     touchUserPresence(user.name);
     const isAdmin = user.role === 'admin';
-    const [posts, allMessages, allUsers, knowledge, leaderboard, emojiLinks, newsfeedConfig, allAnnouncements, rawChatGroups, userDashboard, userDashboardMeta, choyProgramsConfig] = await Promise.all([
+    const [posts, allMessages, allUsers, knowledge, leaderboard, emojiLinks, newsfeedConfig, allAnnouncements, rawChatGroups, userDashboard, userDashboardMeta, choyProgramsConfig, musicTracks, longVideos] = await Promise.all([
       store.listPosts(),
       store.listMessages(),
       store.listUsers(isAdmin),
@@ -1892,6 +2530,8 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
       store.getUserDashboard(user.id),
       store.listUserDashboardMeta(),
       store.getChoyProgramsConfig(),
+      store.listMusicTracks(),
+      store.listLongVideos(),
     ]);
     const activeEmojiLink = emojiLinks.find((l) => l.pinnedToAppIcon) || emojiLinks[0] || null;
 
@@ -1986,6 +2626,8 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
       onlineUsers: getOnlineUserNames(),
       userDashboard,
       userDashboardMeta,
+      musicTracks,
+      longVideos,
       ...(isAdmin ? { ledger, settings } : {}),
     });
   } catch (err: unknown) {
@@ -5523,6 +6165,15 @@ app.post('/api/marketplace/checkout', requireAuth, async (req: AuthedRequest, re
   try {
     const user = req.choyUser!;
     const now = new Date().toISOString();
+    const dash = await store.getUserDashboard(user.id);
+    if (user.role !== 'admin' && dash.kycStatus !== 'approved') {
+      return res.status(403).json({
+        error:
+          dash.kycStatus === 'pending'
+            ? 'Your Profile Verification is still pending Admin approval. You can place orders once Admin approves it.'
+            : 'Please complete your Profile Verification (Complete Name, Address, Age, Sex & 1 Valid ID) in the Profile tab and wait for Admin approval before placing orders.',
+      });
+    }
     const paymentMethod = req.body?.paymentMethod === 'choy_wallet' ? 'choy_wallet' : 'wallet';
     const cartItems = Array.isArray(req.body?.items) ? req.body.items : [];
     if (cartItems.length === 0) {
@@ -5601,7 +6252,6 @@ app.post('/api/marketplace/checkout', requireAuth, async (req: AuthedRequest, re
     }
     const totalCost = Math.max(0, Math.round((subtotalCost - promoDiscount + deliveryFee) * 100) / 100);
 
-    const dash = await store.getUserDashboard(user.id);
     const makeTxId = () => `tx_order_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const prependTx = (list: WalletTxItem[], item: WalletTxItem): WalletTxItem[] => [item, ...list].slice(0, 60);
 
@@ -5690,6 +6340,15 @@ app.post('/api/marketplace/items', requireAuth, async (req: AuthedRequest, res: 
     }
 
     if (action === 'buy') {
+      const dash = await store.getUserDashboard(user.id);
+      if (user.role !== 'admin' && dash.kycStatus !== 'approved') {
+        return res.status(403).json({
+          error:
+            dash.kycStatus === 'pending'
+              ? 'Your Profile Verification is still pending Admin approval. You can place orders once Admin approves it.'
+              : 'Please complete your Profile Verification (Complete Name, Address, Age, Sex & 1 Valid ID) in the Profile tab and wait for Admin approval before placing orders.',
+        });
+      }
       const itemId = typeof req.body?.itemId === 'string' ? req.body.itemId.trim() : '';
       const paymentMethod = req.body?.paymentMethod === 'choy_wallet' ? 'choy_wallet' : 'wallet';
       const quantity = Math.max(1, Math.floor(Number(req.body?.quantity) || 1));
@@ -5738,7 +6397,6 @@ app.post('/api/marketplace/items', requireAuth, async (req: AuthedRequest, res: 
         promoDiscount = Math.min(itemSubtotal, Math.max(0, Math.round(rawDisc * 100) / 100));
       }
       const totalCost = Math.max(0, Math.round((itemSubtotal - promoDiscount + deliveryFee) * 100) / 100);
-      const dash = await store.getUserDashboard(user.id);
 
       const makeTxId = () => `tx_buy_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
       const prependTx = (list: WalletTxItem[], item: WalletTxItem): WalletTxItem[] => [item, ...list].slice(0, 60);
@@ -5867,6 +6525,1256 @@ function sanitizeTerminalReceiptUrl(raw: unknown): string | undefined {
   }
   return sanitizeMediaUrl(trimmed);
 }
+
+// ============================================================
+// PROFILE VERIFICATION (KYC) & ADMIN APPROVAL ROUTES
+// ============================================================
+function normalizeKycNameForMatch(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+app.post('/api/choy/profile-kyc', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const completeName = typeof req.body?.completeName === 'string' ? req.body.completeName.trim().slice(0, 120) : '';
+    const address = typeof req.body?.address === 'string' ? req.body.address.trim().slice(0, 260) : '';
+    const age = Math.floor(Number(req.body?.age));
+    const rawSex = req.body?.sex;
+    const sex: 'Male' | 'Female' | 'Other' | null =
+      rawSex === 'Male' || rawSex === 'Female' || rawSex === 'Other' ? rawSex : null;
+    const validIdType = typeof req.body?.validIdType === 'string' ? req.body.validIdType.trim().slice(0, 80) : '';
+    const validIdName = typeof req.body?.validIdName === 'string' ? req.body.validIdName.trim().slice(0, 120) : '';
+    const privateValidIdAssetId =
+      typeof req.body?.privateValidIdAssetId === 'string'
+        ? req.body.privateValidIdAssetId.trim().slice(0, 120)
+        : '';
+    const legacyValidIdImageUrl = sanitizeTerminalReceiptUrl(req.body?.validIdImageUrl);
+
+    if (completeName.length < 2) {
+      return res.status(400).json({ error: 'Complete Name is required (at least 2 characters).' });
+    }
+    if (address.length < 5) {
+      return res.status(400).json({ error: 'Complete Address is required.' });
+    }
+    if (!Number.isInteger(age) || age < 13 || age > 120) {
+      return res.status(400).json({ error: 'Age must be a valid number between 13 and 120.' });
+    }
+    if (!sex) {
+      return res.status(400).json({ error: 'Sex must be Male, Female, or Other.' });
+    }
+    if (!validIdType) {
+      return res.status(400).json({ error: 'Please select a Valid ID Type.' });
+    }
+    if (!validIdName) {
+      return res.status(400).json({ error: 'Name printed on Valid ID is required.' });
+    }
+    if (normalizeKycNameForMatch(completeName) !== normalizeKycNameForMatch(validIdName)) {
+      return res.status(400).json({ error: 'Complete Name and Name on Valid ID must be the exact same.' });
+    }
+
+    let verifiedPrivateAssetId = user.privateValidIdAssetId || '';
+    if (privateValidIdAssetId) {
+      const asset = await store.getPrivateKycAssetById(privateValidIdAssetId);
+      if (!asset || (asset.ownerUserId && asset.ownerUserId !== user.id)) {
+        return res.status(400).json({ error: 'Uploaded private Valid ID reference is invalid. Please re-upload.' });
+      }
+      await store.bindPrivateKycAssetOwner(asset.id, user.id);
+      verifiedPrivateAssetId = asset.id;
+    }
+
+    if (!verifiedPrivateAssetId && !legacyValidIdImageUrl) {
+      return res.status(400).json({ error: 'A valid photo of your Valid ID is required.' });
+    }
+
+    const now = new Date().toISOString();
+
+    // Encrypt the legal real name into the admin-only column and bind the private bucket ID asset
+    await store.updateUserPrivateKyc(user.id, {
+      realNamePlaintext: completeName,
+      privateValidIdAssetId: verifiedPrivateAssetId || undefined,
+      privacyConsentAccepted: true,
+    });
+
+    const dash = await store.getUserDashboard(user.id);
+    dash.kycCompleteName = completeName;
+    dash.kycAddress = address;
+    dash.kycAge = age;
+    dash.kycSex = sex;
+    dash.kycValidIdType = validIdType;
+    dash.kycValidIdName = validIdName;
+    // Never expose raw private IDs in non-admin fields; Admin endpoint resolves via /api/admin/private-kyc/file/:assetId
+    dash.kycValidIdImageUrl = verifiedPrivateAssetId ? '' : legacyValidIdImageUrl;
+    // Never allow self-approval: every submission goes to Admin review as pending
+    dash.kycStatus = 'pending';
+    dash.kycSubmittedAt = now;
+    dash.kycReviewedBy = undefined;
+    dash.kycReviewedAt = undefined;
+    dash.kycRejectionReason = undefined;
+
+    const savedDash = await store.saveUserDashboard(dash);
+
+    await store.appendActivityLog({
+      category: 'kyc',
+      actor: user.name,
+      message: `${user.name} submitted encrypted KYC & Private Bucket Valid ID for Admin review`,
+    });
+
+    // Notify Choy Admin chat without exposing the raw Valid ID image outside the Admin-only private viewer
+    try {
+      const summaryLines = [
+        'PROFILE VERIFICATION SUBMITTED (PRIVATE VAULT · ADMIN APPROVAL REQUIRED)',
+        `Public Display Name: ${user.name} (${user.phone})`,
+        `Valid ID Type: ${validIdType} (Exact Name Match Verified)`,
+        'Real Name & Valid ID are stored in the Admin-Only Private Bucket.',
+        'Open Admin Panel -> Accounts & ID Approvals to decrypt and review.',
+      ].join('\n');
+      await store.createMessage({
+        senderId: user.id,
+        senderName: user.name,
+        roomId: 'Choy Admin',
+        text: summaryLines,
+        mediaType: 'text',
+      });
+      broadcastSync('messages');
+    } catch (msgErr) {
+      console.error('Failed to mirror KYC submission notice to Choy Admin chat:', msgErr);
+    }
+
+    broadcastSync('users');
+    return res.json({ ok: true, userDashboard: savedDash, privateBucketStored: Boolean(verifiedPrivateAssetId) });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save profile verification' });
+  }
+});
+
+app.get('/api/choy/admin/profile-kyc', requireAuth, requireAdmin, async (_req: AuthedRequest, res: Response) => {
+  try {
+    const [allUsers, allDashboards] = await Promise.all([
+      store.listAllStoredUsersForAdmin(),
+      store.listAllUserDashboards(),
+    ]);
+    const userMap = new Map(allUsers.map((u) => [u.id, u]));
+    const dashMap = new Map(allDashboards.map((d) => [d.userId, d]));
+
+    // Combine dashboard KYC submissions + users who uploaded private IDs during registration
+    const candidateUserIds = new Set<string>();
+    for (const d of allDashboards) {
+      if (d.kycStatus && d.kycStatus !== 'unsubmitted') candidateUserIds.add(d.userId);
+    }
+    for (const u of allUsers) {
+      if (u.privateValidIdAssetId || u.privateRealAvatarAssetId || u.encryptedRealName) {
+        candidateUserIds.add(u.id);
+      }
+    }
+
+    const submissions = Array.from(candidateUserIds)
+      .map((userId) => {
+        const u = userMap.get(userId);
+        const d = dashMap.get(userId);
+        const decryptedRealName = u?.encryptedRealName ? decryptSensitiveField(u.encryptedRealName) : '';
+        const privateValidIdProxyUrl = u?.privateValidIdAssetId
+          ? `/api/admin/private-kyc/file/${encodeURIComponent(u.privateValidIdAssetId)}`
+          : undefined;
+        const privateRealAvatarProxyUrl = u?.privateRealAvatarAssetId
+          ? `/api/admin/private-kyc/file/${encodeURIComponent(u.privateRealAvatarAssetId)}`
+          : undefined;
+
+        return {
+          userId,
+          accountName: u?.name || 'Member',
+          decryptedRealName: decryptedRealName || d?.kycCompleteName || '',
+          hasEncryptedRealName: Boolean(u?.encryptedRealName),
+          privacyConsentAccepted: Boolean(u?.privacyConsentAccepted),
+          privacyConsentAt: u?.privacyConsentAt,
+          phone: u?.phone || '',
+          role: u?.role || 'member',
+          kycStatus: d?.kycStatus || 'pending',
+          kycCompleteName: decryptedRealName || d?.kycCompleteName || '',
+          kycAddress: d?.kycAddress || '',
+          kycAge: d?.kycAge,
+          kycSex: d?.kycSex,
+          kycValidIdType: d?.kycValidIdType || (u?.privateValidIdAssetId ? 'Private Registration Valid ID' : ''),
+          kycValidIdName: d?.kycValidIdName || decryptedRealName || '',
+          kycValidIdImageUrl: privateValidIdProxyUrl || d?.kycValidIdImageUrl,
+          privateRealAvatarUrl: privateRealAvatarProxyUrl,
+          isPrivateBucketProtected: Boolean(privateValidIdProxyUrl || privateRealAvatarProxyUrl),
+          kycSubmittedAt: d?.kycSubmittedAt || u?.createdAt,
+          kycReviewedBy: d?.kycReviewedBy,
+          kycReviewedAt: d?.kycReviewedAt,
+          kycRejectionReason: d?.kycRejectionReason,
+        };
+      })
+      .sort((a, b) => {
+        if (a.kycStatus === 'pending' && b.kycStatus !== 'pending') return -1;
+        if (a.kycStatus !== 'pending' && b.kycStatus === 'pending') return 1;
+        return String(b.kycSubmittedAt || '').localeCompare(String(a.kycSubmittedAt || ''));
+      });
+    return res.json({ ok: true, submissions });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load profile verifications' });
+  }
+});
+
+app.get('/api/admin/export-all-values', async (req: Request, res: Response) => {
+  try {
+    const rawToken = String(req.query.token || req.headers.authorization?.replace(/^Bearer\s+/i, '') || '').trim();
+    const payload = rawToken ? verifySessionToken(rawToken) : null;
+    if (!payload || !payload.uid) {
+      return res.status(401).json({ error: 'Unauthorized. Admin token required.' });
+    }
+    const adminUser = await store.getUserById(payload.uid);
+    if (!adminUser || adminUser.role !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden. Admin privileges required.' });
+    }
+
+    const [users, dashboards, ledger, messages, marketplaceItems, marketplaceOrders, investProducts, userInvestments, blogPosts, visitorStats, settings] = await Promise.all([
+      store.listAllStoredUsersForAdmin(),
+      store.listAllUserDashboards(),
+      store.listLedger(),
+      store.listMessages(),
+      store.listMarketplaceItems(),
+      store.listMarketplaceOrders(),
+      store.listInvestProducts(),
+      store.listUserInvestments(),
+      store.listBlogPosts(),
+      store.getVisitorStats(),
+      store.getSettings(),
+    ]);
+    const exportBundle = {
+      exportedAt: new Date().toISOString(),
+      platform: 'Choy Chat',
+      summary: {
+        totalUsers: users.length,
+        totalDashboards: dashboards.length,
+        totalLedgerRows: ledger.length,
+        totalMessages: messages.length,
+        totalMarketplaceItems: marketplaceItems.length,
+        totalMarketplaceOrders: marketplaceOrders.length,
+        totalInvestProducts: investProducts.length,
+        totalUserInvestments: userInvestments.length,
+        totalBlogPosts: blogPosts.length,
+      },
+      users,
+      dashboards,
+      ledger,
+      messages,
+      marketplaceItems,
+      marketplaceOrders,
+      investProducts,
+      userInvestments,
+      blogPosts,
+      visitorStats,
+      settings,
+    };
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename=choychat_all_values_export_${new Date().toISOString().slice(0, 10)}.json`);
+    return res.send(JSON.stringify(exportBundle, null, 2));
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to export all values' });
+  }
+});
+
+// ============================================================================
+// ADMIN COMMAND DASHBOARD ANALYTICS, SYSTEM MONITOR, CLEANER & STRIPE WEBHOOK
+// ============================================================================
+async function computeDirectoryBytes(dirPath: string): Promise<{ bytes: number; fileCount: number }> {
+  let bytes = 0;
+  let fileCount = 0;
+  const walk = async (curr: string) => {
+    const entries = await fs.promises.readdir(curr, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const full = path.join(curr, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full);
+      } else if (entry.isFile()) {
+        const st = await fs.promises.stat(full).catch(() => null);
+        if (st) {
+          bytes += st.size;
+          fileCount += 1;
+        }
+      }
+    }
+  };
+  await walk(dirPath);
+  return { bytes, fileCount };
+}
+
+app.get('/api/admin/command-dashboard', requireAuth, requireAdmin, async (_req: AuthedRequest, res: Response) => {
+  try {
+    const dbPingStart = Date.now();
+    const [
+      allUsers,
+      allDashboards,
+      allOrders,
+      allPosts,
+      allPaymentTxs,
+      allInvestments,
+      privateKycAssets,
+      activityLogs,
+      errorLogs,
+      visitorStats,
+      blogPosts,
+      contactMessages,
+    ] = await Promise.all([
+      store.listUsers(true),
+      store.listAllUserDashboards(),
+      store.listMarketplaceOrders(),
+      store.listPosts(),
+      store.listPaymentTerminalTransactions(),
+      store.listUserInvestments(),
+      store.listPrivateKycAssets(),
+      store.listActivityLogs(),
+      store.listErrorLogs(),
+      store.getVisitorStats(),
+      store.listBlogPosts(),
+      store.listContactMessages(),
+    ]);
+    const dbLatencyMs = Math.max(1, Date.now() - dbPingStart);
+
+    // 1. Lifetime Earnings (Stripe / Payment Terminal + Completed Marketplace Orders + Investments)
+    const approvedTerminalPhp = allPaymentTxs
+      .filter((t) => t.status === 'approved')
+      .reduce((acc, t) => acc + (Number(t.totalPhp) || 0), 0);
+    const completedOrders = allOrders.filter(
+      (o) => o.status !== 'cancelled'
+    );
+    const completedOrderRevenuePhp = completedOrders.reduce(
+      (acc, o) => acc + (Number(o.totalAmount) || 0),
+      0
+    );
+    const investVolumePhp = allInvestments.reduce(
+      (acc, inv) => acc + (Number(inv.principalAmount) || 0),
+      0
+    );
+    const totalEarningsPhp = Math.round((approvedTerminalPhp + completedOrderRevenuePhp + investVolumePhp) * 100) / 100;
+
+    // 2. Successful Buys (completed food delivery / marketplace orders)
+    const successfulBuys = completedOrders.length;
+
+    // 3. Visitor Counter (today + total + live SSE connected clients)
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const todayVisits = Number(visitorStats.dailyCounts?.[todayKey] || 0);
+    const liveActiveTraffic = Math.max(1, sseClients.size);
+
+    // 4. Total Likes (customer likes across posts & dish features)
+    const totalLikes = allPosts.reduce(
+      (acc, p) => acc + (Array.isArray(p.likes) ? p.likes.length : 0),
+      0
+    );
+
+    // 5. Pending KYC count for direct link to User Verification
+    const pendingKycCount = allDashboards.filter((d) => d.kycStatus === 'pending').length;
+
+    // 6. System & Backend Monitor Telemetry
+    const memUsage = process.memoryUsage();
+    const totalMemBytes = os.totalmem();
+    const freeMemBytes = os.freemem();
+    const usedMemBytes = Math.max(0, totalMemBytes - freeMemBytes);
+    const loadAvg = os.loadavg();
+    const cpuCount = Math.max(1, os.cpus().length);
+    const cpuUsagePct = Math.min(100, Math.round(((loadAvg[0] || 0) / cpuCount) * 100));
+    const ramUsagePct = totalMemBytes > 0 ? Math.round((usedMemBytes / totalMemBytes) * 100) : 0;
+
+    // 7. Storage Monitor (Private Bucket KYC + Food Images + Media)
+    const privateKycBytesFromRegistry = privateKycAssets.reduce((acc, a) => acc + (Number(a.sizeBytes) || 0), 0);
+    const [privateDiskStats, foodDiskStats, allMediaDiskStats] = await Promise.all([
+      computeDirectoryBytes(PRIVATE_KYC_VAULT_DIR),
+      computeDirectoryBytes(path.resolve(LOCAL_MEDIA_ROOT, 'marketplace')),
+      computeDirectoryBytes(LOCAL_MEDIA_ROOT),
+    ]);
+    const privateBucketBytes = Math.max(privateKycBytesFromRegistry, privateDiskStats.bytes);
+    const foodImagesBytes = foodDiskStats.bytes;
+    const otherMediaBytes = Math.max(0, allMediaDiskStats.bytes - foodImagesBytes);
+    const totalStorageBytes = privateBucketBytes + foodImagesBytes + otherMediaBytes;
+
+    const poolStats = store.getPoolStats();
+    const supaStatus = getSupabaseStorageStatus();
+    const supaPrivate = getSupabasePrivateKycStatus();
+    const stripeConfigured = Boolean((process.env.STRIPE_SECRET_KEY || '').trim());
+
+    return res.json({
+      ok: true,
+      generatedAt: new Date().toISOString(),
+      analytics: {
+        totalEarningsPhp,
+        approvedTerminalPhp: Math.round(approvedTerminalPhp * 100) / 100,
+        completedOrderRevenuePhp: Math.round(completedOrderRevenuePhp * 100) / 100,
+        stripeConfigured,
+        successfulBuys,
+        totalOrdersCount: allOrders.length,
+        visitorCounter: {
+          todayVisits,
+          totalVisits: Number(visitorStats.totalVisits || 0),
+          liveActiveTraffic,
+          lastVisitAt: visitorStats.lastVisitAt,
+        },
+        totalLikes,
+        totalUsersCount: allUsers.length,
+        pendingKycCount,
+        blogPostsCount: blogPosts.length,
+        contactMessagesCount: contactMessages.length,
+        activityLogs: activityLogs.slice(0, 40),
+        errorLogs: errorLogs.slice(0, 40),
+        unresolvedErrorCount: errorLogs.filter((e) => !e.resolved).length,
+      },
+      system: {
+        database: {
+          status: store.storageMode === 'postgres' ? 'connected' : 'fallback_local',
+          storageMode: store.storageMode,
+          storageStatus: store.storageStatus,
+          latencyMs: dbLatencyMs,
+          pool: poolStats,
+          cpuUsagePct,
+          ramUsagePct,
+          ramUsedMb: Math.round(usedMemBytes / (1024 * 1024)),
+          ramTotalMb: Math.round(totalMemBytes / (1024 * 1024)),
+        },
+        backendServer: {
+          status: 'operational',
+          nodeVersion: process.version,
+          uptimeSeconds: Math.floor(process.uptime()),
+          processRssMb: Math.round(memUsage.rss / (1024 * 1024)),
+          heapUsedMb: Math.round(memUsage.heapUsed / (1024 * 1024)),
+          heapTotalMb: Math.round(memUsage.heapTotal / (1024 * 1024)),
+          platform: os.platform(),
+        },
+        storageMonitor: {
+          privateBucketName: supaPrivate.bucket,
+          privateBucketConfigured: supaPrivate.configured,
+          publicBucketConfigured: supaStatus.configured,
+          privateBucketBytes,
+          privateBucketFiles: privateKycAssets.length,
+          foodImagesBytes,
+          otherMediaBytes,
+          totalStorageBytes,
+          totalStorageGb: Number((totalStorageBytes / (1024 ** 3)).toFixed(4)),
+          quotaGb: 5,
+        },
+      },
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load Admin Dashboard.' });
+  }
+});
+
+app.post('/api/admin/system/cleaner', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const admin = req.choyUser!;
+    cleanupExpiredChunkedUploads();
+    const cleaned = await store.runSystemCleaner();
+
+    // Remove stale temporary chunk files older than 30 days (or orphaned .tmp files)
+    let purgedTempFiles = 0;
+    let reclaimedBytes = 0;
+    const tmpDir = path.resolve(LOCAL_MEDIA_ROOT, '_tmp');
+    const entries = await fs.promises.readdir(tmpDir, { withFileTypes: true }).catch(() => []);
+    const now = Date.now();
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const full = path.join(tmpDir, entry.name);
+      const st = await fs.promises.stat(full).catch(() => null);
+      if (st && now - st.mtimeMs > 60 * 60_000) {
+        await fs.promises.unlink(full).catch(() => {});
+        purgedTempFiles += 1;
+        reclaimedBytes += st.size;
+      }
+    }
+
+    // Clear stale rate-limit cookie/IP buckets
+    let purgedExpiredRateEntries = 0;
+    for (const [k, v] of privateUploadRateMap.entries()) {
+      if (v.resetAt <= now) {
+        privateUploadRateMap.delete(k);
+        purgedExpiredRateEntries += 1;
+      }
+    }
+
+    await store.appendActivityLog({
+      category: 'system',
+      actor: admin.name,
+      message: `System Cleaner ran: purged ${cleaned.purgedErrorLogs} old error logs, ${cleaned.purgedActivityLogs} old activity logs, ${cleaned.purgedAbandonedCarts} abandoned carts, ${purgedTempFiles} temp files.`,
+    });
+
+    return res.json({
+      ok: true,
+      ...cleaned,
+      purgedTempFiles,
+      purgedExpiredCookiesAndSessions: cleaned.purgedExpiredSessions + purgedExpiredRateEntries,
+      reclaimedBytes,
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'System cleaner failed.' });
+  }
+});
+
+app.post('/api/admin/error-logs/:id/resolve', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const id = String(req.params.id || '').trim();
+    const logs = await store.resolveErrorLog(id);
+    return res.json({ ok: true, errorLogs: logs });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to resolve error log.' });
+  }
+});
+
+// Stripe Webhook endpoint — verifies signature when STRIPE_WEBHOOK_SECRET is configured, logs failures to Admin Error Log
+app.post('/api/webhooks/stripe', express.raw({ type: 'application/json', limit: '2mb' }), async (req: Request, res: Response) => {
+  try {
+    const webhookSecret = (process.env.STRIPE_WEBHOOK_SECRET || '').trim();
+    const sigHeader = String(req.headers['stripe-signature'] || '');
+    const rawBody = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : JSON.stringify(req.body || {});
+
+    if (webhookSecret) {
+      const parts = Object.fromEntries(
+        sigHeader.split(',').map((kv) => {
+          const idx = kv.indexOf('=');
+          return idx > 0 ? [kv.slice(0, idx).trim(), kv.slice(idx + 1).trim()] : ['', ''];
+        })
+      );
+      const timestamp = parts.t || '';
+      const expectedSig = parts.v1 || '';
+      const computed = crypto
+        .createHmac('sha256', webhookSecret)
+        .update(`${timestamp}.${rawBody}`)
+        .digest('hex');
+
+      if (!timestamp || !expectedSig || !timingSafeStringEqual(computed, expectedSig)) {
+        await store.appendErrorLog({
+          source: 'stripe_webhook',
+          severity: 'critical',
+          message: 'Stripe webhook signature verification failed (possible spoofing or mismatched STRIPE_WEBHOOK_SECRET).',
+        });
+        return res.status(400).json({ error: 'Invalid Stripe signature.' });
+      }
+    }
+
+    const evt = JSON.parse(rawBody || '{}') as { type?: string; id?: string };
+    await store.appendActivityLog({
+      category: 'payment',
+      actor: 'Stripe Webhook',
+      message: `Processed Stripe event ${evt.type || 'unknown'} (${evt.id || 'no-id'}).`,
+    });
+    return res.json({ received: true });
+  } catch (err: unknown) {
+    await store.appendErrorLog({
+      source: 'stripe_webhook',
+      severity: 'error',
+      message: `Stripe webhook processing error: ${err instanceof Error ? err.message : 'Malformed payload'}`,
+    });
+    return res.status(400).json({ error: 'Invalid Stripe webhook payload.' });
+  }
+});
+
+// ============================================================================
+// PUBLIC SEO LANDING, BLOG, CONTACT & VISITOR APIs (No Login Required)
+// ============================================================================
+const publicVisitRateMap = new Map<string, number>();
+
+app.post('/api/public/visit', async (req: Request, res: Response) => {
+  try {
+    const ip = String(req.headers['x-forwarded-for'] || req.ip || 'visitor').split(',')[0].trim();
+    const last = publicVisitRateMap.get(ip) || 0;
+    const now = Date.now();
+    if (now - last > 30_000) {
+      publicVisitRateMap.set(ip, now);
+      const stats = await store.recordSiteVisit();
+      return res.json({ ok: true, totalVisits: stats.totalVisits });
+    }
+    const stats = await store.getVisitorStats();
+    return res.json({ ok: true, totalVisits: stats.totalVisits });
+  } catch {
+    return res.json({ ok: false });
+  }
+});
+
+app.get('/api/public/blog', async (_req: Request, res: Response) => {
+  try {
+    const [posts, marketplaceItems] = await Promise.all([
+      store.listBlogPosts(),
+      store.listMarketplaceItems(),
+    ]);
+    const featuredFood = marketplaceItems
+      .filter((item) => item.category === 'food' && item.stock > 0)
+      .slice(0, 6)
+      .map((item) => ({
+        id: item.id,
+        title: item.title,
+        description: item.description,
+        price: item.price,
+        imageUrl: item.imageUrl || '/assets/images/hero_local_food_delivery_1795763680017.jpg',
+        sellerName: item.sellerName,
+        stock: item.stock,
+      }));
+    return res.json({ ok: true, posts, featuredFood });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load blog posts.' });
+  }
+});
+
+app.post('/api/admin/blog', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const admin = req.choyUser!;
+    const title = typeof req.body?.title === 'string' ? req.body.title.trim().slice(0, 140) : '';
+    const excerpt = typeof req.body?.excerpt === 'string' ? req.body.excerpt.trim().slice(0, 320) : '';
+    const rawBody = typeof req.body?.content === 'string' ? req.body.content.trim() : '';
+    const categoryRaw = typeof req.body?.category === 'string' ? req.body.category.trim() : 'Delivery Tips';
+    const allowedCategories: StoredBlogPost['category'][] = [
+      'Delivery Tips',
+      'Restaurant Spotlight',
+      'Rider Stories',
+      'Safety & Privacy',
+    ];
+    const category = allowedCategories.includes(categoryRaw as StoredBlogPost['category'])
+      ? (categoryRaw as StoredBlogPost['category'])
+      : 'Delivery Tips';
+    const rawCover = typeof req.body?.coverImage === 'string' ? req.body.coverImage.trim() : '';
+    const coverImage =
+      rawCover.startsWith('/assets/images/') || rawCover.startsWith('/src/assets/images/')
+        ? rawCover.replace(/^\/src\/assets\/images\//, '/assets/images/')
+        : '/assets/images/hero_local_food_delivery_1795763680017.jpg';
+
+    if (title.length < 5 || rawBody.length < 20) {
+      return res.status(400).json({ error: 'Article title (min 5 chars) and body content (min 20 chars) are required.' });
+    }
+
+    const paragraphs = rawBody
+      .split(/\n{2,}/)
+      .map((p: string) => p.trim())
+      .filter(Boolean)
+      .slice(0, 20);
+    const wordCount = rawBody.split(/\s+/).filter(Boolean).length;
+    const readTimeMin = Math.max(1, Math.min(20, Math.ceil(wordCount / 180)));
+    const slug = title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 80);
+    const now = new Date().toISOString();
+
+    const newPost: StoredBlogPost = {
+      id: `blog_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`,
+      slug: `${slug || 'article'}-${Date.now().toString(36)}`,
+      title,
+      excerpt: excerpt || (paragraphs[0] || '').slice(0, 180),
+      content: paragraphs,
+      category,
+      author: admin.name,
+      readTimeMin,
+      coverImage,
+      publishedAt: now,
+      updatedAt: now,
+    };
+
+    const existing = await store.listBlogPosts();
+    const posts = await store.saveBlogPosts([newPost, ...existing]);
+    await store.appendActivityLog({
+      category: 'blog',
+      actor: admin.name,
+      message: `Published blog article: "${newPost.title}"`,
+    });
+    return res.status(201).json({ ok: true, post: newPost, posts });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to publish blog article.' });
+  }
+});
+
+app.delete('/api/admin/blog/:id', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const id = String(req.params.id || '').trim();
+    const existing = await store.listBlogPosts();
+    const next = existing.filter((p) => p.id !== id);
+    const posts = await store.saveBlogPosts(next);
+    return res.json({ ok: true, posts });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to delete blog article.' });
+  }
+});
+
+app.post('/api/public/contact', async (req: Request, res: Response) => {
+  try {
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 100) : '';
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().slice(0, 140) : '';
+    const subject = typeof req.body?.subject === 'string' ? req.body.subject.trim().slice(0, 140) : 'General Inquiry';
+    const message = typeof req.body?.message === 'string' ? req.body.message.trim().slice(0, 1500) : '';
+
+    if (name.length < 2) {
+      return res.status(400).json({ error: 'Please enter your name.' });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
+    }
+    if (message.length < 10) {
+      return res.status(400).json({ error: 'Please enter a message of at least 10 characters.' });
+    }
+
+    const saved = await store.saveContactMessage({ name, email, subject, message });
+    await store.appendActivityLog({
+      category: 'contact',
+      actor: name,
+      message: `Contact Us inquiry submitted: "${subject}"`,
+    });
+    return res.status(201).json({ ok: true, inquiry: saved });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to submit contact form.' });
+  }
+});
+
+app.post(
+  '/api/choy/admin/profile-kyc/:userId/status',
+  requireAuth,
+  requireAdmin,
+  async (req: AuthedRequest, res: Response) => {
+    try {
+      const adminUser = req.choyUser!;
+      const targetUserId = typeof req.params.userId === 'string' ? req.params.userId.trim() : '';
+      const nextStatus = req.body?.status === 'approved' ? 'approved' : req.body?.status === 'rejected' ? 'rejected' : null;
+      const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 260) : '';
+
+      if (!targetUserId || !nextStatus) {
+        return res.status(400).json({ error: 'Valid userId and status (approved or rejected) are required.' });
+      }
+      const allUsers = await store.listUsers(true);
+      const targetUser = allUsers.find((u) => u.id === targetUserId);
+      if (!targetUser) {
+        return res.status(404).json({ error: 'User account not found.' });
+      }
+
+      const dash = await store.getUserDashboard(targetUserId);
+      if (!dash.kycCompleteName || !dash.kycValidIdImageUrl) {
+        return res.status(400).json({ error: 'This user has not submitted a complete Profile Verification yet.' });
+      }
+
+      const now = new Date().toISOString();
+      dash.kycStatus = nextStatus;
+      dash.kycReviewedBy = adminUser.name;
+      dash.kycReviewedAt = now;
+      dash.kycRejectionReason = nextStatus === 'rejected' ? reason || 'Please re-check your details and Valid ID.' : undefined;
+
+      const savedDash = await store.saveUserDashboard(dash);
+      broadcastSync('users');
+      return res.json({ ok: true, userDashboard: savedDash });
+    } catch (err: unknown) {
+      return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update profile verification status' });
+    }
+  }
+);
+
+// ============================================================
+// MP3 MUSIC LIBRARY & LONG VIDEO LIBRARY ROUTES
+// ============================================================
+app.get('/api/choy/media-library', requireAuth, async (_req: AuthedRequest, res: Response) => {
+  try {
+    const [tracks, videos] = await Promise.all([store.listMusicTracks(), store.listLongVideos()]);
+    return res.json({ ok: true, tracks, videos });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load media library' });
+  }
+});
+
+app.post('/api/choy/media-library/music', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const title = typeof req.body?.title === 'string' ? req.body.title.trim().slice(0, 120) : '';
+    const artist = typeof req.body?.artist === 'string' ? req.body.artist.trim().slice(0, 80) : user.name;
+    const audioUrl = sanitizeMediaUrl(req.body?.audioUrl);
+    const fileName = sanitizeDownloadFileName(req.body?.fileName, `${title || 'track'}.mp3`);
+    const durationSec = Math.max(0, Math.min(7200, Math.floor(Number(req.body?.durationSec) || 0)));
+    const sizeBytes = Math.max(0, Math.min(MAX_AUDIO_UPLOAD_BYTES, Math.floor(Number(req.body?.sizeBytes) || 0)));
+
+    if (!title || !audioUrl) {
+      return res.status(400).json({ error: 'Song title and valid MP3 audio file are required.' });
+    }
+
+    const existing = await store.listMusicTracks();
+    const newTrack: StoredMusicTrack = {
+      id: `mp3_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`,
+      title,
+      artist: artist || user.name,
+      audioUrl,
+      fileName,
+      durationSec,
+      sizeBytes,
+      uploadedById: user.id,
+      uploadedByName: user.name,
+      createdAt: new Date().toISOString(),
+    };
+
+    const tracks = await store.saveMusicTracks([newTrack, ...existing]);
+    broadcastSync('media');
+    return res.status(201).json({ ok: true, track: newTrack, tracks });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save MP3 track' });
+  }
+});
+
+app.delete('/api/choy/media-library/music/:id', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const id = String(req.params.id || '').trim();
+    const existing = await store.listMusicTracks();
+    const target = existing.find((t) => t.id === id);
+    if (!target) {
+      return res.status(404).json({ error: 'MP3 track not found.' });
+    }
+    if (user.role !== 'admin' && target.uploadedById !== user.id) {
+      return res.status(403).json({ error: 'Only the uploader or Admin can delete this MP3 track.' });
+    }
+
+    const next = existing.filter((t) => t.id !== id);
+    const tracks = await store.saveMusicTracks(next);
+
+    // Clean up local disk file if hosted locally
+    const match = target.audioUrl.match(/^\/api\/media\/local\/([a-z0-9_-]+)\/([a-zA-Z0-9._-]+)$/);
+    if (match) {
+      const localPath = resolveConfinedLocalMediaPath(match[1], match[2]);
+      if (localPath) void fs.promises.unlink(localPath).catch(() => {});
+    }
+
+    broadcastSync('media');
+    return res.json({ ok: true, tracks });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to delete MP3 track' });
+  }
+});
+
+app.post('/api/choy/media-library/videos', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const title = typeof req.body?.title === 'string' ? req.body.title.trim().slice(0, 140) : '';
+    const description = typeof req.body?.description === 'string' ? req.body.description.trim().slice(0, 260) : '';
+    const videoUrl = sanitizeMediaUrl(req.body?.videoUrl);
+    const fileName = sanitizeDownloadFileName(req.body?.fileName, `${title || 'video'}.mp4`);
+    const durationSec = Math.max(0, Math.min(18000, Math.floor(Number(req.body?.durationSec) || 0)));
+    const sizeBytes = Math.max(0, Math.min(MAX_VIDEO_UPLOAD_BYTES, Math.floor(Number(req.body?.sizeBytes) || 0)));
+
+    if (!title || !videoUrl) {
+      return res.status(400).json({ error: 'Video title and valid video file are required.' });
+    }
+
+    const existing = await store.listLongVideos();
+    const newVideo: StoredLongVideo = {
+      id: `vid_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`,
+      title,
+      description,
+      videoUrl,
+      fileName,
+      durationSec,
+      sizeBytes,
+      uploadedById: user.id,
+      uploadedByName: user.name,
+      createdAt: new Date().toISOString(),
+    };
+
+    const videos = await store.saveLongVideos([newVideo, ...existing]);
+    broadcastSync('media');
+    return res.status(201).json({ ok: true, video: newVideo, videos });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save video' });
+  }
+});
+
+app.delete('/api/choy/media-library/videos/:id', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const id = String(req.params.id || '').trim();
+    const existing = await store.listLongVideos();
+    const target = existing.find((v) => v.id === id);
+    if (!target) {
+      return res.status(404).json({ error: 'Video not found.' });
+    }
+    if (user.role !== 'admin' && target.uploadedById !== user.id) {
+      return res.status(403).json({ error: 'Only the uploader or Admin can delete this video.' });
+    }
+
+    const next = existing.filter((v) => v.id !== id);
+    const videos = await store.saveLongVideos(next);
+
+    const match = target.videoUrl.match(/^\/api\/media\/local\/([a-z0-9_-]+)\/([a-zA-Z0-9._-]+)$/);
+    if (match) {
+      const localPath = resolveConfinedLocalMediaPath(match[1], match[2]);
+      if (localPath) void fs.promises.unlink(localPath).catch(() => {});
+    }
+
+    broadcastSync('media');
+    return res.json({ ok: true, videos });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to delete video' });
+  }
+});
+
+// ============================================================
+// INVEST SYSTEM (5% per day x 30 days Simple Interest, live per-minute counting)
+// ============================================================
+const investBuyInFlight = new Set<string>();
+const investClaimInFlight = new Set<string>();
+
+function computeInvestmentLiveMetrics(inv: StoredUserInvestment, nowMs: number) {
+  const startedMs = Date.parse(inv.startedAt) || nowMs;
+  const durationDays = Math.max(1, Math.min(365, Math.floor(Number(inv.durationDays) || 30)));
+  const totalMinutes = durationDays * 1440;
+  const elapsedMs = Math.max(0, nowMs - startedMs);
+  const completedMinutes = Math.min(totalMinutes, Math.floor(elapsedMs / 60_000));
+  const dailyEarning = Math.round(Number(inv.dailyEarning || 0) * 100) / 100;
+  const totalTargetEarnings = Math.round(Number(inv.totalTargetEarnings || dailyEarning * durationDays) * 100) / 100;
+  const perMinuteEarning = totalMinutes > 0 ? totalTargetEarnings / totalMinutes : 0;
+  const earnedSoFar =
+    completedMinutes >= totalMinutes
+      ? totalTargetEarnings
+      : Math.min(totalTargetEarnings, Math.round(((completedMinutes / totalMinutes) * totalTargetEarnings) * 10000) / 10000);
+  const claimedEarnings = Math.max(0, Math.round(Number(inv.claimedEarnings || 0) * 100) / 100);
+  const unclaimedEarnings = Math.max(0, Math.round((earnedSoFar - claimedEarnings) * 10000) / 10000);
+  const claimableNow = Math.max(0, Math.floor((earnedSoFar - claimedEarnings) * 100) / 100);
+  const isCompleted = completedMinutes >= totalMinutes;
+  const nextTickInSeconds = isCompleted ? 0 : Math.max(1, 60 - Math.floor((elapsedMs % 60_000) / 1000));
+
+  return {
+    totalMinutes,
+    completedMinutes,
+    perMinuteEarning,
+    earnedSoFar,
+    claimedEarnings,
+    unclaimedEarnings,
+    claimableNow,
+    isCompleted,
+    nextTickInSeconds,
+  };
+}
+
+function serializeUserInvestmentForMember(inv: StoredUserInvestment, nowMs: number) {
+  const metrics = computeInvestmentLiveMetrics(inv, nowMs);
+  // Deliberately omit principalAmount from member payloads so user dashboard displays All Earnings only
+  return {
+    id: inv.id,
+    userId: inv.userId,
+    userName: inv.userName,
+    productId: inv.productId,
+    productTitle: inv.productTitle,
+    dailyRatePercent: inv.dailyRatePercent,
+    durationDays: inv.durationDays,
+    dailyEarning: inv.dailyEarning,
+    totalTargetEarnings: inv.totalTargetEarnings,
+    startedAt: inv.startedAt,
+    endsAt: inv.endsAt,
+    ...metrics,
+  };
+}
+
+app.get('/api/choy/invest/state', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const programsConfig = await store.getChoyProgramsConfig();
+    const investEnabled = programsConfig.featureToggles?.invest !== false;
+    const allProducts = await store.listInvestProducts();
+    const visibleProducts = user.role === 'admin' ? allProducts : allProducts.filter((p) => p.active);
+    const allInvestments = await store.listUserInvestments();
+    const nowMs = Date.now();
+    const myInvestments = allInvestments
+      .filter((inv) => inv.userId === user.id)
+      .map((inv) => serializeUserInvestmentForMember(inv, nowMs));
+
+    return res.json({
+      ok: true,
+      investEnabled,
+      serverTime: new Date(nowMs).toISOString(),
+      products: visibleProducts,
+      investments: myInvestments,
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load Invest dashboard.' });
+  }
+});
+
+app.post('/api/choy/invest/buy', requireAuth, async (req: AuthedRequest, res: Response) => {
+  const user = req.choyUser!;
+  if (investBuyInFlight.has(user.id)) {
+    return res.status(409).json({ error: 'Another investment purchase is already processing. Please wait a moment.' });
+  }
+  investBuyInFlight.add(user.id);
+  try {
+    const programsConfig = await store.getChoyProgramsConfig();
+    const investEnabled = programsConfig.featureToggles?.invest !== false;
+    if (!investEnabled && user.role !== 'admin') {
+      return res.status(403).json({ error: 'Invest is currently disabled by Admin (Coming Soon).' });
+    }
+
+    const productId = typeof req.body?.productId === 'string' ? req.body.productId.trim() : '';
+    if (!productId) {
+      return res.status(400).json({ error: 'Please select an investment product.' });
+    }
+
+    const products = await store.listInvestProducts();
+    const product = products.find((p) => p.id === productId && p.active);
+    if (!product) {
+      return res.status(404).json({ error: 'Selected investment product is no longer available.' });
+    }
+
+    const price = Math.round(Number(product.price) * 100) / 100;
+    const dailyRatePercent = Math.max(0.1, Math.min(50, Number(product.dailyRatePercent) || 5));
+    const durationDays = Math.max(1, Math.min(365, Math.floor(Number(product.durationDays) || 30)));
+    if (!Number.isFinite(price) || price <= 0) {
+      return res.status(400).json({ error: 'Invalid product price configuration.' });
+    }
+
+    const dash = await store.getUserDashboard(user.id);
+    if (dash.walletBalance < price) {
+      return res.status(400).json({
+        error: `Insufficient Cash Wallet balance. Need ₱${price.toLocaleString('en-PH', { minimumFractionDigits: 2 })}, available ₱${dash.walletBalance.toLocaleString('en-PH', { minimumFractionDigits: 2 })}.`,
+      });
+    }
+
+    const nowMs = Date.now();
+    const startedAt = new Date(nowMs).toISOString();
+    const endsAt = new Date(nowMs + durationDays * 24 * 60 * 60 * 1000).toISOString();
+    const dailyEarning = Math.round(price * (dailyRatePercent / 100) * 100) / 100;
+    const totalTargetEarnings = Math.round(dailyEarning * durationDays * 100) / 100;
+
+    dash.walletBalance = Math.round((dash.walletBalance - price) * 100) / 100;
+    const tx: WalletTxItem = {
+      id: `tx_inv_buy_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`,
+      walletType: 'wallet',
+      kind: 'withdraw',
+      amount: -price,
+      note: `Invest plan activated: ${product.title} (${dailyRatePercent}%/day × ${durationDays}d)`,
+      counterparty: 'Choy Invest',
+      createdAt: startedAt,
+    };
+    dash.transactions = [tx, ...dash.transactions].slice(0, 60);
+    const savedDash = await store.saveUserDashboard(dash);
+
+    const newInvestment: StoredUserInvestment = {
+      id: `inv_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`,
+      userId: user.id,
+      userName: user.name,
+      productId: product.id,
+      productTitle: product.title,
+      principalAmount: price,
+      dailyRatePercent,
+      durationDays,
+      dailyEarning,
+      totalTargetEarnings,
+      claimedEarnings: 0,
+      startedAt,
+      endsAt,
+    };
+
+    const existing = await store.listUserInvestments();
+    const allSaved = await store.saveUserInvestments([newInvestment, ...existing]);
+    const myInvestments = allSaved
+      .filter((inv) => inv.userId === user.id)
+      .map((inv) => serializeUserInvestmentForMember(inv, nowMs));
+
+    broadcastSync('invest');
+    broadcastSync('users');
+
+    return res.status(201).json({
+      ok: true,
+      serverTime: startedAt,
+      investment: serializeUserInvestmentForMember(newInvestment, nowMs),
+      investments: myInvestments,
+      userDashboard: savedDash,
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to activate investment plan.' });
+  } finally {
+    investBuyInFlight.delete(user.id);
+  }
+});
+
+app.post('/api/choy/invest/claim', requireAuth, async (req: AuthedRequest, res: Response) => {
+  const user = req.choyUser!;
+  if (investClaimInFlight.has(user.id)) {
+    return res.status(409).json({ error: 'Earnings claim is already in progress. Please wait.' });
+  }
+  investClaimInFlight.add(user.id);
+  try {
+    const programsConfig = await store.getChoyProgramsConfig();
+    const investEnabled = programsConfig.featureToggles?.invest !== false;
+    if (!investEnabled && user.role !== 'admin') {
+      return res.status(403).json({ error: 'Invest is currently disabled by Admin (Coming Soon).' });
+    }
+
+    const targetInvestmentId = typeof req.body?.investmentId === 'string' ? req.body.investmentId.trim() : '';
+    const allInvestments = await store.listUserInvestments();
+    const nowMs = Date.now();
+    let totalClaimedNow = 0;
+    let claimedCount = 0;
+
+    const updatedAll = allInvestments.map((inv) => {
+      if (inv.userId !== user.id) return inv;
+      if (targetInvestmentId && inv.id !== targetInvestmentId) return inv;
+      const metrics = computeInvestmentLiveMetrics(inv, nowMs);
+      if (metrics.claimableNow >= 0.01) {
+        totalClaimedNow = Math.round((totalClaimedNow + metrics.claimableNow) * 100) / 100;
+        claimedCount += 1;
+        return {
+          ...inv,
+          claimedEarnings: Math.min(
+            inv.totalTargetEarnings,
+            Math.round((inv.claimedEarnings + metrics.claimableNow) * 100) / 100
+          ),
+        };
+      }
+      return inv;
+    });
+
+    if (totalClaimedNow < 0.01 || claimedCount === 0) {
+      return res.status(400).json({
+        error: 'Wait for at least ₱0.01 in live per-minute earnings to accumulate before claiming.',
+      });
+    }
+
+    const dash = await store.getUserDashboard(user.id);
+    dash.walletBalance = Math.round((dash.walletBalance + totalClaimedNow) * 100) / 100;
+    const nowIso = new Date(nowMs).toISOString();
+    const tx: WalletTxItem = {
+      id: `tx_inv_clm_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`,
+      walletType: 'wallet',
+      kind: 'reward',
+      amount: totalClaimedNow,
+      note:
+        claimedCount === 1
+          ? `Invest live earnings claimed (+₱${totalClaimedNow.toFixed(2)})`
+          : `Invest live earnings claimed across ${claimedCount} plans (+₱${totalClaimedNow.toFixed(2)})`,
+      counterparty: 'Choy Invest',
+      createdAt: nowIso,
+    };
+    dash.transactions = [tx, ...dash.transactions].slice(0, 60);
+
+    const savedAll = await store.saveUserInvestments(updatedAll);
+    const savedDash = await store.saveUserDashboard(dash);
+
+    const myInvestments = savedAll
+      .filter((inv) => inv.userId === user.id)
+      .map((inv) => serializeUserInvestmentForMember(inv, nowMs));
+
+    broadcastSync('invest');
+    broadcastSync('users');
+
+    return res.json({
+      ok: true,
+      claimedAmount: totalClaimedNow,
+      serverTime: nowIso,
+      investments: myInvestments,
+      userDashboard: savedDash,
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to claim live earnings.' });
+  } finally {
+    investClaimInFlight.delete(user.id);
+  }
+});
+
+app.get('/api/choy/admin/invest/overview', requireAuth, requireAdmin, async (_req: AuthedRequest, res: Response) => {
+  try {
+    const programsConfig = await store.getChoyProgramsConfig();
+    const products = await store.listInvestProducts();
+    const allInvestments = await store.listUserInvestments();
+    const nowMs = Date.now();
+    const investments = allInvestments.map((inv) => ({
+      ...inv,
+      ...computeInvestmentLiveMetrics(inv, nowMs),
+    }));
+
+    return res.json({
+      ok: true,
+      investEnabled: programsConfig.featureToggles?.invest !== false,
+      serverTime: new Date(nowMs).toISOString(),
+      products,
+      investments,
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load Admin Invest overview.' });
+  }
+});
+
+app.post('/api/choy/admin/invest/products', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const idRaw = typeof req.body?.id === 'string' ? req.body.id.trim().slice(0, 80) : '';
+    const title = typeof req.body?.title === 'string' ? req.body.title.trim().slice(0, 100) : '';
+    const description = typeof req.body?.description === 'string' ? req.body.description.trim().slice(0, 260) : '';
+    const badge = typeof req.body?.badge === 'string' ? req.body.badge.trim().slice(0, 40) : '';
+    const price = Math.round(Number(req.body?.price) * 100) / 100;
+    const dailyRatePercent =
+      req.body?.dailyRatePercent === undefined || req.body?.dailyRatePercent === ''
+        ? 5
+        : Math.round(Number(req.body?.dailyRatePercent) * 100) / 100;
+    const durationDays =
+      req.body?.durationDays === undefined || req.body?.durationDays === ''
+        ? 30
+        : Math.floor(Number(req.body?.durationDays));
+    const active = req.body?.active !== false;
+
+    if (!title) {
+      return res.status(400).json({ error: 'Product title is required.' });
+    }
+    if (!Number.isFinite(price) || price < 10 || price > 10_000_000) {
+      return res.status(400).json({ error: 'Price must be between ₱10 and ₱10,000,000.' });
+    }
+    if (!Number.isFinite(dailyRatePercent) || dailyRatePercent < 0.1 || dailyRatePercent > 50) {
+      return res.status(400).json({ error: 'Daily rate must be between 0.1% and 50%.' });
+    }
+    if (!Number.isFinite(durationDays) || durationDays < 1 || durationDays > 365) {
+      return res.status(400).json({ error: 'Duration must be between 1 and 365 days.' });
+    }
+
+    const now = new Date().toISOString();
+    const existing = await store.listInvestProducts();
+    const existingIdx = idRaw ? existing.findIndex((p) => p.id === idRaw) : -1;
+
+    let nextProducts: StoredInvestProduct[];
+    let savedProduct: StoredInvestProduct;
+
+    if (existingIdx >= 0) {
+      savedProduct = {
+        ...existing[existingIdx],
+        title,
+        description: description || `${dailyRatePercent}% daily simple interest for ${durationDays} days.`,
+        price,
+        dailyRatePercent,
+        durationDays,
+        badge: badge || undefined,
+        active,
+        updatedAt: now,
+      };
+      nextProducts = existing.map((p, idx) => (idx === existingIdx ? savedProduct : p));
+    } else {
+      savedProduct = {
+        id: `inv_prod_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`,
+        title,
+        description: description || `${dailyRatePercent}% daily simple interest for ${durationDays} days.`,
+        price,
+        dailyRatePercent,
+        durationDays,
+        badge: badge || undefined,
+        active,
+        createdAt: now,
+        updatedAt: now,
+      };
+      nextProducts = [...existing, savedProduct];
+    }
+
+    const products = await store.saveInvestProducts(nextProducts);
+    broadcastSync('invest');
+    return res.status(existingIdx >= 0 ? 200 : 201).json({ ok: true, product: savedProduct, products });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save investment product.' });
+  }
+});
+
+app.delete('/api/choy/admin/invest/products/:id', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const id = String(req.params.id || '').trim();
+    const existing = await store.listInvestProducts();
+    if (!existing.some((p) => p.id === id)) {
+      return res.status(404).json({ error: 'Investment product not found.' });
+    }
+    const products = await store.saveInvestProducts(existing.filter((p) => p.id !== id));
+    broadcastSync('invest');
+    return res.json({ ok: true, products });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to delete investment product.' });
+  }
+});
 
 app.get('/api/choy/payment-terminal/config', requireAuth, async (_req: AuthedRequest, res: Response) => {
   try {

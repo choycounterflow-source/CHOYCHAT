@@ -113,6 +113,10 @@ import {
   type PaymentTerminalView,
 } from './components/PaymentTerminalPanel';
 import {
+  InvestPanel,
+  type InvestPanelView,
+} from './components/InvestPanel';
+import {
   SecurityStudio,
   type StudioAnnouncementItem,
   type StudioAnnouncementTarget,
@@ -134,23 +138,28 @@ import {
   type VideoBackgroundProcessorHandle,
   type VideoBackgroundPresetId,
 } from './utils/videoBackgroundProcessor';
-import { NewsfeedMusicPlayer } from './components/NewsfeedMusicPlayer';
 import {
-  OPM_PLAYLIST,
-  getOrRenderOpmTrackAudioUrl,
-  type OpmSongTrack,
-} from './utils/opmAudioSynth';
-import { OnePieceEpisodesPanel } from './components/OnePieceEpisodesPanel';
-import { ONE_PIECE_LATEST_30_EPISODES } from './data/onePieceEpisodes';
+  Mp3MusicLibraryPanel,
+  LongVideoHubPanel,
+  uploadFileChunked,
+  type MusicTrackItem,
+  type LongVideoItem,
+} from './components/MediaLibraryPanels';
 import { ImageZoomModal } from './components/ImageZoomModal';
 import { useThemePreferences } from './hooks/useThemePreferences';
 import { COLOR_THEME_LIST, THEME_PRESETS } from './themePresets';
 import {
   UserDashboardPanels,
-  ProfileAdminCopyCard,
   type UserDashboardData,
   type UserDashboardTabId,
 } from './components/UserDashboardPanels';
+import {
+  ProfileKycVerificationCard,
+  AdminKycApprovalsPanel,
+} from './components/ProfileKycPanel';
+import { PublicLandingPortal } from './components/PublicLandingPortal';
+import { AdminCommandDashboard } from './components/AdminCommandDashboard';
+import type { CustomerRegistrationPayload } from './components/CustomerRegistrationForm';
 import {
   type EmojiLinkItem,
   buildEmojiShareUrl,
@@ -603,11 +612,13 @@ export default function App() {
     | 'acknowledgment'
     | 'marketplace'
     | 'payment_terminal'
+    | 'invest'
     | 'feed'
     | 'profile'
     | 'messages'
     | 'ledger'
     | 'analytics'
+    | 'admin_dashboard'
     | 'admin_approvals'
     | 'admin_knowledge'
     | 'admin_prices'
@@ -621,6 +632,7 @@ export default function App() {
   >('feed');
   const [adminChoySetupTab, setAdminChoySetupTab] = useState<AdminChoySetupTab>('choy_pro');
   const [paymentTerminalView, setPaymentTerminalView] = useState<PaymentTerminalView>('terminal');
+  const [investView, setInvestView] = useState<InvestPanelView>('dashboard');
   const [choyProgramsConfig, setChoyProgramsConfig] = useState<ChoyProgramsConfig>(DEFAULT_CLIENT_CHOY_PROGRAMS_CONFIG);
   const [isUserSidebarGroupOpen, setIsUserSidebarGroupOpen] = useState(true);
   const [userDashboardData, setUserDashboardData] = useState<UserDashboardData>({
@@ -762,32 +774,9 @@ export default function App() {
   const [newPostType, setNewPostType] = useState<'text' | 'image' | 'video'>('text');
   const [newPostCategory, setNewPostCategory] = useState<'feed' | 'myday' | 'video'>('feed');
   const [feedCategoryFilter, setFeedCategoryFilter] = useState<'all' | 'image' | 'video' | 'music' | 'people'>('all');
-  const [opmTracks, setOpmTracks] = useState<OpmSongTrack[]>(() => {
-    try {
-      const raw = localStorage.getItem('choychat_opm_custom_links_v1');
-      if (!raw) return OPM_PLAYLIST;
-      const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== 'object') return OPM_PLAYLIST;
-      return OPM_PLAYLIST.map((t) => {
-        const u = (parsed as Record<string, unknown>)[t.id];
-        if (typeof u === 'string' && /^https?:\/\//i.test(u) && !/youtube\.com|youtu\.be/i.test(u)) {
-          return { ...t, audioUrl: u };
-        }
-        return t;
-      });
-    } catch {
-      return OPM_PLAYLIST;
-    }
-  });
-  const [currentMusicTrackId, setCurrentMusicTrackId] = useState<string | null>(OPM_PLAYLIST[0].id);
-  const [isMusicPlaying, setIsMusicPlaying] = useState(false);
-  const [musicCurrentTime, setMusicCurrentTime] = useState(0);
-  const [musicDuration, setMusicDuration] = useState(0);
-  const [isMusicShuffle, setIsMusicShuffle] = useState(false);
-  const [isMusicRepeatOne, setIsMusicRepeatOne] = useState(false);
-  const [isMusicMuted, setIsMusicMuted] = useState(false);
-  const [musicVolume, setMusicVolume] = useState(0.85);
-  const opmAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [mediaMusicTracks, setMediaMusicTracks] = useState<MusicTrackItem[]>([]);
+  const [mediaLongVideos, setMediaLongVideos] = useState<LongVideoItem[]>([]);
+  const [postUploadProgress, setPostUploadProgress] = useState<number | null>(null);
   const [newPostNewsfeed, setNewPostNewsfeed] = useState<SelectableNewsfeed>('feed_a');
   const [newsfeedConfig, setNewsfeedConfig] = useState<{ feedATitle: string; feedBTitle: string; feedCTitle: string }>(() => ({
     feedATitle: localStorage.getItem('choychat_nf_a_title') || 'Newsfeed A',
@@ -1640,11 +1629,13 @@ export default function App() {
     | 'acknowledgment'
     | 'marketplace'
     | 'payment_terminal'
+    | 'invest'
     | 'feed'
     | 'profile'
     | 'messages'
     | 'ledger'
     | 'analytics'
+    | 'admin_dashboard'
     | 'admin_approvals'
     | 'admin_knowledge'
     | 'admin_prices'
@@ -1752,6 +1743,7 @@ export default function App() {
     if (tab === 'choyai') return !featureToggles.choyAi;
     if (tab === 'acknowledgment') return !featureToggles.acknowledgment;
     if (tab === 'rules') return !featureToggles.rules;
+    if (tab === 'invest') return !featureToggles.invest;
     return false;
   };
 
@@ -1769,6 +1761,7 @@ export default function App() {
     if (tab === 'acknowledgment') return 'Acknowledgment';
     if (tab === 'marketplace') return 'Food Store & Marketplace';
     if (tab === 'payment_terminal') return 'Payment Terminal';
+    if (tab === 'invest') return 'Invest';
     if (tab === 'feed') {
       if (feedFilter === 'music') return 'Music';
       if (feedFilter === 'video') return 'Videos';
@@ -1782,6 +1775,8 @@ export default function App() {
     if (tab === 'profile') return 'Profile';
     if (tab === 'ledger') return 'Ledger';
     if (tab === 'analytics') return 'Analytics';
+    if (tab === 'admin_dashboard') return 'Admin Dashboard';
+    if (tab === 'admin_approvals') return 'User Verification';
     if (tab === 'admin_choy_setup') return 'Admin Set Up';
     if (tab === 'choyai') return 'Choy AI';
     if (tab === 'github') return 'GitHub';
@@ -2256,6 +2251,12 @@ export default function App() {
       }
       if (data.choyProgramsConfig && typeof data.choyProgramsConfig === 'object') {
         setChoyProgramsConfig(data.choyProgramsConfig as ChoyProgramsConfig);
+      }
+      if (Array.isArray(data.musicTracks)) {
+        setMediaMusicTracks(data.musicTracks as MusicTrackItem[]);
+      }
+      if (Array.isArray(data.longVideos)) {
+        setMediaLongVideos(data.longVideos as LongVideoItem[]);
       }
       if (data.settings) {
         setUnitPrices({
@@ -4961,7 +4962,7 @@ export default function App() {
       setAuthToken(data.token);
       setCurrentUser(data.user);
       setAuthPin('');
-      setActiveTab('feed');
+      setActiveTab(data.user?.role === 'admin' ? 'admin_dashboard' : 'feed');
       if (initialGpsRef.current && data.token) {
         fetch('/api/choy/gps/ping', {
           method: 'POST',
@@ -4974,6 +4975,42 @@ export default function App() {
       }
     } catch (err) {
       setLoginError(err instanceof Error ? err.message : 'Authentication failed');
+    } finally {
+      setAuthSubmitting(false);
+    }
+  };
+
+  const handleCustomerRegister = async (payload: CustomerRegistrationPayload) => {
+    setLoginError('');
+    setAuthSubmitting(true);
+    try {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Customer registration failed');
+      setAuthToken(data.token);
+      setCurrentUser(data.user);
+      setAuthPin('');
+      setActiveTab(data.user?.role === 'admin' ? 'admin_dashboard' : 'feed');
+      if (initialGpsRef.current && data.token) {
+        fetch('/api/choy/gps/ping', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${data.token}`,
+          },
+          body: JSON.stringify(initialGpsRef.current),
+        }).catch(() => {});
+      }
+    } catch (err) {
+      setLoginError(err instanceof Error ? err.message : 'Customer registration failed');
     } finally {
       setAuthSubmitting(false);
     }
@@ -5489,6 +5526,7 @@ export default function App() {
     const file = e.target.files?.[0];
     if (!file) return;
     setIsProcessingPostMedia(true);
+    setPostUploadProgress(null);
     try {
       if (isImageFile(file)) {
         const { blob, dataUrl } = await compressImageToBlob(file);
@@ -5497,28 +5535,21 @@ export default function App() {
         setNewPostType('image');
         setNewPostMediaName(file.name);
       } else if (isVideoFile(file)) {
-        if (file.size > 60 * 1024 * 1024) {
-          showNotice('Video must be 60 MB or smaller.');
+        if (file.size > 500 * 1024 * 1024) {
+          showNotice('Video must be 500 MB or smaller (supports 25–30+ minute videos).');
           return;
         }
-        const cloud = await uploadMediaToCloud(file, 'posts');
-        if (cloud) {
-          setNewPostMedia(cloud.url);
-          setNewPostType('video');
-          setNewPostMediaName(file.name);
-          if (cloud.provider === 'r2') {
-            showNotice('Video saved to Cloudflare R2! Ready to post.');
-          }
-        } else {
-          if (file.size > 6 * 1024 * 1024) {
-            showNotice('Videos over 6 MB require Cloudflare R2 keys (R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_PUBLIC_URL) or Supabase Storage keys in Render.');
-            return;
-          }
-          const dataUrl = await readFileAsDataUrl(file);
-          setNewPostMedia(dataUrl);
-          setNewPostType('video');
-          setNewPostMediaName(file.name);
-        }
+        setPostUploadProgress(1);
+        const uploaded = await uploadFileChunked({
+          file,
+          folder: 'posts',
+          authToken: authToken || undefined,
+          onProgress: (pct) => setPostUploadProgress(pct),
+        });
+        setNewPostMedia(uploaded.url);
+        setNewPostType('video');
+        setNewPostMediaName(file.name);
+        showNotice('Video uploaded! Ready to publish to Newsfeed.');
       } else {
         showNotice('Please select an image or video file.');
       }
@@ -5526,6 +5557,7 @@ export default function App() {
       showNotice(err instanceof Error ? err.message : 'Failed to upload selected file');
     } finally {
       setIsProcessingPostMedia(false);
+      setPostUploadProgress(null);
       e.target.value = '';
     }
   };
@@ -7060,231 +7092,6 @@ export default function App() {
       )
     : chatRoomsList;
 
-  const currentMusicTrack =
-    opmTracks.find((t) => t.id === currentMusicTrackId) || opmTracks[0] || null;
-
-  const startOpmTrack = useCallback(
-    (trackId: string) => {
-      const target = opmTracks.find((t) => t.id === trackId) || opmTracks[0];
-      if (!target) return;
-      const audioEl = opmAudioRef.current;
-      if (!audioEl) return;
-      const srcUrl = getOrRenderOpmTrackAudioUrl(target);
-      if (audioEl.src !== srcUrl) {
-        audioEl.src = srcUrl;
-      }
-      audioEl.currentTime = 0;
-      audioEl.volume = isMusicMuted ? 0 : musicVolume;
-      setCurrentMusicTrackId(target.id);
-      setMusicCurrentTime(0);
-      setMusicDuration(target.durationSec);
-      void audioEl.play().then(() => {
-        setIsMusicPlaying(true);
-      }).catch(() => {
-        setIsMusicPlaying(false);
-      });
-    },
-    [isMusicMuted, musicVolume, opmTracks]
-  );
-
-  const toggleOpmPlayPause = useCallback(() => {
-    const audioEl = opmAudioRef.current;
-    if (!audioEl) return;
-    if (isMusicPlaying) {
-      audioEl.pause();
-      setIsMusicPlaying(false);
-      return;
-    }
-    const target =
-      opmTracks.find((t) => t.id === currentMusicTrackId) || opmTracks[0];
-    if (!target) return;
-    const srcUrl = getOrRenderOpmTrackAudioUrl(target);
-    if (!audioEl.src || audioEl.src !== srcUrl) {
-      audioEl.src = srcUrl;
-      setCurrentMusicTrackId(target.id);
-      setMusicDuration(target.durationSec);
-    }
-    audioEl.volume = isMusicMuted ? 0 : musicVolume;
-    void audioEl.play().then(() => {
-      setIsMusicPlaying(true);
-    }).catch(() => {
-      setIsMusicPlaying(false);
-    });
-  }, [currentMusicTrackId, isMusicMuted, isMusicPlaying, musicVolume, opmTracks]);
-
-  const handleNextOpmTrack = useCallback(() => {
-    if (opmTracks.length === 0) return;
-    const currentIdx = opmTracks.findIndex((t) => t.id === currentMusicTrackId);
-    let nextIdx = 0;
-    if (isMusicShuffle && opmTracks.length > 1) {
-      do {
-        nextIdx = Math.floor(Math.random() * opmTracks.length);
-      } while (nextIdx === currentIdx);
-    } else {
-      nextIdx = currentIdx >= 0 ? (currentIdx + 1) % opmTracks.length : 0;
-    }
-    startOpmTrack(opmTracks[nextIdx].id);
-  }, [currentMusicTrackId, isMusicShuffle, opmTracks, startOpmTrack]);
-
-  const handlePrevOpmTrack = useCallback(() => {
-    if (opmTracks.length === 0) return;
-    const audioEl = opmAudioRef.current;
-    if (audioEl && audioEl.currentTime > 3) {
-      audioEl.currentTime = 0;
-      setMusicCurrentTime(0);
-      return;
-    }
-    const currentIdx = opmTracks.findIndex((t) => t.id === currentMusicTrackId);
-    const prevIdx =
-      currentIdx > 0 ? currentIdx - 1 : Math.max(0, opmTracks.length - 1);
-    startOpmTrack(opmTracks[prevIdx].id);
-  }, [currentMusicTrackId, opmTracks, startOpmTrack]);
-
-  const handleSeekOpm = useCallback((timeSec: number) => {
-    const audioEl = opmAudioRef.current;
-    if (!audioEl) return;
-    audioEl.currentTime = Math.max(0, timeSec);
-    setMusicCurrentTime(Math.max(0, timeSec));
-  }, []);
-
-  const handleOpmVolumeChange = useCallback((val: number) => {
-    const clamped = Math.max(0, Math.min(1, val));
-    setMusicVolume(clamped);
-    setIsMusicMuted(clamped === 0);
-    if (opmAudioRef.current) {
-      opmAudioRef.current.volume = clamped;
-    }
-  }, []);
-
-  const handleToggleOpmMute = useCallback(() => {
-    setIsMusicMuted((prev) => {
-      const next = !prev;
-      if (opmAudioRef.current) {
-        opmAudioRef.current.volume = next ? 0 : musicVolume;
-      }
-      return next;
-    });
-  }, [musicVolume]);
-
-  const handleUploadOpmSongs = useCallback(
-    (files: FileList) => {
-      const added: OpmSongTrack[] = [];
-      Array.from(files).forEach((file, idx) => {
-        if (!file.type.startsWith('audio/') && !/\.(mp3|wav|m4a|ogg|aac|flac|webm)$/i.test(file.name)) {
-          return;
-        }
-        const url = URL.createObjectURL(file);
-        const cleanTitle = file.name.replace(/\.[^/.]+$/, '').replace(/[_-]+/g, ' ').trim() || 'Uploaded Song';
-        const trackId = `custom-${Date.now()}-${idx}`;
-        added.push({
-          id: trackId,
-          title: cleanTitle,
-          artist: currentUser?.name ? `${currentUser.name} · Local Audio` : 'Local Audio',
-          year: String(new Date().getFullYear()),
-          genre: 'Added Track',
-          genreGroup: 'custom',
-          bpm: 100,
-          durationSec: 0,
-          coverGradient: 'from-emerald-600 via-teal-700 to-slate-900',
-          isCustom: true,
-          audioUrl: url,
-        });
-
-        const probe = new Audio(url);
-        probe.addEventListener('loadedmetadata', () => {
-          if (Number.isFinite(probe.duration) && probe.duration > 0) {
-            setOpmTracks((prev) =>
-              prev.map((item) =>
-                item.id === trackId ? { ...item, durationSec: Math.round(probe.duration) } : item
-              )
-            );
-          }
-        });
-      });
-
-      if (added.length === 0) {
-        showNotice('Please select a valid audio file (MP3, WAV, M4A, OGG).');
-        return;
-      }
-
-      setOpmTracks((prev) => [...added, ...prev]);
-      const firstAdded = added[0];
-      const audioEl = opmAudioRef.current;
-      if (audioEl) {
-        audioEl.src = firstAdded.audioUrl || '';
-        audioEl.currentTime = 0;
-        audioEl.volume = isMusicMuted ? 0 : musicVolume;
-        setCurrentMusicTrackId(firstAdded.id);
-        setMusicCurrentTime(0);
-        void audioEl.play().then(() => setIsMusicPlaying(true)).catch(() => setIsMusicPlaying(false));
-      }
-    },
-    [currentUser?.name, isMusicMuted, musicVolume]
-  );
-
-  const handleRemoveCustomOpmTrack = useCallback(
-    (trackId: string) => {
-      const target = opmTracks.find((t) => t.id === trackId);
-      if (target?.isCustom && target.audioUrl) {
-        URL.revokeObjectURL(target.audioUrl);
-      }
-      setOpmTracks((prev) => {
-        const next = prev.filter((t) => t.id !== trackId);
-        if (currentMusicTrackId === trackId) {
-          if (opmAudioRef.current) {
-            opmAudioRef.current.pause();
-            opmAudioRef.current.removeAttribute('src');
-          }
-          setIsMusicPlaying(false);
-          setMusicCurrentTime(0);
-          setCurrentMusicTrackId(next[0]?.id || null);
-        }
-        return next;
-      });
-    },
-    [currentMusicTrackId, opmTracks]
-  );
-
-  const pauseOpmAudio = useCallback(() => {
-    if (opmAudioRef.current) {
-      opmAudioRef.current.pause();
-    }
-    setIsMusicPlaying(false);
-  }, []);
-
-  const handleAttachTrackAudioUrl = useCallback(
-    (trackId: string, audioUrl: string | null) => {
-      setOpmTracks((prev) =>
-        prev.map((t) =>
-          t.id === trackId ? { ...t, audioUrl: audioUrl || undefined } : t
-        )
-      );
-      if (audioUrl && opmAudioRef.current) {
-        const audioEl = opmAudioRef.current;
-        audioEl.src = audioUrl;
-        audioEl.currentTime = 0;
-        audioEl.volume = isMusicMuted ? 0 : musicVolume;
-        setCurrentMusicTrackId(trackId);
-        setMusicCurrentTime(0);
-        void audioEl
-          .play()
-          .then(() => setIsMusicPlaying(true))
-          .catch(() => setIsMusicPlaying(false));
-      } else if (!audioUrl && currentMusicTrackId === trackId && opmAudioRef.current) {
-        opmAudioRef.current.pause();
-        setIsMusicPlaying(false);
-      }
-    },
-    [currentMusicTrackId, isMusicMuted, musicVolume]
-  );
-
-  useEffect(() => {
-    if (isInVideoCall && isMusicPlaying && opmAudioRef.current) {
-      opmAudioRef.current.pause();
-      setIsMusicPlaying(false);
-    }
-  }, [isInVideoCall, isMusicPlaying]);
-
   // Automatically record analytical views for visible Newsfeed posts once per session per post
   const visibleFeedPostIdsKey =
     activeTab === 'feed' && feedCategoryFilter !== 'people' && feedCategoryFilter !== 'music'
@@ -7384,211 +7191,32 @@ export default function App() {
     );
   }
 
-  // Auth Gate: First-Run Admin Setup OR Standard Phone + PIN Login / Register
+  // Public SEO Landing Page, Blog, Dynamic Pages & Customer Registration / Sign In Portal (Accessible without login)
   if (!authToken || !currentUser) {
     return (
-      <div className="fixed inset-0 bg-emerald-50 dark:bg-emerald-950 text-emerald-950 dark:text-slate-100 flex items-center justify-center p-4 overflow-hidden">
-        <div className="absolute inset-0 z-0 flex items-center justify-center bg-emerald-50 dark:bg-emerald-950">
-          <img src={DEFAULT_AVATAR} alt="" className="w-full h-full object-contain opacity-25 dark:opacity-35" />
-          <div className="absolute inset-0 bg-emerald-50/75 dark:bg-emerald-950/65"></div>
-        </div>
-
-        <div className="relative z-15 w-[95%] max-w-sm max-h-[92vh] overflow-y-auto bg-white/95 dark:bg-emerald-950/90 border border-emerald-300 dark:border-emerald-500/40 rounded-3xl p-6 shadow-2xl space-y-4">
-          <button
-            type="button"
-            onClick={toggleLightDark}
-            aria-label={resolvedTheme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-            title={resolvedTheme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
-            className="absolute top-4 right-4 p-2 rounded-xl bg-emerald-100/90 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-amber-300 hover:bg-emerald-200 dark:hover:bg-emerald-800 transition"
-          >
-            {resolvedTheme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-          </button>
-
-          <div className="text-center space-y-1.5">
-            <div className="w-16 h-24 rounded-2xl overflow-hidden border border-emerald-500 dark:border-emerald-400 bg-emerald-50 dark:bg-emerald-950 p-0.5 mx-auto shadow-md">
-              <img src={DEFAULT_AVATAR} alt="" className="w-full h-full object-contain rounded-xl" />
-            </div>
-            <h1 className="text-3xl font-black tracking-[0.22em] uppercase bg-gradient-to-r from-emerald-900 via-emerald-700 to-amber-700 dark:from-amber-200 dark:via-emerald-200 dark:to-amber-300 bg-clip-text text-transparent drop-shadow-[0_2px_10px_rgba(251,191,36,0.25)]">
-              CHOY CHAT
-            </h1>
-            <p className="text-[11px] text-emerald-700 dark:text-emerald-300 flex items-center justify-center gap-1.5">
-              <Cloud className="w-3.5 h-3.5" />
-              {storageMode === 'postgres'
-                ? 'PostgreSQL Cloud Sync Connected'
-                : storageStatus === 'auth_failed'
-                ? 'PostgreSQL Auth Failed (Temporary Storage)'
-                : storageStatus === 'connection_failed'
-                ? 'PostgreSQL Connection Failed (Temporary Storage)'
-                : 'Temporary Local Storage (Set DATABASE_URL)'}
-            </p>
-          </div>
-
-          {loginError && (
-            <div className="p-2.5 rounded-xl bg-red-50 dark:bg-red-500/15 border border-red-300 dark:border-red-400/40 text-red-800 dark:text-red-200 text-xs text-center">
-              {loginError}
-            </div>
-          )}
-
-          {needsAdminSetup ? (
-            <form onSubmit={handleFirstRunAdminSetup} className="space-y-3 text-xs">
-              <div className="p-2.5 rounded-xl bg-white dark:bg-emerald-900/70 border border-emerald-500/40 text-emerald-800 dark:text-emerald-200 text-[11px] leading-relaxed">
-                <strong className="text-emerald-950 dark:text-white">First-Run Admin Setup:</strong> I-claim imong Admin account gamit imong phone number ug gusto nimong PIN.
-              </div>
-              {storageMode !== 'postgres' && (
-                <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/60 border border-amber-400/60 text-amber-900 dark:text-amber-200 text-[11px] leading-relaxed">
-                  <strong>Pahinumdom:</strong> Wala pa naka-connect sa PostgreSQL ({storageStatus}). I-butang ang valid nga <code>DATABASE_URL</code> (ug optional <code>ADMIN_PHONE</code> / <code>ADMIN_PIN</code>) sa Render Environment aron dili mabalik sa Claim Admin kung mo-restart ang server.
-                </div>
-              )}
-              <div>
-                <label className="block text-emerald-800 dark:text-slate-300 mb-1">Admin Name</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Choy Admin"
-                  value={authName}
-                  onChange={(e) => setAuthName(e.target.value)}
-                  className="w-full p-2.5 bg-white dark:bg-slate-900 border border-emerald-300 dark:border-slate-700 rounded-xl text-emerald-950 dark:text-white"
-                />
-              </div>
-              <div>
-                <label className="block text-emerald-800 dark:text-slate-300 mb-1">Admin Phone Number</label>
-                <input
-                  type="text"
-                  inputMode="tel"
-                  autoComplete="tel"
-                  required
-                  placeholder="09361223978"
-                  value={authPhone}
-                  onChange={(e) => setAuthPhone(e.target.value)}
-                  className="w-full p-2.5 bg-white dark:bg-slate-900 border border-emerald-300 dark:border-slate-700 rounded-xl text-emerald-950 dark:text-white"
-                />
-              </div>
-              <div>
-                <label className="block text-emerald-800 dark:text-slate-300 mb-1">Create Admin PIN (min. 4 chars)</label>
-                <div className="relative">
-                  <input
-                    type={showAuthPin ? 'text' : 'password'}
-                    required
-                    minLength={4}
-                    placeholder="Enter your secret PIN..."
-                    value={authPin}
-                    onChange={(e) => setAuthPin(e.target.value)}
-                    className="w-full p-2.5 pr-10 bg-white dark:bg-slate-900 border border-emerald-300 dark:border-slate-700 rounded-xl text-emerald-950 dark:text-white"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowAuthPin((v) => !v)}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-emerald-700/80 dark:text-slate-400 hover:text-emerald-950 dark:hover:text-white p-1"
-                    title={showAuthPin ? 'Hide PIN' : 'Show PIN'}
-                  >
-                    {showAuthPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
-              <button
-                type="submit"
-                disabled={authSubmitting}
-                className="w-full py-3 bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-extrabold rounded-xl shadow flex items-center justify-center gap-2 transition disabled:opacity-60"
-              >
-                <ShieldCheck className="w-4 h-4" />
-                {authSubmitting ? 'Setting up Admin...' : 'Claim Admin Account'}
-              </button>
-            </form>
-          ) : (
-            <>
-              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-800 text-xs">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAuthMode('login');
-                    setLoginError('');
-                  }}
-                  className={`py-2 rounded-lg font-bold flex items-center justify-center gap-1.5 transition ${
-                    authMode === 'login' ? 'bg-emerald-400 text-slate-950 shadow' : 'text-emerald-800 dark:text-emerald-200'
-                  }`}
-                >
-                  <LogIn className="w-3.5 h-3.5" /> Login
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAuthMode('register');
-                    setLoginError('');
-                  }}
-                  className={`py-2 rounded-lg font-bold flex items-center justify-center gap-1.5 transition ${
-                    authMode === 'register' ? 'bg-emerald-400 text-slate-950 shadow' : 'text-emerald-800 dark:text-emerald-200'
-                  }`}
-                >
-                  <UserPlus className="w-3.5 h-3.5" /> Sign Up
-                </button>
-              </div>
-
-              <form onSubmit={handleAuthSubmit} className="space-y-3 text-xs">
-                {authMode === 'register' && (
-                  <div>
-                    <label className="block text-emerald-800 dark:text-slate-300 mb-1">Full Name</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="Your name..."
-                      value={authName}
-                      onChange={(e) => setAuthName(e.target.value)}
-                      className="w-full p-2.5 bg-white dark:bg-slate-900 border border-emerald-300 dark:border-slate-700 rounded-xl text-emerald-950 dark:text-white"
-                    />
-                  </div>
-                )}
-                <div>
-                  <label className="block text-emerald-800 dark:text-slate-300 mb-1">Phone</label>
-                  <input
-                    type="text"
-                    inputMode="tel"
-                    autoComplete="tel"
-                    required
-                    placeholder="09..."
-                    value={authPhone}
-                    onChange={(e) => setAuthPhone(e.target.value)}
-                    className="w-full p-2.5 bg-white dark:bg-slate-900 border border-emerald-300 dark:border-slate-700 rounded-xl text-emerald-950 dark:text-white"
-                  />
-                </div>
-                <div>
-                  <label className="block text-emerald-800 dark:text-slate-300 mb-1">PIN</label>
-                  <div className="relative">
-                    <input
-                      type={showAuthPin ? 'text' : 'password'}
-                      required
-                      minLength={4}
-                      placeholder="Enter PIN..."
-                      value={authPin}
-                      onChange={(e) => setAuthPin(e.target.value)}
-                      className="w-full p-2.5 pr-10 bg-white dark:bg-slate-900 border border-emerald-300 dark:border-slate-700 rounded-xl text-emerald-950 dark:text-white"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowAuthPin((v) => !v)}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-emerald-700/80 dark:text-slate-400 hover:text-emerald-950 dark:hover:text-white p-1"
-                      title={showAuthPin ? 'Hide PIN' : 'Show PIN'}
-                    >
-                      {showAuthPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
-                <button
-                  type="submit"
-                  disabled={authSubmitting}
-                  className="w-full py-3 bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold rounded-xl shadow transition disabled:opacity-60"
-                >
-                  {authSubmitting ? 'Please wait...' : authMode === 'register' ? 'Create Account' : 'Login'}
-                </button>
-              </form>
-            </>
-          )}
-
-          <div className="pt-2 border-t border-emerald-200 dark:border-emerald-800/80">
-            <PWAInstallButton fullWidth />
-          </div>
-        </div>
-        <OfflineIndicator />
-      </div>
+      <PublicLandingPortal
+        resolvedTheme={resolvedTheme}
+        toggleLightDark={toggleLightDark}
+        needsAdminSetup={needsAdminSetup}
+        storageMode={storageMode}
+        storageStatus={storageStatus}
+        authMode={authMode}
+        setAuthMode={setAuthMode}
+        authName={authName}
+        setAuthName={setAuthName}
+        authPhone={authPhone}
+        setAuthPhone={setAuthPhone}
+        authPin={authPin}
+        setAuthPin={setAuthPin}
+        showAuthPin={showAuthPin}
+        setShowAuthPin={setShowAuthPin}
+        authSubmitting={authSubmitting}
+        loginError={loginError}
+        setLoginError={setLoginError}
+        onLoginSubmit={handleAuthSubmit}
+        onFirstRunAdminSubmit={handleFirstRunAdminSetup}
+        onCustomerRegisterSubmit={handleCustomerRegister}
+      />
     );
   }
 
@@ -8260,6 +7888,7 @@ export default function App() {
               { id: 'choy_pro' as const, label: 'Choy Pro', icon: Crown },
               { id: 'subscription' as const, label: 'Subscription', icon: CreditCard },
               { id: 'wallet' as const, label: 'Wallet', icon: Wallet },
+              { id: 'invest' as const, label: 'Invest', icon: TrendingUp },
               { id: 'acknowledgment' as const, label: 'Acknowledgement', icon: FileCheck2 },
               { id: 'profile' as const, label: 'Profile & PIN', icon: User },
               { id: 'user_created_name' as const, label: 'Created Name', icon: BadgeCheck },
@@ -8269,6 +7898,8 @@ export default function App() {
               const isActive =
                 item.id === 'payment_terminal'
                   ? activeTab === 'payment_terminal' && paymentTerminalView !== 'admin'
+                  : item.id === 'invest'
+                  ? activeTab === 'invest' && investView !== 'admin'
                   : activeTab === item.id;
               return (
                 <button
@@ -8277,6 +7908,9 @@ export default function App() {
                   onClick={() => {
                     if (item.id === 'payment_terminal') {
                       setPaymentTerminalView('terminal');
+                    }
+                    if (item.id === 'invest') {
+                      setInvestView('dashboard');
                     }
                     setActiveTab(item.id);
                   }}
@@ -8359,6 +7993,18 @@ export default function App() {
                   Admin Panel
                 </div>
                 <div className="flex flex-col gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('admin_dashboard')}
+                    className={`w-full px-3.5 py-2.5 rounded-xl flex items-center gap-3 text-[13.5px] text-left transition whitespace-nowrap ${
+                      activeTab === 'admin_dashboard'
+                        ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                        : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                    }`}
+                  >
+                    <LayoutDashboard className="w-[18px] h-[18px] shrink-0" />
+                    <span className="truncate">Admin Dashboard</span>
+                  </button>
                   <button
                     type="button"
                     onClick={() => setActiveTab('admin_security')}
@@ -8448,6 +8094,21 @@ export default function App() {
                   </button>
                   <button
                     type="button"
+                    onClick={() => {
+                      setInvestView('admin');
+                      setActiveTab('invest');
+                    }}
+                    className={`w-full px-3.5 py-2.5 rounded-xl flex items-center gap-3 text-[13.5px] text-left transition whitespace-nowrap ${
+                      activeTab === 'invest' && investView === 'admin'
+                        ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                        : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                    }`}
+                  >
+                    <TrendingUp className="w-[18px] h-[18px] shrink-0" />
+                    <span className="truncate">Set Up: Invest</span>
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setActiveTab('ledger')}
                     className={`w-full px-3.5 py-2.5 rounded-xl flex items-center gap-3 text-[13.5px] text-left transition whitespace-nowrap ${
                       activeTab === 'ledger'
@@ -8504,7 +8165,7 @@ export default function App() {
                     }`}
                   >
                     <ShieldCheck className="w-[18px] h-[18px] shrink-0" />
-                    <span className="truncate">User Accounts</span>
+                    <span className="truncate">Accounts &amp; ID Approvals</span>
                   </button>
                 </div>
               </div>
@@ -8638,26 +8299,6 @@ export default function App() {
         )}
 
         <div className="flex-1 overflow-y-auto overscroll-y-contain touch-pan-y [-webkit-overflow-scrolling:touch] p-4 pb-28 md:p-6 md:pb-6 min-w-0">
-          {/* Hidden Audio Element backing Newsfeed OPM Music Player */}
-          <audio
-            ref={opmAudioRef}
-            className="hidden"
-            onTimeUpdate={(e) => setMusicCurrentTime(e.currentTarget.currentTime)}
-            onLoadedMetadata={(e) => {
-              if (Number.isFinite(e.currentTarget.duration) && e.currentTarget.duration > 0) {
-                setMusicDuration(e.currentTarget.duration);
-              }
-            }}
-            onEnded={() => {
-              if (isMusicRepeatOne && opmAudioRef.current) {
-                opmAudioRef.current.currentTime = 0;
-                void opmAudioRef.current.play().catch(() => setIsMusicPlaying(false));
-                return;
-              }
-              handleNextOpmTrack();
-            }}
-          />
-
           {/* SEPARATE FULL-WIDTH NEWSFEED DASHBOARD */}
           {activeTab === 'feed' && (
             <div className="max-w-7xl mx-auto space-y-5">
@@ -8694,7 +8335,7 @@ export default function App() {
                         </span>
                       </div>
                       <p className="text-xs text-emerald-700 dark:text-emerald-300/85 truncate mt-0.5">
-                        {filteredPosts.length} posts · {imageFeedPosts.length} photos · {videoFeedPosts.length + ONE_PIECE_LATEST_30_EPISODES.length} videos · {feedPeopleList.length} members
+                        {filteredPosts.length} posts · {imageFeedPosts.length} photos · {videoFeedPosts.length + mediaLongVideos.length} videos · {mediaMusicTracks.length} MP3s · {feedPeopleList.length} members
                       </p>
                     </div>
                   </div>
@@ -9002,7 +8643,13 @@ export default function App() {
                       >
                         <ImageIcon className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-400" />
                         <Plus className="w-3 h-3 text-emerald-700 dark:text-emerald-400 -ml-1" />
-                        <span>{isProcessingPostMedia ? 'Loading...' : 'Image / Video'}</span>
+                        <span>
+                          {isProcessingPostMedia
+                            ? postUploadProgress !== null
+                              ? `Uploading ${postUploadProgress}%...`
+                              : 'Loading...'
+                            : 'Image / Video (Up to 30m)'}
+                        </span>
                       </button>
                       <button
                         type="submit"
@@ -9034,13 +8681,13 @@ export default function App() {
                   {
                     id: 'video' as const,
                     label: 'Video',
-                    count: videoFeedPosts.length + ONE_PIECE_LATEST_30_EPISODES.length,
+                    count: videoFeedPosts.length + mediaLongVideos.length,
                     icon: <Video className="w-3.5 h-3.5 shrink-0" />,
                   },
                   {
                     id: 'music' as const,
-                    label: 'Music',
-                    count: opmTracks.length,
+                    label: 'MP3 Music',
+                    count: mediaMusicTracks.length,
                     icon: <Music className="w-3.5 h-3.5 shrink-0" />,
                   },
                   {
@@ -9078,81 +8725,17 @@ export default function App() {
                 })}
               </div>
 
-              {/* Persistent Compact Now Playing Bar when listening while viewing feed posts */}
-              {feedCategoryFilter !== 'music' && isMusicPlaying && currentMusicTrack && (
-                <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl px-3.5 py-2.5 shadow-sm flex items-center justify-between gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setFeedCategoryFilter('music')}
-                    className="flex items-center gap-2.5 min-w-0 flex-1 text-left"
-                  >
-                    <div
-                      className={`w-9 h-9 rounded-xl bg-gradient-to-br ${currentMusicTrack.coverGradient} flex items-center justify-center text-white shrink-0`}
-                    >
-                      <Disc3 className="w-5 h-5 motion-safe:animate-spin" style={{ animationDuration: '5s' }} />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-xs font-extrabold text-emerald-950 dark:text-white truncate">
-                        {currentMusicTrack.title}
-                      </p>
-                      <p className="text-[11px] text-emerald-800/80 dark:text-emerald-200/80 truncate">
-                        {currentMusicTrack.artist} · OPM Playing
-                      </p>
-                    </div>
-                  </button>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <button
-                      type="button"
-                      onClick={toggleOpmPlayPause}
-                      aria-label={isMusicPlaying ? 'Pause music' : 'Play music'}
-                      className="min-h-[40px] min-w-[40px] rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 flex items-center justify-center transition"
-                    >
-                      {isMusicPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleNextOpmTrack}
-                      aria-label="Next OPM song"
-                      className="min-h-[40px] min-w-[40px] rounded-xl bg-emerald-100 dark:bg-emerald-950 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-200 dark:hover:bg-emerald-800 flex items-center justify-center transition"
-                    >
-                      <SkipForward className="w-4 h-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setFeedCategoryFilter('music')}
-                      className="min-h-[40px] px-3 rounded-xl border border-emerald-300 dark:border-emerald-700 text-xs font-bold text-emerald-900 dark:text-emerald-100 hover:bg-emerald-100 dark:hover:bg-emerald-800 whitespace-nowrap transition"
-                    >
-                      Open Music
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Public Newsfeed Posts, OPM Music Player, or People Directory */}
+              {/* Public Newsfeed Posts, MP3 Music Library, or People Directory */}
               {feedCategoryFilter === 'music' ? (
-                <NewsfeedMusicPlayer
-                  tracks={opmTracks}
-                  currentTrackId={currentMusicTrackId}
-                  isPlaying={isMusicPlaying}
-                  currentTime={musicCurrentTime}
-                  duration={musicDuration}
-                  isShuffle={isMusicShuffle}
-                  isRepeatOne={isMusicRepeatOne}
-                  isMuted={isMusicMuted}
-                  volume={musicVolume}
-                  onSelectTrack={startOpmTrack}
-                  onTogglePlay={toggleOpmPlayPause}
-                  onPauseAudio={pauseOpmAudio}
-                  onPrevTrack={handlePrevOpmTrack}
-                  onNextTrack={handleNextOpmTrack}
-                  onSeek={handleSeekOpm}
-                  onToggleShuffle={() => setIsMusicShuffle((p) => !p)}
-                  onToggleRepeatOne={() => setIsMusicRepeatOne((p) => !p)}
-                  onToggleMute={handleToggleOpmMute}
-                  onVolumeChange={handleOpmVolumeChange}
-                  onUploadSongs={handleUploadOpmSongs}
-                  onAttachTrackAudioUrl={handleAttachTrackAudioUrl}
-                  onRemoveCustomTrack={handleRemoveCustomOpmTrack}
+                <Mp3MusicLibraryPanel
+                  tracks={mediaMusicTracks}
+                  currentUser={{
+                    id: currentUser.id,
+                    name: currentUser.name,
+                    role: currentUser.role,
+                  }}
+                  authToken={authToken || undefined}
+                  onTracksChanged={(next) => setMediaMusicTracks(next)}
                 />
               ) : feedCategoryFilter === 'people' ? (
                 <div className="space-y-3">
@@ -9270,7 +8853,18 @@ export default function App() {
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {feedCategoryFilter === 'video' && <OnePieceEpisodesPanel />}
+                  {feedCategoryFilter === 'video' && (
+                    <LongVideoHubPanel
+                      videos={mediaLongVideos}
+                      currentUser={{
+                        id: currentUser.id,
+                        name: currentUser.name,
+                        role: currentUser.role,
+                      }}
+                      authToken={authToken || undefined}
+                      onVideosChanged={(next) => setMediaLongVideos(next)}
+                    />
+                  )}
 
                   {categoryFilteredPosts.length === 0 ? (
                     feedCategoryFilter === 'video' ? (
@@ -9707,9 +9301,9 @@ export default function App() {
                             : 'bg-emerald-50/70 dark:bg-emerald-950/70 border-emerald-200 dark:border-emerald-800/70 hover:border-emerald-400'
                         }`}
                       >
-                        <div className="text-[11px] text-emerald-700 dark:text-emerald-300 font-semibold">Videos &amp; Anime</div>
+                        <div className="text-[11px] text-emerald-700 dark:text-emerald-300 font-semibold">Videos (30m+)</div>
                         <div className="text-lg font-extrabold font-mono tabular-nums text-emerald-950 dark:text-white mt-0.5">
-                          {videoFeedPosts.length + ONE_PIECE_LATEST_30_EPISODES.length}
+                          {videoFeedPosts.length + mediaLongVideos.length}
                         </div>
                       </button>
                       <button
@@ -9721,9 +9315,9 @@ export default function App() {
                             : 'bg-emerald-50/70 dark:bg-emerald-950/70 border-emerald-200 dark:border-emerald-800/70 hover:border-emerald-400'
                         }`}
                       >
-                        <div className="text-[11px] text-emerald-700 dark:text-emerald-300 font-semibold">OPM Music</div>
+                        <div className="text-[11px] text-emerald-700 dark:text-emerald-300 font-semibold">MP3 Music</div>
                         <div className="text-lg font-extrabold font-mono tabular-nums text-emerald-950 dark:text-white mt-0.5">
-                          {opmTracks.length}
+                          {mediaMusicTracks.length}
                         </div>
                       </button>
                     </div>
@@ -9768,57 +9362,27 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* OPM Quick Player Card */}
-                  {currentMusicTrack && (
-                    <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 shadow-xs space-y-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-emerald-950 dark:text-white">
-                          <Music className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                          <span>OPM Music Deck</span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setFeedCategoryFilter('music')}
-                          className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:underline"
-                        >
-                          Open Player
-                        </button>
+                  {/* MP3 Music Library Quick Card */}
+                  <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 shadow-xs space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-emerald-950 dark:text-white">
+                        <Music className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                        <span>MP3 Music Library</span>
                       </div>
-                      <div className="flex items-center gap-3">
-                        <div
-                          className={`w-10 h-10 rounded-xl bg-gradient-to-br ${currentMusicTrack.coverGradient} flex items-center justify-center text-white shrink-0`}
-                        >
-                          <Disc3 className={`w-5 h-5 ${isMusicPlaying ? 'motion-safe:animate-spin' : ''}`} style={{ animationDuration: '5s' }} />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-xs font-extrabold text-emerald-950 dark:text-white truncate">
-                            {currentMusicTrack.title}
-                          </div>
-                          <div className="text-[11px] text-emerald-700 dark:text-emerald-300/80 truncate">
-                            {currentMusicTrack.artist}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1 shrink-0">
-                          <button
-                            type="button"
-                            onClick={toggleOpmPlayPause}
-                            aria-label={isMusicPlaying ? 'Pause OPM music' : 'Play OPM music'}
-                            className="w-9 h-9 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 flex items-center justify-center transition shadow-xs"
-                          >
-                            {isMusicPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleNextOpmTrack}
-                            aria-label="Next OPM song"
-                            className="w-9 h-9 rounded-xl bg-emerald-100 dark:bg-emerald-950 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-200 dark:hover:bg-emerald-800 flex items-center justify-center transition"
-                          >
-                            <SkipForward className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setFeedCategoryFilter('music')}
+                        className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:underline"
+                      >
+                        Open MP3s
+                      </button>
                     </div>
-                  )}
+                    <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
+                      {mediaMusicTracks.length > 0
+                        ? `${mediaMusicTracks.length} uploaded MP3 song${mediaMusicTracks.length === 1 ? '' : 's'} ready to stream & download.`
+                        : 'Upload your own MP3 songs into the app to play and download anytime.'}
+                    </p>
+                  </div>
 
                   {/* Active Members in Newsfeed */}
                   <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 shadow-xs space-y-3">
@@ -10128,7 +9692,18 @@ export default function App() {
                 (m) => m.mediaType === 'video' && Boolean(m.mediaUrl) && !blockedUsers.includes(m.sender)
               );
               return (
-                <div className="max-w-2xl mx-auto space-y-4">
+                <div className="max-w-4xl mx-auto space-y-4">
+                  <LongVideoHubPanel
+                    videos={mediaLongVideos}
+                    currentUser={{
+                      id: currentUser.id,
+                      name: currentUser.name,
+                      role: currentUser.role,
+                    }}
+                    authToken={authToken || undefined}
+                    onVideosChanged={(next) => setMediaLongVideos(next)}
+                  />
+
                   <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 space-y-3">
                     <div className="flex items-center justify-between">
                       <div className="text-xs font-bold text-emerald-950 dark:text-white flex items-center gap-2">
@@ -10138,7 +9713,7 @@ export default function App() {
                     </div>
                     {sharedChatVideos.length === 0 ? (
                       <div className="py-6 text-center text-xs text-emerald-700 dark:text-emerald-300">
-                        No shared videos from chats yet. Share a video link in Messages to sync it across all devices.
+                        No shared videos from chats yet. Share a video in Messages or upload a 25–30 min video above!
                       </div>
                     ) : (
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -10171,15 +9746,6 @@ export default function App() {
                         ))}
                       </div>
                     )}
-                  </div>
-
-                  <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 space-y-2">
-                    <div className="text-xs font-bold text-emerald-950 dark:text-white">Video Streams & Entertainment</div>
-                    <ChatVideoPlayer
-                      src="https://www.w3schools.com/html/mov_bbb.mp4"
-                      title="Featured Stream"
-                      subtitle="HD Audio"
-                    />
                   </div>
                 </div>
               );
@@ -10473,12 +10039,23 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* PROFILE (ADMIN COPY) */}
-                  <ProfileAdminCopyCard
-                    currentUser={currentUser}
+                  {/* PROFILE VERIFICATION (KYC) — REQUIRED FOR ORDERS */}
+                  <ProfileKycVerificationCard
+                    currentUser={{
+                      id: currentUser.id,
+                      name: currentUser.name,
+                      phone: currentUser.phone,
+                      role: currentUser.role,
+                    }}
+                    authToken={authToken}
                     dashboard={{ ...userDashboardData, userId: currentUser.id }}
-                    newsfeedLabel={getNewsfeedLabel(currentUser.newsfeed)}
-                    onSendToAdminChat={handleSendAdminCopyToAdminChat}
+                    onDashboardUpdated={(next) => setUserDashboardData(next)}
+                    onZoomImage={(img) =>
+                      setZoomedImage({
+                        src: img.src,
+                        caption: img.caption || `${currentUser.name} • Valid ID`,
+                      })
+                    }
                   />
 
                   {/* My Recent Posts */}
@@ -12950,8 +12527,34 @@ export default function App() {
           )}
 
           {/* ADMIN TABS */}
+          {activeTab === 'admin_dashboard' && isAdmin && (
+            <AdminCommandDashboard
+              authToken={authToken || undefined}
+              onNavigateUserVerification={() => setActiveTab('admin_approvals')}
+              onNavigateFeatureToggles={() => {
+                setAdminChoySetupTab('feature_toggles');
+                setActiveTab('admin_choy_setup');
+              }}
+              onNavigateInvestSetup={() => {
+                setInvestView('admin');
+                setActiveTab('invest');
+              }}
+              onNavigateSecurityStudio={() => setActiveTab('admin_security')}
+            />
+          )}
+
           {activeTab === 'admin_approvals' && isAdmin && (
             <div className="max-w-4xl mx-auto space-y-4">
+              <AdminKycApprovalsPanel
+                authToken={authToken}
+                onZoomImage={(img) =>
+                  setZoomedImage({
+                    src: img.src,
+                    caption: img.caption || 'Member Valid ID',
+                  })
+                }
+              />
+
               <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
@@ -13257,6 +12860,24 @@ export default function App() {
               choyProgramsConfig={choyProgramsConfig}
               initialView={paymentTerminalView}
               onOwnDashboardUpdated={(next) => setUserDashboardData(next)}
+            />
+          )}
+
+          {/* CHOY INVEST DASHBOARD & ADMIN SET UP */}
+          {!activeTabBlockedComingSoon && activeTab === 'invest' && currentUser && (
+            <InvestPanel
+              currentUser={{
+                id: currentUser.id,
+                name: currentUser.name,
+                phone: currentUser.phone,
+                role: currentUser.role,
+              }}
+              authToken={authToken || undefined}
+              dashboard={userDashboardData}
+              choyProgramsConfig={choyProgramsConfig}
+              initialView={investView}
+              onOwnDashboardUpdated={(next) => setUserDashboardData(next)}
+              onConfigSaved={(next) => setChoyProgramsConfig(next)}
             />
           )}
 
@@ -14413,6 +14034,7 @@ export default function App() {
                   { id: 'choy_pro' as const, label: 'Choy Pro', icon: Crown },
                   { id: 'subscription' as const, label: 'Subscription', icon: CreditCard },
                   { id: 'wallet' as const, label: 'Wallet', icon: Wallet },
+                  { id: 'invest' as const, label: 'Invest', icon: TrendingUp },
                   { id: 'acknowledgment' as const, label: 'Acknowledgement', icon: FileCheck2 },
                   { id: 'profile' as const, label: 'Profile & PIN', icon: User },
                   { id: 'user_created_name' as const, label: 'Created Name', icon: BadgeCheck },
@@ -14422,6 +14044,8 @@ export default function App() {
                   const isActive =
                     item.id === 'payment_terminal'
                       ? activeTab === 'payment_terminal' && paymentTerminalView !== 'admin'
+                      : item.id === 'invest'
+                      ? activeTab === 'invest' && investView !== 'admin'
                       : activeTab === item.id;
                   return (
                     <button
@@ -14430,6 +14054,9 @@ export default function App() {
                       onClick={() => {
                         if (item.id === 'payment_terminal') {
                           setPaymentTerminalView('terminal');
+                        }
+                        if (item.id === 'invest') {
+                          setInvestView('dashboard');
                         }
                         setActiveTab(item.id);
                         setIsMenuDrawerOpen(false);
@@ -14516,6 +14143,22 @@ export default function App() {
                       Admin Panel
                     </div>
                     <div className="flex flex-col gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab('admin_dashboard');
+                          setIsMenuDrawerOpen(false);
+                        }}
+                        className={`w-full px-4 py-3 rounded-xl flex items-center gap-3.5 text-[14px] text-left transition whitespace-nowrap ${
+                          activeTab === 'admin_dashboard'
+                            ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                            : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                        }`}
+                      >
+                        <LayoutDashboard className="w-5 h-5 shrink-0" />
+                        <span className="truncate">Admin Dashboard</span>
+                      </button>
+
                       <button
                         type="button"
                         onClick={() => {
@@ -14615,6 +14258,23 @@ export default function App() {
                       >
                         <QrCode className="w-5 h-5 shrink-0" />
                         <span className="truncate">Set Up: Payment Terminal</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setInvestView('admin');
+                          setActiveTab('invest');
+                          setIsMenuDrawerOpen(false);
+                        }}
+                        className={`w-full px-4 py-3 rounded-xl flex items-center gap-3.5 text-[14px] text-left transition whitespace-nowrap ${
+                          activeTab === 'invest' && investView === 'admin'
+                            ? 'bg-[#FF5A1F] text-white font-bold shadow-sm'
+                            : 'text-white/90 hover:bg-white/10 hover:text-white font-medium'
+                        }`}
+                      >
+                        <TrendingUp className="w-5 h-5 shrink-0" />
+                        <span className="truncate">Set Up: Invest</span>
                       </button>
 
                       <button

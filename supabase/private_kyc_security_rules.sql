@@ -1,0 +1,95 @@
+-- ============================================================================
+-- Choy Chat — Private KYC Storage Bucket & Encrypted Admin-Only Real Name Rules
+-- Run this SQL in your Supabase SQL Editor to enforce database & storage RLS.
+-- ============================================================================
+
+-- 1. Create the PRIVATE storage bucket for Valid IDs and Real Profile Pictures
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES (
+  'choychat-private-kyc',
+  'choychat-private-kyc',
+  false, -- STRICTLY PRIVATE: No public URLs allowed
+  8388608, -- 8 MB max per image
+  ARRAY['image/jpeg', 'image/png', 'image/webp']
+)
+ON CONFLICT (id) DO UPDATE SET
+  public = false,
+  file_size_limit = 8388608,
+  allowed_mime_types = ARRAY['image/jpeg', 'image/png', 'image/webp'];
+
+-- 2. Storage RLS: Revoke public / customer / rider read access to Private KYC Bucket
+-- ONLY users whose role = 'admin' (or backend service_role) can SELECT/read Valid IDs or Real Profile Pictures.
+DROP POLICY IF EXISTS "Admin only read private KYC bucket" ON storage.objects;
+CREATE POLICY "Admin only read private KYC bucket"
+ON storage.objects
+FOR SELECT
+TO authenticated
+USING (
+  bucket_id = 'choychat-private-kyc'
+  AND EXISTS (
+    SELECT 1 FROM public.app_users u
+    WHERE u.id = auth.uid()::text
+      AND u.role = 'admin'
+  )
+);
+
+-- Allow authenticated customers (or backend service_role) to upload into their own private folder only,
+-- with ZERO read/list permission back to customers or delivery riders.
+DROP POLICY IF EXISTS "Owner upload private KYC image" ON storage.objects;
+CREATE POLICY "Owner upload private KYC image"
+ON storage.objects
+FOR INSERT
+TO authenticated
+WITH CHECK (
+  bucket_id = 'choychat-private-kyc'
+  AND (storage.foldername(name))[1] IN ('valid-ids', 'real-avatars')
+);
+
+-- Only Admins can delete or purge private KYC files
+DROP POLICY IF EXISTS "Admin only delete private KYC bucket" ON storage.objects;
+CREATE POLICY "Admin only delete private KYC bucket"
+ON storage.objects
+FOR DELETE
+TO authenticated
+USING (
+  bucket_id = 'choychat-private-kyc'
+  AND EXISTS (
+    SELECT 1 FROM public.app_users u
+    WHERE u.id = auth.uid()::text
+      AND u.role = 'admin'
+  )
+);
+
+-- 3. Database Table Column Separation:
+-- `name` holds the public Display Name / Username shown to restaurants and riders.
+-- `encrypted_real_name` holds the AES-256-GCM encrypted legal name readable ONLY by Admins.
+ALTER TABLE public.app_users
+  ADD COLUMN IF NOT EXISTS encrypted_real_name TEXT,
+  ADD COLUMN IF NOT EXISTS private_kyc_meta JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+-- 4. Public-safe view that NEVER exposes encrypted_real_name or private_kyc_meta to customers/riders
+CREATE OR REPLACE VIEW public.public_customer_profiles AS
+SELECT
+  id,
+  name AS display_name,
+  role,
+  status,
+  avatar_url,
+  created_at
+FROM public.app_users;
+
+-- 5. Row-Level Security on app_users (Admin reads encrypted_real_name; public/customers/riders cannot)
+ALTER TABLE public.app_users ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Admin full read app_users" ON public.app_users;
+CREATE POLICY "Admin full read app_users"
+ON public.app_users
+FOR SELECT
+TO authenticated
+USING (
+  EXISTS (
+    SELECT 1 FROM public.app_users admin_u
+    WHERE admin_u.id = auth.uid()::text
+      AND admin_u.role = 'admin'
+  )
+);

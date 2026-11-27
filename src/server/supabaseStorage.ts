@@ -216,3 +216,176 @@ export async function uploadToSupabaseStorage(
     sizeBytes: buffer.length,
   };
 }
+
+// ============================================================================
+// PRIVATE KYC BUCKET (Valid IDs & Real Profile Pictures — NEVER PUBLIC!)
+// Only readable by server-side Admin-verified proxy using Service Role Key.
+// ============================================================================
+export type PrivateKycSubfolder = 'valid-ids' | 'real-avatars';
+
+const PRIVATE_KYC_IMAGE_MIMES: Record<string, { ext: string; maxBytes: number }> = {
+  'image/jpeg': { ext: '.jpg', maxBytes: 8 * 1024 * 1024 },
+  'image/jpg': { ext: '.jpg', maxBytes: 8 * 1024 * 1024 },
+  'image/png': { ext: '.png', maxBytes: 8 * 1024 * 1024 },
+  'image/webp': { ext: '.webp', maxBytes: 8 * 1024 * 1024 },
+};
+
+let ensuredPrivateBucketKey = '';
+
+export function getSanitizedPrivateKycBucket(): string {
+  const raw = stripOuterQuotes(process.env.SUPABASE_PRIVATE_KYC_BUCKET || 'choychat-private-kyc').toLowerCase();
+  if (/^[a-z0-9][a-z0-9._-]{1,62}$/.test(raw)) {
+    return raw;
+  }
+  return 'choychat-private-kyc';
+}
+
+export function getSupabasePrivateKycStatus(): {
+  configured: boolean;
+  bucket: string;
+  isPrivate: true;
+} {
+  const origin = getValidatedSupabaseOrigin();
+  const serviceKey = getSupabaseServiceKey();
+  return {
+    configured: Boolean(origin && serviceKey),
+    bucket: getSanitizedPrivateKycBucket(),
+    isPrivate: true,
+  };
+}
+
+async function ensurePrivateKycBucket(origin: string, serviceKey: string, bucket: string): Promise<void> {
+  const cacheKey = `${origin}|private|${bucket}`;
+  if (ensuredPrivateBucketKey === cacheKey) return;
+
+  const checkRes = await fetch(`${origin}/storage/v1/bucket/${encodeURIComponent(bucket)}`, {
+    method: 'GET',
+    headers: buildSupabaseHeaders(serviceKey),
+  });
+
+  if (checkRes.ok) {
+    // Enforce public=false even if bucket already existed
+    const info = (await checkRes.json().catch(() => ({}))) as { public?: boolean };
+    if (info.public === true) {
+      await fetch(`${origin}/storage/v1/bucket/${encodeURIComponent(bucket)}`, {
+        method: 'PUT',
+        headers: buildSupabaseHeaders(serviceKey, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ id: bucket, name: bucket, public: false, file_size_limit: 8388608 }),
+      }).catch(() => {});
+    }
+    ensuredPrivateBucketKey = cacheKey;
+    return;
+  }
+
+  const createRes = await fetch(`${origin}/storage/v1/bucket`, {
+    method: 'POST',
+    headers: buildSupabaseHeaders(serviceKey, { 'Content-Type': 'application/json' }),
+    body: JSON.stringify({
+      id: bucket,
+      name: bucket,
+      public: false, // STRICTLY PRIVATE
+      file_size_limit: 8388608,
+      allowed_mime_types: ['image/jpeg', 'image/png', 'image/webp'],
+    }),
+  });
+
+  if (createRes.ok || createRes.status === 409) {
+    ensuredPrivateBucketKey = cacheKey;
+    return;
+  }
+
+  const errText = await createRes.text().catch(() => '');
+  if (errText.toLowerCase().includes('already exists') || errText.toLowerCase().includes('duplicate')) {
+    ensuredPrivateBucketKey = cacheKey;
+    return;
+  }
+
+  throw new Error(`Supabase private KYC bucket setup failed (HTTP ${createRes.status})`);
+}
+
+export async function uploadToSupabasePrivateKycBucket(
+  buffer: Buffer,
+  rawMimeType: string,
+  subfolder: PrivateKycSubfolder
+): Promise<{
+  bucket: string;
+  path: string;
+  mimeType: string;
+  sizeBytes: number;
+}> {
+  const origin = getValidatedSupabaseOrigin();
+  const serviceKey = getSupabaseServiceKey();
+  const bucket = getSanitizedPrivateKycBucket();
+
+  if (!origin || !serviceKey) {
+    throw new Error('Supabase Private Storage is not configured');
+  }
+
+  const mimeType = normalizeMediaMime(rawMimeType);
+  const spec = PRIVATE_KYC_IMAGE_MIMES[mimeType];
+  if (!spec) {
+    throw new Error('Valid ID and real profile pictures must be JPG, PNG, or WebP images.');
+  }
+  if (!buffer || buffer.length === 0) {
+    throw new Error('Empty image upload');
+  }
+  if (buffer.length > spec.maxBytes) {
+    throw new Error('Private KYC image exceeds maximum allowed size (8 MB).');
+  }
+
+  await ensurePrivateKycBucket(origin, serviceKey, bucket);
+
+  const safeSubfolder: PrivateKycSubfolder = subfolder === 'real-avatars' ? 'real-avatars' : 'valid-ids';
+  const now = new Date();
+  const ym = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+  const objectPath = `${safeSubfolder}/${ym}/${crypto.randomUUID()}${spec.ext}`;
+  const uploadUrl = `${origin}/storage/v1/object/${encodeURIComponent(bucket)}/${objectPath}`;
+
+  const uploadRes = await fetch(uploadUrl, {
+    method: 'POST',
+    headers: buildSupabaseHeaders(serviceKey, {
+      'Content-Type': mimeType === 'image/jpg' ? 'image/jpeg' : mimeType,
+      'x-upsert': 'false',
+      'cache-control': 'private, max-age=0, no-store',
+    }),
+    body: new Uint8Array(buffer),
+  });
+
+  if (!uploadRes.ok) {
+    const detail = await uploadRes.text().catch(() => '');
+    throw new Error(`Private KYC upload failed (HTTP ${uploadRes.status})${detail ? `: ${detail.slice(0, 120)}` : ''}`);
+  }
+
+  return {
+    bucket,
+    path: objectPath,
+    mimeType: mimeType === 'image/jpg' ? 'image/jpeg' : mimeType,
+    sizeBytes: buffer.length,
+  };
+}
+
+export async function downloadFromSupabasePrivateKycBucket(
+  bucket: string,
+  objectPath: string
+): Promise<{ buffer: Buffer; contentType: string }> {
+  const origin = getValidatedSupabaseOrigin();
+  const serviceKey = getSupabaseServiceKey();
+  if (!origin || !serviceKey) {
+    throw new Error('Supabase Private Storage is not configured');
+  }
+  const safePath = objectPath.replace(/^\/+/, '').replace(/\.\./g, '');
+  const fetchUrl = `${origin}/storage/v1/object/authenticated/${encodeURIComponent(bucket)}/${safePath}`;
+  const res = await fetch(fetchUrl, {
+    method: 'GET',
+    headers: buildSupabaseHeaders(serviceKey),
+  });
+  if (!res.ok) {
+    throw new Error(`Private KYC file fetch failed (HTTP ${res.status})`);
+  }
+  const arr = await res.arrayBuffer();
+  return {
+    buffer: Buffer.from(arr),
+    contentType: res.headers.get('content-type') || 'image/jpeg',
+  };
+}
+

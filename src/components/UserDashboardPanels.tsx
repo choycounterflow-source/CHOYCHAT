@@ -91,6 +91,18 @@ export interface UserDashboardData {
   rulesAcceptedAt?: string;
   acknowledgmentSignedName?: string;
   acknowledgmentSignedAt?: string;
+  kycCompleteName?: string;
+  kycAddress?: string;
+  kycAge?: number;
+  kycSex?: 'Male' | 'Female' | 'Other';
+  kycValidIdType?: string;
+  kycValidIdName?: string;
+  kycValidIdImageUrl?: string;
+  kycStatus?: 'unsubmitted' | 'pending' | 'approved' | 'rejected';
+  kycSubmittedAt?: string;
+  kycReviewedBy?: string;
+  kycReviewedAt?: string;
+  kycRejectionReason?: string;
   transactions: UserWalletTx[];
   updatedAt: string;
 }
@@ -393,10 +405,20 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
     }
   };
 
+  const canPlaceOrders = currentUser.role === 'admin' || dashboard.kycStatus === 'approved';
+
   const handleCartCheckout = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (cartItems.length === 0) return;
     setCheckoutError(null);
+    if (!canPlaceOrders) {
+      setCheckoutError(
+        dashboard.kycStatus === 'pending'
+          ? 'Your Profile Verification is waiting for Admin approval. You can place orders once approved.'
+          : 'Please complete your Profile Verification (Complete Name, Address, Age, Sex & 1 Valid ID) in Profile and wait for Admin approval before ordering.'
+      );
+      return;
+    }
     if (!customerName.trim() || !customerPhone.trim() || !deliveryAddress.trim()) {
       setCheckoutError('Please fill in Full Name, Contact Number, and Delivery Address.');
       return;
@@ -597,6 +619,14 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
     e.preventDefault();
     if (!buyingItem) return;
     setCheckoutError(null);
+    if (!canPlaceOrders) {
+      setCheckoutError(
+        dashboard.kycStatus === 'pending'
+          ? 'Your Profile Verification is waiting for Admin approval. You can place orders once approved.'
+          : 'Please complete your Profile Verification (Complete Name, Address, Age, Sex & 1 Valid ID) in Profile and wait for Admin approval before ordering.'
+      );
+      return;
+    }
     if (!customerName.trim() || !customerPhone.trim() || !deliveryAddress.trim()) {
       setCheckoutError('Please fill in Full Name, Contact Number, and Delivery Address.');
       return;
@@ -1721,6 +1751,35 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
           </div>
         )}
 
+        {!canPlaceOrders && (
+          <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-700 flex flex-wrap items-center justify-between gap-3 shadow-xs">
+            <div className="flex items-start gap-2.5 min-w-0 flex-1">
+              <ShieldCheck className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+              <div className="text-xs text-amber-950 dark:text-amber-100">
+                <div className="font-black">
+                  {dashboard.kycStatus === 'pending'
+                    ? 'Profile Verification Pending Admin Approval'
+                    : dashboard.kycStatus === 'rejected'
+                    ? 'Profile Verification Rejected — Please Resubmit to Order'
+                    : 'Profile Verification Required Before Placing Orders'}
+                </div>
+                <p className="text-[11px] opacity-90 mt-0.5">
+                  {dashboard.kycStatus === 'pending'
+                    ? 'Your details and Valid ID were sent to Choy Admin. Once Admin approves your profile, ordering will unlock automatically.'
+                    : 'Fill up your Complete Name, Address, Age, Sex, and upload 1 Valid ID (matching your Complete Name) inside Profile, then wait for Admin approval.'}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => onNavigate('profile')}
+              className="px-4 py-2 rounded-xl bg-[#FF5A1F] hover:bg-orange-500 text-white text-xs font-black shrink-0 shadow transition"
+            >
+              {dashboard.kycStatus === 'pending' ? 'View Profile Status' : 'Verify Profile Now'}
+            </button>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 items-start">
           {/* Category Filter Sidebar */}
           <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/60 rounded-2xl p-4 shadow-xs space-y-2 lg:sticky lg:top-4">
@@ -2226,6 +2285,26 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                   </div>
                 </div>
 
+                {!canPlaceOrders && (
+                  <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-700 text-xs text-amber-950 dark:text-amber-100 flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-bold">
+                      {dashboard.kycStatus === 'pending'
+                        ? 'Orders are locked until Admin approves your Profile Verification.'
+                        : 'Complete your Profile Verification & Valid ID first before ordering.'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBuyingItem(null);
+                        onNavigate('profile');
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-[#FF5A1F] text-white text-[11px] font-black"
+                    >
+                      Go to Profile
+                    </button>
+                  </div>
+                )}
+
                 <div className="flex justify-end gap-2 pt-2">
                   <button
                     type="button"
@@ -2239,11 +2318,11 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                   </button>
                   <button
                     type="submit"
-                    disabled={marketLoading}
-                    className="px-5 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-400 text-slate-950 text-xs font-black inline-flex items-center gap-1.5 shadow"
+                    disabled={marketLoading || !canPlaceOrders}
+                    className="px-5 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-400 text-slate-950 text-xs font-black inline-flex items-center gap-1.5 shadow disabled:opacity-50"
                   >
                     <ShoppingBag className="w-4 h-4" />
-                    <span>Confirm Purchase</span>
+                    <span>{canPlaceOrders ? 'Confirm Purchase' : 'Approval Required'}</span>
                   </button>
                 </div>
               </form>
@@ -2578,6 +2657,26 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                     </div>
                   </div>
 
+                  {!canPlaceOrders && (
+                    <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-700 text-xs text-amber-950 dark:text-amber-100 flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-bold">
+                        {dashboard.kycStatus === 'pending'
+                          ? 'Orders are locked until Admin approves your Profile Verification.'
+                          : 'Complete your Profile Verification & Valid ID first before checkout.'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsCartOpen(false);
+                          onNavigate('profile');
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-[#FF5A1F] text-white text-[11px] font-black"
+                      >
+                        Go to Profile
+                      </button>
+                    </div>
+                  )}
+
                   <div className="flex justify-end gap-2 pt-2">
                     <button
                       type="button"
@@ -2591,11 +2690,11 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                     </button>
                     <button
                       type="submit"
-                      disabled={marketLoading}
-                      className="px-5 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-400 text-slate-950 text-xs font-black inline-flex items-center gap-1.5 shadow"
+                      disabled={marketLoading || !canPlaceOrders}
+                      className="px-5 py-2.5 rounded-xl bg-orange-500 hover:bg-orange-400 text-slate-950 text-xs font-black inline-flex items-center gap-1.5 shadow disabled:opacity-50"
                     >
                       <ShoppingBag className="w-4 h-4" />
-                      <span>Complete Checkout</span>
+                      <span>{canPlaceOrders ? 'Complete Checkout' : 'Approval Required'}</span>
                     </button>
                   </div>
                 </form>

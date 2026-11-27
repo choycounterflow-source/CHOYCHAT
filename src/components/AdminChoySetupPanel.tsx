@@ -20,6 +20,7 @@ import {
   Sparkles,
   Tag,
   Trash2,
+  TrendingUp,
   UserPlus,
   Users,
   Wallet,
@@ -51,6 +52,7 @@ export interface ChoyFeatureToggles {
   choyAi: boolean;
   acknowledgment: boolean;
   rules: boolean;
+  invest: boolean;
 }
 
 export const DEFAULT_FEATURE_TOGGLES: ChoyFeatureToggles = {
@@ -65,6 +67,7 @@ export const DEFAULT_FEATURE_TOGGLES: ChoyFeatureToggles = {
   choyAi: true,
   acknowledgment: true,
   rules: true,
+  invest: true,
 };
 
 export interface ChoyProgramsConfig {
@@ -170,6 +173,12 @@ const FEATURE_TOGGLE_CATALOG: Array<{
     label: 'Subscription',
     description: 'Monthly, annual, and VIP subscription plans',
     icon: CreditCard,
+  },
+  {
+    key: 'invest',
+    label: 'Invest',
+    description: 'Investment products dashboard with 5% daily simple interest for 30 days & live per-minute earnings',
+    icon: TrendingUp,
   },
   {
     key: 'paymentTerminal',
@@ -323,6 +332,7 @@ export const AdminChoySetupPanel: React.FC<AdminChoySetupPanelProps> = ({
       choyAi: enabled,
       acknowledgment: enabled,
       rules: enabled,
+      invest: enabled,
     };
     const nextConfig: ChoyProgramsConfig = {
       ...draft,
