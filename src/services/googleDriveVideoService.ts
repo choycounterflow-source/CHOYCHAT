@@ -1,10 +1,13 @@
 import {
   auth,
+  FIREBASE_PROJECT_ID,
   googleDriveProvider,
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithRedirect,
   onAuthStateChanged,
 } from '../firebase';
+import type { UserCredential } from 'firebase/auth';
 
 export const CHOY_DRIVE_FOLDER_NAME = 'Choy Chat Videos';
 export const GOOGLE_DRIVE_DEFAULT_EMAIL = 'choycounterflow@gmail.com';
@@ -265,53 +268,115 @@ export async function refreshGoogleDriveQuota(): Promise<GoogleDriveConnectionSt
   return getGoogleDriveState();
 }
 
-export async function connectGoogleDrive(): Promise<GoogleDriveConnectionState> {
+function isStandaloneTopLevelHost(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.self === window.top;
+  } catch {
+    return false;
+  }
+}
+
+export function formatGoogleDriveAuthError(err: unknown): string {
+  const code =
+    typeof err === 'object' && err !== null && 'code' in err
+      ? String((err as { code?: unknown }).code)
+      : '';
+  const host = typeof window !== 'undefined' ? window.location.hostname : '';
+  if (code === 'auth/unauthorized-domain') {
+    return `Domain "${host}" is not authorized yet in Firebase Auth (${FIREBASE_PROJECT_ID}). Open Firebase Console → Authentication → Settings → Authorized domains, add "${host}", then try again.`;
+  }
+  if (code === 'auth/operation-not-allowed') {
+    return `Google Sign-In is disabled in Firebase Console (${FIREBASE_PROJECT_ID}) → Authentication → Sign-in method.`;
+  }
+  if (code === 'auth/popup-blocked') {
+    return 'Browser blocked the Google sign-in popup. Tap "Render / Mobile Redirect" or allow popups for this site.';
+  }
+  if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+    return 'Google sign-in popup closed before finishing. On Render/mobile browsers, tap "Render / Mobile Redirect" instead.';
+  }
+  if (code === 'auth/network-request-failed') {
+    return 'Network error contacting Google / Firebase Auth. Check your internet connection and try again.';
+  }
+  return err instanceof Error ? err.message : 'Failed to connect Google Drive.';
+}
+
+export async function hydrateGoogleDriveFromAuthResult(
+  result: UserCredential | null
+): Promise<GoogleDriveConnectionState | null> {
+  if (!result) return null;
+  const credential = GoogleAuthProvider.credentialFromResult(result);
+  const accessToken = credential?.accessToken;
+  if (!accessToken) {
+    return null;
+  }
+
+  cachedAccessToken = accessToken;
+  const about = await fetchDriveAbout(accessToken).catch(() => ({
+    email: result.user.email,
+    displayName: result.user.displayName,
+    quota: null,
+  }));
+
+  let folderId: string | null = null;
+  try {
+    folderId = await ensureChoyVideosFolder(accessToken);
+  } catch {
+    folderId = null;
+  }
+
+  cachedState = {
+    connected: true,
+    enabledForVideos: true,
+    email: about.email || result.user.email || GOOGLE_DRIVE_DEFAULT_EMAIL,
+    displayName: about.displayName || result.user.displayName || null,
+    folderId,
+    quota: about.quota,
+    lastError: null,
+  };
+  emitState();
+  return getGoogleDriveState();
+}
+
+export async function connectGoogleDrive(): Promise<GoogleDriveConnectionState | null> {
   try {
     const result = await signInWithPopup(auth, googleDriveProvider);
-    const credential = GoogleAuthProvider.credentialFromResult(result);
-    const accessToken = credential?.accessToken;
-    if (!accessToken) {
+    const hydrated = await hydrateGoogleDriveFromAuthResult(result);
+    if (!hydrated) {
       throw new Error(
-        'Google did not return a Drive access token. Please allow Google Drive permission when signing in.'
+        'Google did not return a Drive access token. Please allow Google Drive access when signing in.'
       );
     }
-
-    cachedAccessToken = accessToken;
-    const about = await fetchDriveAbout(accessToken).catch(() => ({
-      email: result.user.email,
-      displayName: result.user.displayName,
-      quota: null,
-    }));
-
-    let folderId: string | null = null;
-    try {
-      folderId = await ensureChoyVideosFolder(accessToken);
-    } catch {
-      folderId = null;
-    }
-
-    cachedState = {
-      connected: true,
-      enabledForVideos: true,
-      email: about.email || result.user.email || GOOGLE_DRIVE_DEFAULT_EMAIL,
-      displayName: about.displayName || result.user.displayName || null,
-      folderId,
-      quota: about.quota,
-      lastError: null,
-    };
-    emitState();
-    return getGoogleDriveState();
+    return hydrated;
   } catch (err: unknown) {
     const code =
       typeof err === 'object' && err !== null && 'code' in err
         ? String((err as { code?: unknown }).code)
         : '';
-    let message = err instanceof Error ? err.message : 'Failed to connect Google Drive.';
-    if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-      message = 'Google sign-in popup was closed before completing.';
-    } else if (code === 'auth/popup-blocked') {
-      message = 'Browser blocked the Google sign-in popup. Please allow popups for this app and try again.';
+    // On standalone Render / mobile browsers (not inside iframe), auto-fallback to redirect if popup is blocked
+    if (
+      isStandaloneTopLevelHost() &&
+      (code === 'auth/popup-blocked' ||
+        code === 'auth/operation-not-supported-in-this-environment')
+    ) {
+      await signInWithRedirect(auth, googleDriveProvider);
+      return null;
     }
+    const message = formatGoogleDriveAuthError(err);
+    cachedState = {
+      ...cachedState,
+      lastError: message,
+    };
+    emitState();
+    throw new Error(message);
+  }
+}
+
+export async function connectGoogleDriveRedirect(): Promise<void> {
+  try {
+    await signInWithRedirect(auth, googleDriveProvider);
+  } catch (err: unknown) {
+    const message = formatGoogleDriveAuthError(err);
     cachedState = {
       ...cachedState,
       lastError: message,

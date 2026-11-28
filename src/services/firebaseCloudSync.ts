@@ -24,6 +24,7 @@ import {
   signOut,
   type User,
 } from '../firebase';
+import { hydrateGoogleDriveFromAuthResult } from './googleDriveVideoService';
 
 const SAFE_ID_REGEX = /^[a-zA-Z0-9_-]+$/;
 const MAX_ID_LEN = 128;
@@ -226,6 +227,8 @@ export async function resolveFirebaseRedirectSignIn(): Promise<{
   try {
     const result = await getRedirectResult(auth);
     if (result?.user) {
+      // Also capture Google Drive OAuth access token in memory if this redirect granted Drive access
+      await hydrateGoogleDriveFromAuthResult(result).catch(() => null);
       if (!result.user.emailVerified) {
         return { user: result.user, error: 'Google account email must be verified.' };
       }
