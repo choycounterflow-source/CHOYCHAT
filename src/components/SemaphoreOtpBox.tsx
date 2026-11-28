@@ -12,6 +12,13 @@ interface SemaphoreOtpBoxProps {
   onStatusChange?: (status: { configured: boolean; verifiedToken: string | null; phone: string }) => void;
 }
 
+const extractValidMobileDefault = (raw?: string): string => {
+  const s = String(raw || '').trim();
+  if (!s || s.includes('@')) return '';
+  const digits = s.replace(/[^0-9]/g, '');
+  return digits.length >= 10 && digits.length <= 15 ? s : '';
+};
+
 export const SemaphoreOtpBox: React.FC<SemaphoreOtpBoxProps> = ({
   purpose,
   authToken,
@@ -22,12 +29,13 @@ export const SemaphoreOtpBox: React.FC<SemaphoreOtpBoxProps> = ({
 }) => {
   const [loadingStatus, setLoadingStatus] = useState(true);
   const [configured, setConfigured] = useState(false);
-  const [phone, setPhone] = useState(defaultPhone);
+  const [phone, setPhone] = useState(() => extractValidMobileDefault(defaultPhone));
   const [otpCode, setOtpCode] = useState('');
   const [sending, setSending] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [cooldownSec, setCooldownSec] = useState(0);
   const [codeSent, setCodeSent] = useState(false);
+  const [expectedCodeLen, setExpectedCodeLen] = useState(6);
   const [verifiedToken, setVerifiedToken] = useState<string | null>(null);
   const [maskedPhone, setMaskedPhone] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
@@ -50,41 +58,39 @@ export const SemaphoreOtpBox: React.FC<SemaphoreOtpBoxProps> = ({
     [authToken]
   );
 
-  // Sync defaultPhone if parent updates it and user hasn't typed yet
+  // Sync valid mobile defaultPhone if parent updates it and user hasn't typed yet
   useEffect(() => {
-    if (defaultPhone && !phone) {
-      setPhone(defaultPhone);
+    const validDefault = extractValidMobileDefault(defaultPhone);
+    if (validDefault && !phone) {
+      setPhone(validDefault);
     }
   }, [defaultPhone, phone]);
 
+  const fetchOtpStatus = useCallback(async () => {
+    setLoadingStatus(true);
+    try {
+      const res = await fetch('/api/otp/status', {
+        credentials: 'include',
+        headers: buildHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      const isCfg = Boolean(data?.configured);
+      setConfigured(isCfg);
+      const validServerPhone = extractValidMobileDefault(data?.defaultPhone);
+      if (validServerPhone) {
+        setPhone((prev) => prev || validServerPhone);
+      }
+    } catch {
+      setConfigured(false);
+    } finally {
+      setLoadingStatus(false);
+    }
+  }, [buildHeaders]);
+
   // Load Semaphore OTP configuration status
   useEffect(() => {
-    let active = true;
-    setLoadingStatus(true);
-    fetch('/api/otp/status', {
-      credentials: 'include',
-      headers: buildHeaders(),
-    })
-      .then((res) => res.json().catch(() => ({})))
-      .then((data) => {
-        if (!active) return;
-        const isCfg = Boolean(data?.configured);
-        setConfigured(isCfg);
-        if (typeof data?.defaultPhone === 'string' && data.defaultPhone.trim()) {
-          setPhone((prev) => prev || data.defaultPhone.trim());
-        }
-      })
-      .catch(() => {
-        if (!active) return;
-        setConfigured(false);
-      })
-      .finally(() => {
-        if (active) setLoadingStatus(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [buildHeaders]);
+    void fetchOtpStatus();
+  }, [fetchOtpStatus]);
 
   // Reset verified state whenever parent completes a transaction
   useEffect(() => {
@@ -115,8 +121,8 @@ export const SemaphoreOtpBox: React.FC<SemaphoreOtpBoxProps> = ({
     setErrorMsg(null);
     setNotice(null);
     const cleanPhone = phone.trim();
-    if (!cleanPhone) {
-      setErrorMsg('Enter your mobile number (e.g., 09171234567) to receive the Semaphore SMS OTP.');
+    if (!cleanPhone || cleanPhone.includes('@')) {
+      setErrorMsg('Enter your PH mobile number (e.g., 09171234567) to receive the Semaphore SMS OTP.');
       return;
     }
     setSending(true);
@@ -134,12 +140,17 @@ export const SemaphoreOtpBox: React.FC<SemaphoreOtpBoxProps> = ({
         }
         throw new Error(data.error || 'Could not send SMS OTP.');
       }
+      const nextLen =
+        typeof data.codeLength === 'number' && data.codeLength >= 4 && data.codeLength <= 8
+          ? data.codeLength
+          : 6;
+      setExpectedCodeLen(nextLen);
       setCodeSent(true);
       setVerifiedToken(null);
       setOtpCode('');
       setCooldownSec(typeof data.cooldownSeconds === 'number' ? data.cooldownSeconds : 45);
       setMaskedPhone(data.maskedPhone || cleanPhone);
-      setNotice(`6-digit OTP sent via Semaphore SMS to ${data.maskedPhone || cleanPhone}. Valid for 5 minutes.`);
+      setNotice(`${nextLen}-digit OTP sent via Semaphore SMS to ${data.maskedPhone || cleanPhone}. Valid for 5 minutes.`);
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Could not send SMS OTP.');
     } finally {
@@ -151,8 +162,8 @@ export const SemaphoreOtpBox: React.FC<SemaphoreOtpBoxProps> = ({
     setErrorMsg(null);
     setNotice(null);
     const cleanCode = otpCode.replace(/[^0-9]/g, '').trim();
-    if (cleanCode.length !== 6) {
-      setErrorMsg('Enter the exact 6-digit SMS OTP code sent to your mobile number.');
+    if (cleanCode.length < 4 || cleanCode.length > 8) {
+      setErrorMsg(`Enter the exact ${expectedCodeLen}-digit SMS OTP code sent to your mobile number.`);
       return;
     }
     setVerifying(true);
@@ -215,9 +226,18 @@ export const SemaphoreOtpBox: React.FC<SemaphoreOtpBoxProps> = ({
       </div>
 
       {!configured ? (
-        <p className="text-[11px] text-amber-800 dark:text-amber-200 leading-relaxed">
-          Add <code className="font-mono font-bold">SEMAPHORE_API_KEY</code> in your server Environment Variables / Secrets to send live SMS OTP codes via Semaphore before subscriptions, payments, and withdrawals.
-        </p>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-[11px] text-amber-800 dark:text-amber-200 leading-relaxed flex-1">
+            Add <code className="font-mono font-bold">SEMAPHORE_API_KEY</code> in your server Environment Variables / Secrets (then redeploy/restart) to send live SMS OTP codes via Semaphore before subscriptions, payments, and withdrawals.
+          </p>
+          <button
+            type="button"
+            onClick={() => void fetchOtpStatus()}
+            className="px-2.5 py-1.5 rounded-lg bg-amber-200/80 dark:bg-amber-900/60 hover:bg-amber-300/80 text-amber-950 dark:text-amber-100 text-[11px] font-bold inline-flex items-center gap-1 shrink-0"
+          >
+            <RefreshCw className="w-3 h-3" /> Recheck
+          </button>
+        </div>
       ) : verifiedToken ? (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-emerald-100/90 dark:bg-emerald-900/60 border border-emerald-300 dark:border-emerald-700 px-3 py-2 text-xs text-emerald-900 dark:text-emerald-100">
           <div className="flex items-center gap-2 font-bold">
@@ -268,15 +288,15 @@ export const SemaphoreOtpBox: React.FC<SemaphoreOtpBoxProps> = ({
               <input
                 type="text"
                 inputMode="numeric"
-                maxLength={6}
+                maxLength={8}
                 value={otpCode}
-                onChange={(e) => setOtpCode(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
-                placeholder="Enter 6-digit SMS OTP"
+                onChange={(e) => setOtpCode(e.target.value.replace(/[^0-9]/g, '').slice(0, 8))}
+                placeholder={`Enter ${expectedCodeLen}-digit SMS OTP`}
                 className="flex-1 min-h-[38px] px-3 py-2 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs font-mono tracking-widest text-emerald-950 dark:text-white"
               />
               <button
                 type="button"
-                disabled={verifying || otpCode.replace(/[^0-9]/g, '').length !== 6}
+                disabled={verifying || otpCode.replace(/[^0-9]/g, '').length < 4}
                 onClick={handleVerifyOtp}
                 className="px-4 py-2 rounded-xl bg-[#FF5A1F] hover:bg-[#e54f18] text-white text-xs font-extrabold inline-flex items-center justify-center gap-1.5 shrink-0 disabled:opacity-50"
               >

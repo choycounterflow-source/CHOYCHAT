@@ -9259,7 +9259,7 @@ app.get('/api/admin/project-code/env-guide', requireAuth, requireAdmin, async (_
         key: 'SEMAPHORE_API_KEY',
         category: 'Semaphore SMS OTP (Subscriptions & Payments)',
         sample: 'Your Semaphore API key from semaphore.co (Server Secret)',
-        isSet: Boolean((process.env.SEMAPHORE_API_KEY || '').trim()),
+        isSet: isSemaphoreConfigured(),
         purpose:
           'Server-side Semaphore SMS OTP key nga mo-send og 6-digit SMS verification code para sa Subscriptions, Employee DTR Trial, Payment Terminal, ug Withdrawals (dili gamiton sa Create Account).',
       },
@@ -9267,7 +9267,7 @@ app.get('/api/admin/project-code/env-guide', requireAuth, requireAdmin, async (_
         key: 'SEMAPHORE_SENDER_NAME',
         category: 'Semaphore SMS OTP (Subscriptions & Payments)',
         sample: 'SEMAPHORE (optional approved sender name)',
-        isSet: Boolean((process.env.SEMAPHORE_SENDER_NAME || '').trim()),
+        isSet: Boolean(getSemaphoreSenderName()),
         purpose:
           'Optional approved Semaphore Sender Name (default kay SEMAPHORE kung blanko).',
       },
@@ -9323,12 +9323,35 @@ const OTP_MAX_ATTEMPTS = 5;
 const OTP_RATE_WINDOW_MS = 15 * 60 * 1000;
 const OTP_MAX_SENDS_PER_WINDOW = 6;
 
+function stripEnvQuotes(val: string | undefined): string {
+  const t = String(val || '').trim();
+  if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
+    return t.slice(1, -1).trim();
+  }
+  return t;
+}
+
+function getSemaphoreApiKey(): string {
+  return stripEnvQuotes(
+    process.env.SEMAPHORE_API_KEY ||
+      process.env.SEMAPHORE_KEY ||
+      process.env.SEMAPHORE_SECRET_KEY ||
+      ''
+  );
+}
+
+function getSemaphoreSenderName(): string {
+  return stripEnvQuotes(process.env.SEMAPHORE_SENDER_NAME || process.env.SEMAPHORE_SENDER || '');
+}
+
 function isSemaphoreConfigured(): boolean {
-  return Boolean((process.env.SEMAPHORE_API_KEY || '').trim());
+  return Boolean(getSemaphoreApiKey());
 }
 
 function normalizePhoneForSemaphore(raw: string): string | null {
-  const digits = String(raw || '').replace(/[^0-9]/g, '');
+  const rawStr = String(raw || '').trim();
+  if (!rawStr || rawStr.includes('@')) return null;
+  const digits = rawStr.replace(/[^0-9]/g, '');
   if (!digits) return null;
   // Normalize Philippine numbers (+639XXXXXXXXX / 639XXXXXXXXX / 9XXXXXXXXX -> 09XXXXXXXXX)
   if (digits.length === 12 && digits.startsWith('639')) {
@@ -9402,14 +9425,198 @@ function verifyAndConsumePaymentOtp(
   return { ok: true };
 }
 
-app.get('/api/otp/status', requireAuth, (req: AuthedRequest, res: Response) => {
-  const user = req.choyUser!;
+function extractSemaphoreErrorDetail(smsText: string, httpStatus: number): string {
+  let detail = `Semaphore SMS error (HTTP ${httpStatus}).`;
+  try {
+    const parsed = JSON.parse(smsText);
+    if (typeof parsed === 'string' && parsed.trim()) {
+      detail = parsed.trim();
+    } else if (Array.isArray(parsed)) {
+      const first = parsed[0];
+      if (typeof first === 'string' && first.trim()) detail = first.trim();
+      else if (first && typeof first === 'object') {
+        const obj = first as Record<string, unknown>;
+        if (typeof obj.error === 'string' && obj.error.trim()) detail = obj.error.trim();
+        else if (typeof obj.message === 'string' && obj.message.trim() && String(obj.status || '').toLowerCase() === 'failed') {
+          detail = obj.message.trim();
+        }
+      }
+    } else if (parsed && typeof parsed === 'object') {
+      const obj = parsed as Record<string, unknown>;
+      if (typeof obj.message === 'string' && obj.message.trim()) {
+        detail = obj.message.trim();
+      } else if (typeof obj.error === 'string' && obj.error.trim()) {
+        detail = obj.error.trim();
+      } else {
+        const parts: string[] = [];
+        for (const [k, v] of Object.entries(obj)) {
+          if (Array.isArray(v) && v.length > 0) parts.push(`${k}: ${String(v[0])}`);
+          else if (typeof v === 'string' && v.trim()) parts.push(`${k}: ${v.trim()}`);
+        }
+        if (parts.length > 0) detail = parts.join(' | ');
+      }
+    }
+  } catch {
+    if (smsText && smsText.trim().length > 0 && smsText.trim().length <= 220) {
+      detail = smsText.trim();
+    }
+  }
+  return detail;
+}
+
+async function dispatchSemaphoreSmsOtp(params: {
+  apiKey: string;
+  phone: string;
+  purposeTitle: string;
+  code: string;
+  senderName: string;
+}): Promise<{ ok: true; deliveredCode: string; endpoint: 'otp' | 'messages' } | { ok: false; error: string }> {
+  const sendRequest = async (
+    endpoint: 'otp' | 'messages',
+    includeSender: boolean
+  ): Promise<{ ok: boolean; status: number; text: string; parsed: unknown }> => {
+    const form = new URLSearchParams();
+    form.set('apikey', params.apiKey);
+    form.set('number', params.phone);
+    if (endpoint === 'otp') {
+      form.set(
+        'message',
+        `Your ${params.purposeTitle} OTP is {otp}. Valid for 5 mins. Never share this code.`
+      );
+      form.set('code', params.code);
+    } else {
+      form.set(
+        'message',
+        `Your ${params.purposeTitle} OTP is ${params.code}. Valid for 5 mins. Never share this code.`
+      );
+    }
+    if (includeSender && params.senderName) {
+      form.set('sendername', params.senderName);
+    }
+
+    const res = await fetch(`https://api.semaphore.co/api/v4/${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form.toString(),
+      signal: AbortSignal.timeout(15000),
+    });
+    const text = await res.text();
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = null;
+    }
+    return { ok: res.ok, status: res.status, text, parsed };
+  };
+
+  const inspectResult = (
+    result: { ok: boolean; status: number; text: string; parsed: unknown },
+    endpoint: 'otp' | 'messages'
+  ): { ok: true; deliveredCode: string; endpoint: 'otp' | 'messages' } | { ok: false; error: string; isSenderErr: boolean; isOtpEndpointErr: boolean } => {
+    const detail = extractSemaphoreErrorDetail(result.text, result.status);
+    const lowerDetail = detail.toLowerCase();
+    const isSenderErr = lowerDetail.includes('sender');
+    const isOtpEndpointErr =
+      lowerDetail.includes('credit') ||
+      lowerDetail.includes('balance') ||
+      lowerDetail.includes('otp') ||
+      lowerDetail.includes('not allowed');
+
+    if (!result.ok) {
+      return { ok: false, error: detail, isSenderErr, isOtpEndpointErr };
+    }
+
+    // Semaphore returns an array of message objects on success: [{ message_id, code, status, ... }]
+    if (Array.isArray(result.parsed) && result.parsed.length > 0 && typeof result.parsed[0] === 'object' && result.parsed[0] !== null) {
+      const first = result.parsed[0] as Record<string, unknown>;
+      const statusStr = String(first.status || '').toLowerCase();
+      if (statusStr === 'failed' || statusStr === 'rejected') {
+        const failMsg = typeof first.message === 'string' ? first.message : `SMS delivery ${statusStr}`;
+        return { ok: false, error: failMsg, isSenderErr: failMsg.toLowerCase().includes('sender'), isOtpEndpointErr: false };
+      }
+      // CRITICAL: Semaphore /api/v4/otp returns the exact delivered OTP in `first.code`
+      const returnedCode =
+        first.code !== undefined && first.code !== null
+          ? String(first.code).replace(/[^0-9]/g, '').trim()
+          : '';
+      const deliveredCode = returnedCode.length >= 4 && returnedCode.length <= 8 ? returnedCode : params.code;
+      return { ok: true, deliveredCode, endpoint };
+    }
+
+    // Some Semaphore error responses arrive with HTTP 200 and an error object/string
+    if (result.parsed && typeof result.parsed === 'object' && !Array.isArray(result.parsed)) {
+      const obj = result.parsed as Record<string, unknown>;
+      if (obj.message_id) {
+        const returnedCode =
+          obj.code !== undefined && obj.code !== null
+            ? String(obj.code).replace(/[^0-9]/g, '').trim()
+            : '';
+        return {
+          ok: true,
+          deliveredCode: returnedCode.length >= 4 && returnedCode.length <= 8 ? returnedCode : params.code,
+          endpoint,
+        };
+      }
+      return { ok: false, error: detail, isSenderErr, isOtpEndpointErr };
+    }
+
+    return { ok: false, error: detail, isSenderErr, isOtpEndpointErr };
+  };
+
+  // Attempt 1: Dedicated high-priority Semaphore OTP endpoint
+  const firstTry = inspectResult(await sendRequest('otp', Boolean(params.senderName)), 'otp');
+  if (firstTry.ok) return firstTry;
+
+  // Attempt 2: If custom SEMAPHORE_SENDER_NAME was unapproved/rejected, automatically retry with default sender
+  if (params.senderName && firstTry.isSenderErr) {
+    const retryDefaultSender = inspectResult(await sendRequest('otp', false), 'otp');
+    if (retryDefaultSender.ok) return retryDefaultSender;
+    if (retryDefaultSender.isOtpEndpointErr) {
+      const msgFallback = inspectResult(await sendRequest('messages', false), 'messages');
+      if (msgFallback.ok) return msgFallback;
+    }
+    return { ok: false, error: retryDefaultSender.error };
+  }
+
+  // Attempt 3: If /api/v4/otp rejected due to 2-credit OTP minimum or OTP route restriction, try standard /api/v4/messages (1 credit)
+  if (firstTry.isOtpEndpointErr) {
+    const msgTry = inspectResult(await sendRequest('messages', Boolean(params.senderName)), 'messages');
+    if (msgTry.ok) return msgTry;
+    if (params.senderName && msgTry.isSenderErr) {
+      const msgDefault = inspectResult(await sendRequest('messages', false), 'messages');
+      if (msgDefault.ok) return msgDefault;
+    }
+  }
+
+  return { ok: false, error: firstTry.error };
+}
+
+app.get('/api/otp/status', async (req: Request, res: Response) => {
+  let defaultPhone = '';
+  try {
+    const authHeader = req.headers.authorization || '';
+    const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    const token = bearerToken || readSessionCookie(req);
+    if (token) {
+      const session = verifySessionToken(token);
+      if (session) {
+        const user = await store.getUserById(session.uid);
+        if (user?.phone) {
+          defaultPhone = normalizePhoneForSemaphore(user.phone) || '';
+        }
+      }
+    }
+  } catch {
+    // non-fatal; status still reports server OTP configuration
+  }
+
   return res.json({
     ok: true,
     provider: 'semaphore',
     configured: isSemaphoreConfigured(),
-    senderNameConfigured: Boolean((process.env.SEMAPHORE_SENDER_NAME || '').trim()),
-    defaultPhone: user.phone || '',
+    senderNameConfigured: Boolean(getSemaphoreSenderName()),
+    defaultPhone,
   });
 });
 
@@ -9420,7 +9627,7 @@ app.post('/api/otp/send', requireAuth, async (req: AuthedRequest, res: Response)
     }
     pruneExpiredOtpEntries();
     const user = req.choyUser!;
-    const apiKey = (process.env.SEMAPHORE_API_KEY || '').trim();
+    const apiKey = getSemaphoreApiKey();
     if (!apiKey) {
       return res.status(503).json({
         error: 'SEMAPHORE_API_KEY is not configured yet on the server. Add it in Environment Variables / Secrets.',
@@ -9465,48 +9672,23 @@ app.post('/api/otp/send', requireAuth, async (req: AuthedRequest, res: Response)
       withdrawal: 'Choy Cash-Out Withdrawal',
     };
 
-    const form = new URLSearchParams();
-    form.set('apikey', apiKey);
-    form.set('number', normalizedPhone);
-    form.set(
-      'message',
-      `Your ${purposeTitles[rawPurpose]} OTP is {otp}. Valid for 5 mins. Never share this code.`
-    );
-    form.set('code', code);
-    const senderName = (process.env.SEMAPHORE_SENDER_NAME || '').trim();
-    if (senderName) {
-      form.set('sendername', senderName);
-    }
-
-    const smsRes = await fetch('https://api.semaphore.co/api/v4/otp', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: form.toString(),
+    const dispatch = await dispatchSemaphoreSmsOtp({
+      apiKey,
+      phone: normalizedPhone,
+      purposeTitle: purposeTitles[rawPurpose],
+      code,
+      senderName: getSemaphoreSenderName(),
     });
-    const smsText = await smsRes.text();
-    if (!smsRes.ok) {
-      let detail = `Semaphore SMS error (HTTP ${smsRes.status}).`;
-      try {
-        const parsed = JSON.parse(smsText);
-        if (typeof parsed === 'string') detail = parsed;
-        else if (parsed?.message) detail = String(parsed.message);
-        else if (Array.isArray(parsed) && parsed[0]?.message) detail = String(parsed[0].message);
-        else if (parsed && typeof parsed === 'object') {
-          const firstVal = Object.values(parsed)[0];
-          if (Array.isArray(firstVal) && firstVal[0]) detail = String(firstVal[0]);
-          else if (typeof firstVal === 'string') detail = firstVal;
-        }
-      } catch {
-        // keep generic detail
-      }
-      return res.status(502).json({ error: `Semaphore could not send OTP: ${detail}` });
+
+    if (!dispatch.ok) {
+      return res.status(502).json({ error: `Semaphore could not send OTP: ${dispatch.error}` });
     }
 
     pendingOtpStore.set(pendingKey, {
       userId: user.id,
       purpose: rawPurpose,
       phone: normalizedPhone,
-      codeHashHex: hashOtpCode(user.id, rawPurpose, normalizedPhone, code),
+      codeHashHex: hashOtpCode(user.id, rawPurpose, normalizedPhone, dispatch.deliveredCode),
       expiresAt: now + OTP_EXPIRY_MS,
       attempts: 0,
       lastSentAt: now,
@@ -9516,6 +9698,7 @@ app.post('/api/otp/send', requireAuth, async (req: AuthedRequest, res: Response)
     return res.json({
       ok: true,
       maskedPhone: maskPhoneNumber(normalizedPhone),
+      codeLength: dispatch.deliveredCode.length,
       expiresInSeconds: Math.floor(OTP_EXPIRY_MS / 1000),
       cooldownSeconds: Math.floor(OTP_COOLDOWN_MS / 1000),
     });
@@ -9537,8 +9720,8 @@ app.post('/api/otp/verify', requireAuth, (req: AuthedRequest, res: Response) => 
     return res.status(400).json({ error: 'Invalid OTP purpose.' });
   }
   const code = String(req.body?.code || '').replace(/[^0-9]/g, '').trim();
-  if (code.length !== 6) {
-    return res.status(400).json({ error: 'Enter the 6-digit SMS OTP code.' });
+  if (code.length < 4 || code.length > 8) {
+    return res.status(400).json({ error: 'Enter the SMS OTP code sent to your mobile number.' });
   }
 
   const pendingKey = `${user.id}:${rawPurpose}`;

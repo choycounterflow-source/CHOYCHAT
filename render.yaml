@@ -36,4 +36,7 @@ services:
         sync: false
       - key: GITHUB_TOKEN
         sync: false
-
+      - key: SEMAPHORE_API_KEY
+        sync: false
+      - key: SEMAPHORE_SENDER_NAME
+        sync: false
