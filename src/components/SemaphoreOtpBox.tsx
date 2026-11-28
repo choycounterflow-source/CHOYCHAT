@@ -40,6 +40,7 @@ export const SemaphoreOtpBox: React.FC<SemaphoreOtpBoxProps> = ({
   const [maskedPhone, setMaskedPhone] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [serverWarning, setServerWarning] = useState<string | null>(null);
 
   const onStatusChangeRef = useRef(onStatusChange);
   useEffect(() => {
@@ -69,19 +70,21 @@ export const SemaphoreOtpBox: React.FC<SemaphoreOtpBoxProps> = ({
   const fetchOtpStatus = useCallback(async () => {
     setLoadingStatus(true);
     try {
-      const res = await fetch('/api/otp/status', {
+      const res = await fetch('/api/otp/status?probe=1', {
         credentials: 'include',
         headers: buildHeaders(),
       });
       const data = await res.json().catch(() => ({}));
       const isCfg = Boolean(data?.configured);
       setConfigured(isCfg);
+      setServerWarning(typeof data?.warning === 'string' && data.warning.trim() ? data.warning.trim() : null);
       const validServerPhone = extractValidMobileDefault(data?.defaultPhone);
       if (validServerPhone) {
         setPhone((prev) => prev || validServerPhone);
       }
     } catch {
       setConfigured(false);
+      setServerWarning(null);
     } finally {
       setLoadingStatus(false);
     }
@@ -308,6 +311,9 @@ export const SemaphoreOtpBox: React.FC<SemaphoreOtpBoxProps> = ({
         </div>
       )}
 
+      {serverWarning && !errorMsg && (
+        <div className="text-[11px] font-semibold text-amber-700 dark:text-amber-300">{serverWarning}</div>
+      )}
       {notice && !errorMsg && (
         <div className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">{notice}</div>
       )}

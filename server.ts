@@ -3454,6 +3454,10 @@ app.post('/api/choy/user-dashboard/action', requireAuth, async (req: AuthedReque
       if (dash.choyProActive) {
         return res.json({ ok: true, userDashboard: dash });
       }
+      const proOtpCheck = verifyAndConsumePaymentOtp(user.id, 'subscription', req.body?.otpToken);
+      if (!proOtpCheck.ok) {
+        return res.status(400).json({ error: proOtpCheck.error });
+      }
       if (paymentMethod === 'wallet') {
         const baseFee = programsCfg.choyPro.monthlyPhp;
         const promoRes = resolvePromoDiscount(programsCfg.promos, req.body?.promoCode, 'subscription', baseFee);
@@ -7570,7 +7574,11 @@ app.post('/api/choy/media-library/videos', requireAuth, async (req: AuthedReques
     const videoUrl = sanitizeMediaUrl(req.body?.videoUrl);
     const fileName = sanitizeDownloadFileName(req.body?.fileName, `${title || 'video'}.mp4`);
     const durationSec = Math.max(0, Math.min(18000, Math.floor(Number(req.body?.durationSec) || 0)));
-    const sizeBytes = Math.max(0, Math.min(MAX_VIDEO_UPLOAD_BYTES, Math.floor(Number(req.body?.sizeBytes) || 0)));
+    const isExternalDriveOrCloudVideo = Boolean(videoUrl && /^https:\/\//i.test(videoUrl));
+    const maxMetaBytes = isExternalDriveOrCloudVideo
+      ? 50 * 1024 * 1024 * 1024 // 50 GB metadata cap for 5TB Google Drive / cloud videos
+      : MAX_VIDEO_UPLOAD_BYTES;
+    const sizeBytes = Math.max(0, Math.min(maxMetaBytes, Math.floor(Number(req.body?.sizeBytes) || 0)));
 
     if (!title || !videoUrl) {
       return res.status(400).json({ error: 'Video title and valid video file are required.' });
@@ -9565,14 +9573,16 @@ async function dispatchSemaphoreSmsOtp(params: {
   };
 
   // Attempt 1: Dedicated high-priority Semaphore OTP endpoint
-  const firstTry = inspectResult(await sendRequest('otp', Boolean(params.senderName)), 'otp');
+  const firstRaw = await sendRequest('otp', Boolean(params.senderName));
+  const firstTry = inspectResult(firstRaw, 'otp');
   if (firstTry.ok) return firstTry;
 
-  // Attempt 2: If custom SEMAPHORE_SENDER_NAME was unapproved/rejected, automatically retry with default sender
-  if (params.senderName && firstTry.isSenderErr) {
-    const retryDefaultSender = inspectResult(await sendRequest('otp', false), 'otp');
+  // Attempt 2: If custom SEMAPHORE_SENDER_NAME was set and request failed (not 401 bad key), retry with default sender
+  if (params.senderName && firstRaw.status !== 401 && (firstTry.isSenderErr || firstRaw.status === 400 || firstRaw.status === 422)) {
+    const retryDefaultRaw = await sendRequest('otp', false);
+    const retryDefaultSender = inspectResult(retryDefaultRaw, 'otp');
     if (retryDefaultSender.ok) return retryDefaultSender;
-    if (retryDefaultSender.isOtpEndpointErr) {
+    if (retryDefaultSender.isOtpEndpointErr || retryDefaultRaw.status === 400 || retryDefaultRaw.status === 422) {
       const msgFallback = inspectResult(await sendRequest('messages', false), 'messages');
       if (msgFallback.ok) return msgFallback;
     }
@@ -9580,16 +9590,95 @@ async function dispatchSemaphoreSmsOtp(params: {
   }
 
   // Attempt 3: If /api/v4/otp rejected due to 2-credit OTP minimum or OTP route restriction, try standard /api/v4/messages (1 credit)
-  if (firstTry.isOtpEndpointErr) {
+  if (firstRaw.status !== 401 && (firstTry.isOtpEndpointErr || firstRaw.status === 400 || firstRaw.status === 422)) {
     const msgTry = inspectResult(await sendRequest('messages', Boolean(params.senderName)), 'messages');
     if (msgTry.ok) return msgTry;
-    if (params.senderName && msgTry.isSenderErr) {
+    if (params.senderName) {
       const msgDefault = inspectResult(await sendRequest('messages', false), 'messages');
       if (msgDefault.ok) return msgDefault;
     }
   }
 
   return { ok: false, error: firstTry.error };
+}
+
+interface SemaphoreProbeResult {
+  checkedAt: number;
+  keyValid: boolean;
+  accountStatus: string;
+  creditBalance: number | null;
+  warning: string | null;
+}
+
+let cachedSemaphoreProbe: { keyHash: string; result: SemaphoreProbeResult } | null = null;
+
+async function probeSemaphoreAccount(apiKey: string): Promise<SemaphoreProbeResult> {
+  const keyHash = crypto.createHash('sha256').update(apiKey).digest('hex').slice(0, 16);
+  const now = Date.now();
+  if (
+    cachedSemaphoreProbe &&
+    cachedSemaphoreProbe.keyHash === keyHash &&
+    now - cachedSemaphoreProbe.result.checkedAt < 30_000
+  ) {
+    return cachedSemaphoreProbe.result;
+  }
+
+  try {
+    const res = await fetch(`https://api.semaphore.co/api/v4/account?apikey=${encodeURIComponent(apiKey)}`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(8000),
+    });
+    const text = await res.text();
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      const raw = JSON.parse(text);
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        parsed = raw as Record<string, unknown>;
+      }
+    } catch {
+      parsed = null;
+    }
+
+    if (!res.ok || !parsed || (parsed.account_id === undefined && parsed.credit_balance === undefined)) {
+      const detail = extractSemaphoreErrorDetail(text, res.status);
+      const result: SemaphoreProbeResult = {
+        checkedAt: now,
+        keyValid: false,
+        accountStatus: 'invalid',
+        creditBalance: null,
+        warning: `Semaphore API key error: ${detail}`,
+      };
+      cachedSemaphoreProbe = { keyHash, result };
+      return result;
+    }
+
+    const creditBalance = Number.isFinite(Number(parsed.credit_balance)) ? Number(parsed.credit_balance) : null;
+    const accountStatus = String(parsed.status || 'Active');
+    let warning: string | null = null;
+    if (accountStatus.toLowerCase() !== 'active') {
+      warning = `Semaphore account status is "${accountStatus}". Please check your Semaphore dashboard.`;
+    } else if (creditBalance !== null && creditBalance < 1) {
+      warning = `Semaphore credit balance is ${creditBalance}. Top up SMS credits at semaphore.co to send OTPs.`;
+    }
+
+    const result: SemaphoreProbeResult = {
+      checkedAt: now,
+      keyValid: true,
+      accountStatus,
+      creditBalance,
+      warning,
+    };
+    cachedSemaphoreProbe = { keyHash, result };
+    return result;
+  } catch (err: unknown) {
+    return {
+      checkedAt: now,
+      keyValid: false,
+      accountStatus: 'unreachable',
+      creditBalance: null,
+      warning: `Could not reach Semaphore API: ${err instanceof Error ? err.message : 'Network error'}`,
+    };
+  }
 }
 
 app.get('/api/otp/status', async (req: Request, res: Response) => {
@@ -9611,12 +9700,24 @@ app.get('/api/otp/status', async (req: Request, res: Response) => {
     // non-fatal; status still reports server OTP configuration
   }
 
+  const apiKey = getSemaphoreApiKey();
+  const wantsProbe = req.query.probe === '1' || req.query.probe === 'true';
+  const probe = apiKey && wantsProbe ? await probeSemaphoreAccount(apiKey) : null;
+
   return res.json({
     ok: true,
     provider: 'semaphore',
-    configured: isSemaphoreConfigured(),
+    configured: Boolean(apiKey),
     senderNameConfigured: Boolean(getSemaphoreSenderName()),
     defaultPhone,
+    ...(probe
+      ? {
+          keyValid: probe.keyValid,
+          accountStatus: probe.accountStatus,
+          creditBalance: probe.creditBalance,
+          warning: probe.warning,
+        }
+      : {}),
   });
 });
 

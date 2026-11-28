@@ -1771,17 +1771,30 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                   className="w-full p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs font-mono uppercase text-emerald-950 dark:text-white"
                 />
               </div>
+              <SemaphoreOtpBox
+                purpose="subscription"
+                authToken={authToken}
+                defaultPhone={currentUser.phone || ''}
+                label="Semaphore SMS OTP (Required for Choy Pro Upgrade)"
+                resetTrigger={subOtpReset}
+                onStatusChange={handleSubOtpStatus}
+              />
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 <button
                   type="button"
-                  disabled={isBusy || (!proCfg.enabled && currentUser.role !== 'admin')}
-                  onClick={() =>
-                    void onDashboardAction({
+                  disabled={isBusy || (!proCfg.enabled && currentUser.role !== 'admin') || (subOtpRequired && !subOtpToken)}
+                  onClick={async () => {
+                    const ok = await onDashboardAction({
                       action: 'activate_choy_pro',
                       paymentMethod: 'wallet',
                       promoCode: promoCodeInput.trim() || undefined,
-                    })
-                  }
+                      otpToken: subOtpToken || undefined,
+                    });
+                    if (ok) {
+                      setSubOtpToken(null);
+                      setSubOtpReset((n) => n + 1);
+                    }
+                  }}
                   className="py-3 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black inline-flex items-center justify-center gap-1.5 shadow transition disabled:opacity-50"
                 >
                   <Wallet className="w-4 h-4" />
@@ -1789,14 +1802,19 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                 </button>
                 <button
                   type="button"
-                  disabled={isBusy || (!proCfg.enabled && currentUser.role !== 'admin')}
-                  onClick={() =>
-                    void onDashboardAction({
+                  disabled={isBusy || (!proCfg.enabled && currentUser.role !== 'admin') || (subOtpRequired && !subOtpToken)}
+                  onClick={async () => {
+                    const ok = await onDashboardAction({
                       action: 'activate_choy_pro',
                       paymentMethod: 'choy_wallet',
                       promoCode: promoCodeInput.trim() || undefined,
-                    })
-                  }
+                      otpToken: subOtpToken || undefined,
+                    });
+                    if (ok) {
+                      setSubOtpToken(null);
+                      setSubOtpReset((n) => n + 1);
+                    }
+                  }}
                   className="py-3 px-4 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-black inline-flex items-center justify-center gap-1.5 shadow transition disabled:opacity-50"
                 >
                   <Coins className="w-4 h-4" />

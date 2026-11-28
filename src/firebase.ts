@@ -18,9 +18,15 @@ import {
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
-const app = initializeApp(firebaseConfig);
+const firebaseCfg = firebaseConfig as typeof firebaseConfig & {
+  firestoreDatabaseId?: string;
+};
 
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+const app = initializeApp(firebaseCfg);
+
+export const db = firebaseCfg.firestoreDatabaseId
+  ? getFirestore(app, firebaseCfg.firestoreDatabaseId)
+  : getFirestore(app);
 export const auth = getAuth(app);
 
 // Keep Firebase Admin session persisted in browser local storage across reloads & mobile PWA launches
@@ -32,8 +38,19 @@ googleProvider.setCustomParameters({
   login_hint: 'choycounterflow@gmail.com',
 });
 
-export const FIREBASE_PROJECT_ID = firebaseConfig.projectId;
-export const FIREBASE_DATABASE_ID = firebaseConfig.firestoreDatabaseId;
+export const GOOGLE_DRIVE_SCOPES = [
+  'https://www.googleapis.com/auth/drive.file',
+] as const;
+
+export const googleDriveProvider = new GoogleAuthProvider();
+GOOGLE_DRIVE_SCOPES.forEach((scope) => googleDriveProvider.addScope(scope));
+googleDriveProvider.setCustomParameters({
+  prompt: 'select_account',
+  login_hint: 'choycounterflow@gmail.com',
+});
+
+export const FIREBASE_PROJECT_ID = firebaseCfg.projectId;
+export const FIREBASE_DATABASE_ID = firebaseCfg.firestoreDatabaseId || '(default)';
 export const BOOTSTRAPPED_ADMIN_EMAIL = 'choycounterflow@gmail.com';
 export const BOOTSTRAPPED_ADMIN_EMAILS = [
   'choycounterflow@gmail.com',
@@ -41,6 +58,7 @@ export const BOOTSTRAPPED_ADMIN_EMAILS = [
 ] as const;
 
 export {
+  GoogleAuthProvider,
   signInWithPopup,
   signInWithRedirect,
   getRedirectResult,

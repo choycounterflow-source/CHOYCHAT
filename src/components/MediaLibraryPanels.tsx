@@ -1,10 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
+  AlertTriangle,
   CheckCircle2,
   Clock,
   Download,
   Film,
+  HardDrive,
   Loader2,
   Music,
   Pause,
@@ -16,7 +18,21 @@ import {
   Video,
   Volume2,
   VolumeX,
+  X,
 } from 'lucide-react';
+import { ChatVideoPlayer } from './ChatVideoPlayer';
+import { GoogleDriveVideoBar } from './GoogleDriveVideoBar';
+import {
+  buildGoogleDriveDownloadUrl,
+  CHOY_DRIVE_FOLDER_NAME,
+  deleteGoogleDriveVideoFile,
+  extractGoogleDriveFileId,
+  getGoogleDriveState,
+  MAX_GOOGLE_DRIVE_VIDEO_BYTES,
+  subscribeGoogleDriveState,
+  uploadVideoToGoogleDrive,
+  type GoogleDriveConnectionState,
+} from '../services/googleDriveVideoService';
 
 export interface MusicTrackItem {
   id: string;
@@ -66,6 +82,10 @@ export function formatFileSize(bytes?: number): string {
 
 export function buildDownloadUrl(mediaUrl: string, fileName: string): string {
   if (!mediaUrl) return '#';
+  const driveId = extractGoogleDriveFileId(mediaUrl);
+  if (driveId) {
+    return buildGoogleDriveDownloadUrl(driveId);
+  }
   if (mediaUrl.startsWith('/api/media/local/')) {
     const sep = mediaUrl.includes('?') ? '&' : '?';
     return `${mediaUrl}${sep}download=1&name=${encodeURIComponent(fileName || 'download')}`;
@@ -694,6 +714,9 @@ export const LongVideoHubPanel: React.FC<LongVideoHubPanelProps> = ({
   onVideosChanged,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [driveState, setDriveState] = useState<GoogleDriveConnectionState>(() =>
+    getGoogleDriveState()
+  );
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -701,9 +724,20 @@ export const LongVideoHubPanel: React.FC<LongVideoHubPanelProps> = ({
   const [uploading, setUploading] = useState(false);
   const [uploadPercent, setUploadPercent] = useState(0);
   const [uploadBytesInfo, setUploadBytesInfo] = useState('');
+  const [uploadDestinationLabel, setUploadDestinationLabel] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [pendingDeleteVideo, setPendingDeleteVideo] = useState<LongVideoItem | null>(null);
+  const [alsoDeleteFromDrive, setAlsoDeleteFromDrive] = useState(true);
+
+  useEffect(() => {
+    return subscribeGoogleDriveState(setDriveState);
+  }, []);
+
+  const useGoogleDrive = driveState.connected && driveState.enabledForVideos;
+  const maxAllowedBytes = useGoogleDrive ? MAX_GOOGLE_DRIVE_VIDEO_BYTES : 500 * 1024 * 1024;
+  const maxAllowedLabel = useGoogleDrive ? '5 GB' : '500 MB';
 
   const handleSelectVideoFile = async (file: File | null) => {
     setErrorMsg(null);
@@ -718,8 +752,12 @@ export const LongVideoHubPanel: React.FC<LongVideoHubPanelProps> = ({
       setErrorMsg('Please select a valid video file (.mp4, .webm, .mov, .m4v, .mkv).');
       return;
     }
-    if (file.size > 500 * 1024 * 1024) {
-      setErrorMsg('Maximum video size is 500 MB per video (supports 25–30+ minute videos).');
+    if (file.size > maxAllowedBytes) {
+      setErrorMsg(
+        useGoogleDrive
+          ? 'Maximum single browser upload to Google Drive is 5 GB per video.'
+          : 'Maximum server video size is 500 MB. Connect your 5TB Google Drive above to upload videos up to 5 GB!'
+      );
       return;
     }
     setSelectedFile(file);
@@ -738,21 +776,49 @@ export const LongVideoHubPanel: React.FC<LongVideoHubPanelProps> = ({
       setErrorMsg('Please select a video file first.');
       return;
     }
+    if (selectedFile.size > maxAllowedBytes) {
+      setErrorMsg(`Selected video exceeds the current ${maxAllowedLabel} upload limit.`);
+      return;
+    }
     const cleanTitle = title.trim() || selectedFile.name.replace(/\.[^/.]+$/, '');
     setUploading(true);
     setUploadPercent(1);
     setUploadBytesInfo(`0 MB / ${formatFileSize(selectedFile.size)}`);
+    setUploadDestinationLabel(
+      useGoogleDrive
+        ? `Uploading directly to Google Drive (${driveState.email || '5TB Drive'} · ${CHOY_DRIVE_FOLDER_NAME})...`
+        : 'Uploading video in chunks...'
+    );
     try {
       const durationSec = detectedDurationSec || (await probeMediaDuration(selectedFile, 'video'));
-      const uploaded = await uploadFileChunked({
-        file: selectedFile,
-        folder: 'videos',
-        authToken,
-        onProgress: (pct, sent, total) => {
-          setUploadPercent(pct);
-          setUploadBytesInfo(`${formatFileSize(sent)} / ${formatFileSize(total)}`);
-        },
-      });
+
+      let uploadedUrl = '';
+      let uploadedSizeBytes = selectedFile.size;
+
+      if (useGoogleDrive) {
+        const driveResult = await uploadVideoToGoogleDrive({
+          file: selectedFile,
+          title: cleanTitle,
+          onProgress: (pct, sent, total) => {
+            setUploadPercent(pct);
+            setUploadBytesInfo(`${formatFileSize(sent)} / ${formatFileSize(total)}`);
+          },
+        });
+        uploadedUrl = driveResult.previewUrl;
+        uploadedSizeBytes = driveResult.sizeBytes;
+      } else {
+        const uploaded = await uploadFileChunked({
+          file: selectedFile,
+          folder: 'videos',
+          authToken,
+          onProgress: (pct, sent, total) => {
+            setUploadPercent(pct);
+            setUploadBytesInfo(`${formatFileSize(sent)} / ${formatFileSize(total)}`);
+          },
+        });
+        uploadedUrl = uploaded.url;
+        uploadedSizeBytes = uploaded.sizeBytes;
+      }
 
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
@@ -767,10 +833,10 @@ export const LongVideoHubPanel: React.FC<LongVideoHubPanelProps> = ({
         body: JSON.stringify({
           title: cleanTitle,
           description: description.trim(),
-          videoUrl: uploaded.url,
+          videoUrl: uploadedUrl,
           fileName: selectedFile.name,
           durationSec,
-          sizeBytes: uploaded.sizeBytes,
+          sizeBytes: uploadedSizeBytes,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -785,23 +851,54 @@ export const LongVideoHubPanel: React.FC<LongVideoHubPanelProps> = ({
       setSelectedFile(null);
       setDetectedDurationSec(0);
       if (fileInputRef.current) fileInputRef.current.value = '';
-      setSuccessMsg(`Video "${cleanTitle}" uploaded successfully and ready to stream!`);
+      setSuccessMsg(
+        useGoogleDrive
+          ? `Video "${cleanTitle}" uploaded to Google Drive (${driveState.email}) and ready to stream!`
+          : `Video "${cleanTitle}" uploaded successfully and ready to stream!`
+      );
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to upload video.');
     } finally {
       setUploading(false);
       setUploadPercent(0);
       setUploadBytesInfo('');
+      setUploadDestinationLabel('');
     }
   };
 
-  const handleDeleteVideo = async (videoId: string) => {
-    setDeletingId(videoId);
+  const requestDeleteVideo = (video: LongVideoItem) => {
     setErrorMsg(null);
+    setSuccessMsg(null);
+    setAlsoDeleteFromDrive(Boolean(extractGoogleDriveFileId(video.videoUrl) && driveState.connected));
+    setPendingDeleteVideo(video);
+  };
+
+  const confirmDeleteVideo = async () => {
+    if (!pendingDeleteVideo) return;
+    const targetVideo = pendingDeleteVideo;
+    const driveFileId = extractGoogleDriveFileId(targetVideo.videoUrl);
+    const shouldDeleteDriveFile = Boolean(driveFileId && driveState.connected && alsoDeleteFromDrive);
+
+    setPendingDeleteVideo(null);
+    setDeletingId(targetVideo.id);
+    setErrorMsg(null);
+    setSuccessMsg(null);
     try {
+      let driveDeleteWarning = '';
+      if (shouldDeleteDriveFile && driveFileId) {
+        try {
+          await deleteGoogleDriveVideoFile(driveFileId);
+        } catch (driveErr) {
+          driveDeleteWarning =
+            driveErr instanceof Error
+              ? ` (Note: ${driveErr.message})`
+              : ' (Note: could not remove file from Google Drive.)';
+        }
+      }
+
       const headers: Record<string, string> = { 'X-Requested-With': 'XMLHttpRequest' };
       if (authToken) headers.Authorization = `Bearer ${authToken}`;
-      const res = await fetch(`/api/choy/media-library/videos/${encodeURIComponent(videoId)}`, {
+      const res = await fetch(`/api/choy/media-library/videos/${encodeURIComponent(targetVideo.id)}`, {
         method: 'DELETE',
         credentials: 'include',
         headers,
@@ -814,6 +911,11 @@ export const LongVideoHubPanel: React.FC<LongVideoHubPanelProps> = ({
       if (Array.isArray(data.videos)) {
         onVideosChanged(data.videos as LongVideoItem[]);
       }
+      setSuccessMsg(
+        shouldDeleteDriveFile && !driveDeleteWarning
+          ? `Deleted "${targetVideo.title}" from Choy Chat and Google Drive.`
+          : `Removed "${targetVideo.title}" from Choy Chat.${driveDeleteWarning}`
+      );
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Network error deleting video.');
     } finally {
@@ -821,8 +923,20 @@ export const LongVideoHubPanel: React.FC<LongVideoHubPanelProps> = ({
     }
   };
 
+  const pendingDriveFileId = pendingDeleteVideo
+    ? extractGoogleDriveFileId(pendingDeleteVideo.videoUrl)
+    : null;
+
   return (
     <div className="space-y-4">
+      {/* 5TB Google Drive Video Backend Connection Bar */}
+      <GoogleDriveVideoBar
+        onStatusMessage={(msg) => {
+          setErrorMsg(null);
+          setSuccessMsg(msg);
+        }}
+      />
+
       {/* Upload Long Video Card */}
       <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/60 rounded-2xl p-4 sm:p-5 space-y-3 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -832,15 +946,25 @@ export const LongVideoHubPanel: React.FC<LongVideoHubPanelProps> = ({
             </div>
             <div>
               <h3 className="text-sm font-black text-emerald-950 dark:text-white">
-                Long Video Uploads (25–30+ Mins Supported)
+                {useGoogleDrive
+                  ? 'Google Drive Video Uploads (5TB Backend Active)'
+                  : 'Long Video Uploads (25–30+ Mins Supported)'}
               </h3>
               <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
-                Upload full 25 to 30+ minute videos (up to 500 MB per video) with chunked upload &amp; smooth seeking playback.
+                {useGoogleDrive
+                  ? `Upload full HD & long videos up to 5 GB directly to "${CHOY_DRIVE_FOLDER_NAME}" with link-viewer streaming for Choy Chat members.`
+                  : 'Upload full 25 to 30+ minute videos (up to 500 MB on server, or up to 5 GB when Google Drive is connected above).'}
               </p>
             </div>
           </div>
-          <span className="px-2.5 py-1 rounded-full bg-orange-100 dark:bg-orange-950 text-orange-800 dark:text-orange-200 text-[10px] font-black">
-            Up to 500 MB · 30+ Mins
+          <span
+            className={`px-2.5 py-1 rounded-full text-[10px] font-black ${
+              useGoogleDrive
+                ? 'bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-200 border border-blue-300 dark:border-blue-700'
+                : 'bg-orange-100 dark:bg-orange-950 text-orange-800 dark:text-orange-200'
+            }`}
+          >
+            {useGoogleDrive ? 'Google Drive · Up to 5 GB' : 'Server · Up to 500 MB'}
           </span>
         </div>
 
@@ -895,7 +1019,13 @@ export const LongVideoHubPanel: React.FC<LongVideoHubPanelProps> = ({
                 className="px-3.5 py-2 rounded-xl bg-emerald-100 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-200 dark:hover:bg-emerald-900 text-xs font-bold inline-flex items-center gap-1.5 transition"
               >
                 <Upload className="w-3.5 h-3.5" />
-                <span>{selectedFile ? 'Change Video File' : 'Choose Video (Up to 30+ Mins)'}</span>
+                <span>
+                  {selectedFile
+                    ? 'Change Video File'
+                    : useGoogleDrive
+                    ? 'Choose Video (Up to 5 GB · Drive)'
+                    : 'Choose Video (Up to 30+ Mins)'}
+                </span>
               </button>
               {selectedFile && (
                 <span className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
@@ -908,24 +1038,42 @@ export const LongVideoHubPanel: React.FC<LongVideoHubPanelProps> = ({
             <button
               type="submit"
               disabled={uploading || !selectedFile}
-              className="px-4 py-2 rounded-xl bg-[#FF5A1F] hover:bg-orange-500 text-white text-xs font-black inline-flex items-center gap-1.5 shadow transition disabled:opacity-50"
+              className={`px-4 py-2 rounded-xl text-white text-xs font-black inline-flex items-center gap-1.5 shadow transition disabled:opacity-50 ${
+                useGoogleDrive
+                  ? 'bg-blue-600 hover:bg-blue-500'
+                  : 'bg-[#FF5A1F] hover:bg-orange-500'
+              }`}
             >
-              {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Video className="w-3.5 h-3.5" />}
-              <span>{uploading ? `Uploading ${uploadPercent}%...` : 'Upload Video'}</span>
+              {uploading ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : useGoogleDrive ? (
+                <HardDrive className="w-3.5 h-3.5" />
+              ) : (
+                <Video className="w-3.5 h-3.5" />
+              )}
+              <span>
+                {uploading
+                  ? `Uploading ${uploadPercent}%...`
+                  : useGoogleDrive
+                  ? 'Upload to Google Drive'
+                  : 'Upload Video'}
+              </span>
             </button>
           </div>
 
           {uploading && (
             <div className="space-y-1">
               <div className="flex items-center justify-between text-[11px] font-bold text-emerald-800 dark:text-emerald-200">
-                <span>Uploading video in chunks...</span>
+                <span>{uploadDestinationLabel || 'Uploading video...'}</span>
                 <span>
                   {uploadPercent}% ({uploadBytesInfo})
                 </span>
               </div>
               <div className="w-full h-2.5 rounded-full bg-emerald-100 dark:bg-emerald-950 overflow-hidden">
                 <div
-                  className="h-full bg-[#FF5A1F] transition-all duration-200"
+                  className={`h-full transition-all duration-200 ${
+                    useGoogleDrive ? 'bg-blue-500' : 'bg-[#FF5A1F]'
+                  }`}
                   style={{ width: `${uploadPercent}%` }}
                 />
               </div>
@@ -942,31 +1090,44 @@ export const LongVideoHubPanel: React.FC<LongVideoHubPanelProps> = ({
 
         {videos.length === 0 ? (
           <div className="p-6 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 text-center text-xs text-emerald-700 dark:text-emerald-300">
-            No long videos uploaded yet. Select a 25–30 minute video above to upload and watch right inside the app!
+            No long videos uploaded yet. Connect your 5TB Google Drive or select a video above to upload and watch right inside the app!
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {videos.map((vid) => {
               const canDelete = currentUser.role === 'admin' || vid.uploadedById === currentUser.id;
+              const isDriveVideo = Boolean(extractGoogleDriveFileId(vid.videoUrl));
               return (
                 <div
                   key={vid.id}
                   className="rounded-2xl overflow-hidden bg-emerald-50/80 dark:bg-emerald-950/80 border border-emerald-200 dark:border-emerald-800 flex flex-col justify-between"
                 >
                   <div className="bg-black">
-                    <video
-                      src={vid.videoUrl}
-                      controls
-                      playsInline
-                      preload="metadata"
-                      className="w-full max-h-64 object-contain bg-black"
-                    />
+                    {isDriveVideo ? (
+                      <ChatVideoPlayer src={vid.videoUrl} title={vid.title} />
+                    ) : (
+                      <video
+                        src={vid.videoUrl}
+                        controls
+                        playsInline
+                        preload="metadata"
+                        className="w-full max-h-64 object-contain bg-black"
+                      />
+                    )}
                   </div>
                   <div className="p-3.5 space-y-2">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <div className="text-xs font-black text-emerald-950 dark:text-white break-words">
-                          {vid.title}
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <div className="text-xs font-black text-emerald-950 dark:text-white break-words">
+                            {vid.title}
+                          </div>
+                          {isDriveVideo && (
+                            <span className="px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-950 border border-blue-300 dark:border-blue-700 text-blue-800 dark:text-blue-200 text-[9px] font-black inline-flex items-center gap-1">
+                              <HardDrive className="w-2.5 h-2.5" />
+                              Google Drive
+                            </span>
+                          )}
                         </div>
                         {vid.description && (
                           <p className="text-[11px] text-emerald-700 dark:text-emerald-300 mt-0.5 break-words">
@@ -990,6 +1151,8 @@ export const LongVideoHubPanel: React.FC<LongVideoHubPanelProps> = ({
                         <a
                           href={buildDownloadUrl(vid.videoUrl, vid.fileName || `${vid.title}.mp4`)}
                           download={vid.fileName || `${vid.title}.mp4`}
+                          target={isDriveVideo ? '_blank' : undefined}
+                          rel={isDriveVideo ? 'noopener noreferrer' : undefined}
                           className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold inline-flex items-center gap-1 transition"
                         >
                           <Download className="w-3 h-3" />
@@ -999,7 +1162,7 @@ export const LongVideoHubPanel: React.FC<LongVideoHubPanelProps> = ({
                           <button
                             type="button"
                             disabled={deletingId === vid.id}
-                            onClick={() => void handleDeleteVideo(vid.id)}
+                            onClick={() => requestDeleteVideo(vid)}
                             className="p-1.5 rounded-lg bg-rose-100 dark:bg-rose-950/70 text-rose-700 dark:text-rose-300 hover:bg-rose-200 dark:hover:bg-rose-900 transition disabled:opacity-50"
                             title="Delete video"
                           >
@@ -1019,6 +1182,88 @@ export const LongVideoHubPanel: React.FC<LongVideoHubPanelProps> = ({
           </div>
         )}
       </div>
+
+      {/* Explicit Delete Confirmation Modal (Required before deleting Google Drive files) */}
+      {pendingDeleteVideo && (
+        <div
+          className="fixed inset-0 z-[80] bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-video-modal-title"
+        >
+          <div className="w-full max-w-md rounded-2xl bg-white dark:bg-slate-900 border border-rose-300 dark:border-rose-700 shadow-2xl overflow-hidden">
+            <div className="px-4 py-3 bg-rose-50 dark:bg-rose-950/70 border-b border-rose-200 dark:border-rose-800 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-rose-800 dark:text-rose-200 font-black text-sm">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span id="delete-video-modal-title">Confirm Video Deletion</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingDeleteVideo(null)}
+                className="p-1 rounded-lg text-rose-700 dark:text-rose-300 hover:bg-rose-200/70 dark:hover:bg-rose-900 transition"
+                aria-label="Close confirmation dialog"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-3 text-xs text-slate-700 dark:text-slate-200">
+              <p>
+                Are you sure you want to delete{' '}
+                <strong className="text-slate-950 dark:text-white">
+                  &ldquo;{pendingDeleteVideo.title}&rdquo;
+                </strong>{' '}
+                ({formatFileSize(pendingDeleteVideo.sizeBytes)}) from Choy Chat?
+              </p>
+
+              {pendingDriveFileId && (
+                <div className="p-3 rounded-xl bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 space-y-2">
+                  <div className="flex items-center gap-1.5 font-bold text-blue-900 dark:text-blue-200 text-[11px]">
+                    <HardDrive className="w-3.5 h-3.5 shrink-0" />
+                    <span>Stored in Google Drive ({CHOY_DRIVE_FOLDER_NAME})</span>
+                  </div>
+                  {driveState.connected ? (
+                    <label className="flex items-start gap-2 cursor-pointer select-none text-[11px] text-slate-800 dark:text-slate-200">
+                      <input
+                        type="checkbox"
+                        checked={alsoDeleteFromDrive}
+                        onChange={(e) => setAlsoDeleteFromDrive(e.target.checked)}
+                        className="mt-0.5 accent-rose-600 rounded"
+                      />
+                      <span>
+                        Also permanently delete this video file from Google Drive (
+                        <strong>{driveState.email}</strong>) to free up storage space.
+                      </span>
+                    </label>
+                  ) : (
+                    <p className="text-[11px] text-blue-800/80 dark:text-blue-200/80">
+                      Google Drive is currently disconnected, so only the Choy Chat listing will be removed. The video file in your Google Drive will stay untouched.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setPendingDeleteVideo(null)}
+                  className="px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 font-bold text-xs transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void confirmDeleteVideo()}
+                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-xs inline-flex items-center gap-1.5 shadow transition"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Confirm Delete</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

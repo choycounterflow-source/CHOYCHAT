@@ -149,6 +149,12 @@ import {
   type MusicTrackItem,
   type LongVideoItem,
 } from './components/MediaLibraryPanels';
+import { GoogleDriveVideoBar } from './components/GoogleDriveVideoBar';
+import {
+  isGoogleDriveBackendReady,
+  MAX_GOOGLE_DRIVE_VIDEO_BYTES,
+  uploadVideoToGoogleDrive,
+} from './services/googleDriveVideoService';
 import { ImageZoomModal } from './components/ImageZoomModal';
 import { ChatImageMessage, resolveR2ImageProxyUrl } from './components/ChatImageMessage';
 import { useThemePreferences } from './hooks/useThemePreferences';
@@ -5667,21 +5673,39 @@ export default function App() {
         setNewPostType('image');
         setNewPostMediaName(file.name);
       } else if (isVideoFile(file)) {
-        if (file.size > 500 * 1024 * 1024) {
-          showNotice('Video must be 500 MB or smaller (supports 25–30+ minute videos).');
+        const useDrive = isGoogleDriveBackendReady();
+        const maxVideoBytes = useDrive ? MAX_GOOGLE_DRIVE_VIDEO_BYTES : 500 * 1024 * 1024;
+        if (file.size > maxVideoBytes) {
+          showNotice(
+            useDrive
+              ? 'Maximum Google Drive browser video upload is 5 GB.'
+              : 'Video must be 500 MB or smaller on server. Connect your 5TB Google Drive to upload videos up to 5 GB!'
+          );
           return;
         }
         setPostUploadProgress(1);
-        const uploaded = await uploadFileChunked({
-          file,
-          folder: 'posts',
-          authToken: authToken || undefined,
-          onProgress: (pct) => setPostUploadProgress(pct),
-        });
-        setNewPostMedia(uploaded.url);
-        setNewPostType('video');
-        setNewPostMediaName(file.name);
-        showNotice('Video uploaded! Ready to publish to Newsfeed.');
+        if (useDrive) {
+          const uploadedDrive = await uploadVideoToGoogleDrive({
+            file,
+            title: file.name,
+            onProgress: (pct) => setPostUploadProgress(pct),
+          });
+          setNewPostMedia(uploadedDrive.previewUrl);
+          setNewPostType('video');
+          setNewPostMediaName(`${file.name} (Google Drive)`);
+          showNotice('Video uploaded to your 5TB Google Drive! Ready to publish to Newsfeed.');
+        } else {
+          const uploaded = await uploadFileChunked({
+            file,
+            folder: 'posts',
+            authToken: authToken || undefined,
+            onProgress: (pct) => setPostUploadProgress(pct),
+          });
+          setNewPostMedia(uploaded.url);
+          setNewPostType('video');
+          setNewPostMediaName(file.name);
+          showNotice('Video uploaded! Ready to publish to Newsfeed.');
+        }
       } else {
         showNotice('Please select an image or video file.');
       }
@@ -6210,6 +6234,20 @@ export default function App() {
         setMsgMediaType('image');
         setMsgMediaUrl(useCloudUrl ? cloud.url : dataUrl);
       } else if (isVideoFile(file)) {
+        if (isGoogleDriveBackendReady()) {
+          if (file.size > MAX_GOOGLE_DRIVE_VIDEO_BYTES) {
+            showNotice('Maximum Google Drive video upload is 5 GB.');
+            return;
+          }
+          const uploadedDrive = await uploadVideoToGoogleDrive({
+            file,
+            title: file.name,
+          });
+          setMsgMediaType('video');
+          setMsgMediaUrl(uploadedDrive.previewUrl);
+          showNotice('Chat video uploaded directly to Google Drive!');
+          return;
+        }
         if (file.size <= 60 * 1024 * 1024) {
           const cloud = await tryUploadMediaToCloud(file, 'messages');
           if (cloud) {
@@ -6229,7 +6267,7 @@ export default function App() {
           const url = URL.createObjectURL(file);
           setMsgMediaType('video');
           setMsgMediaUrl(url);
-          showNotice('Video preview is local-only until Cloudflare R2 (max 60 MB) or Supabase Storage keys are active in Render.');
+          showNotice('Connect your 5TB Google Drive (in Video Hub or Newsfeed) to send large videos up to 5 GB.');
         }
       } else if (isAudioFile(file)) {
         if (file.size <= 15 * 1024 * 1024) {
@@ -8814,6 +8852,10 @@ export default function App() {
                       </select>
                     </label>
                   )}
+                </div>
+
+                <div className="mb-2">
+                  <GoogleDriveVideoBar compact onStatusMessage={showNotice} />
                 </div>
 
                 <form onSubmit={handleCreatePost}>
