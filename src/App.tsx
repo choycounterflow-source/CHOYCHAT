@@ -150,6 +150,7 @@ import {
   type LongVideoItem,
 } from './components/MediaLibraryPanels';
 import { ImageZoomModal } from './components/ImageZoomModal';
+import { ChatImageMessage, resolveR2ImageProxyUrl } from './components/ChatImageMessage';
 import { useThemePreferences } from './hooks/useThemePreferences';
 import { COLOR_THEME_LIST, THEME_PRESETS } from './themePresets';
 import {
@@ -4772,23 +4773,62 @@ export default function App() {
     };
   }, [cleanupVideoCallResources]);
 
-  // Photo Editor Canvas Loader (preserves aspect ratio & accurate pixel coordinates)
+  // Photo Editor Canvas Loader (preserves aspect ratio, white backdrop, and safe CORS fallback)
   useEffect(() => {
-    if (isPhotoEditorOpen && msgMediaUrl && canvasRef.current) {
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d');
+    if (!isPhotoEditorOpen || !msgMediaUrl || !canvasRef.current) return;
+    let cancelled = false;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const drawLoadedImg = (loadedImg: HTMLImageElement) => {
+      if (cancelled) return;
+      const w = loadedImg.naturalWidth || loadedImg.width || 1;
+      const h = loadedImg.naturalHeight || loadedImg.height || 1;
+      const maxDim = 900;
+      const scale = Math.min(1, maxDim / Math.max(w, h));
+      canvas.width = Math.max(1, Math.round(w * scale));
+      canvas.height = Math.max(1, Math.round(h * scale));
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(loadedImg, 0, 0, canvas.width, canvas.height);
+      setEditorUndoStack([]);
+    };
+
+    const loadImg = (srcToLoad: string, useCors: boolean, onFail?: () => void) => {
       const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        const maxDim = 900;
-        const scale = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1));
-        canvas.width = Math.max(1, Math.round(img.width * scale));
-        canvas.height = Math.max(1, Math.round(img.height * scale));
-        ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
-        setEditorUndoStack([]);
-      };
-      img.src = msgMediaUrl;
+      if (useCors) {
+        img.crossOrigin = 'anonymous';
+      }
+      img.onload = () => drawLoadedImg(img);
+      img.onerror = () => onFail?.();
+      img.src = srcToLoad;
+    };
+
+    const isInlineOrSameOrigin =
+      msgMediaUrl.startsWith('data:') ||
+      msgMediaUrl.startsWith('blob:') ||
+      msgMediaUrl.startsWith('/');
+
+    if (isInlineOrSameOrigin) {
+      loadImg(msgMediaUrl, false);
+    } else {
+      const proxyUrl = resolveR2ImageProxyUrl(msgMediaUrl);
+      loadImg(msgMediaUrl, true, () => {
+        if (cancelled) return;
+        if (proxyUrl) {
+          loadImg(proxyUrl, false, () => {
+            if (!cancelled) loadImg(msgMediaUrl, false);
+          });
+        } else {
+          loadImg(msgMediaUrl, false);
+        }
+      });
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [isPhotoEditorOpen, msgMediaUrl]);
 
   const handleFirstRunAdminSetup = async (e: React.FormEvent) => {
@@ -5091,76 +5131,184 @@ export default function App() {
   const isAudioFile = (file: File) =>
     file.type.startsWith('audio/') || /\.(mp3|wav|ogg|webm|m4a|aac|flac)$/i.test(file.name || '');
 
-  const compressImageToBlob = (file: File): Promise<{ blob: Blob; dataUrl: string }> =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(new Error('Failed to read image file'));
-      reader.onload = () => {
-        const rawDataUrl = String(reader.result || '');
-        const img = new Image();
-        img.onerror = () => {
-          if (rawDataUrl.startsWith('data:image/') && rawDataUrl.length <= 2_500_000) {
-            resolve({ blob: file, dataUrl: rawDataUrl });
-          } else {
-            reject(new Error('Unsupported or corrupted image file. Please try JPG, PNG, or WebP.'));
-          }
-        };
-        img.onload = () => {
-          let maxDim = 1280;
-          let quality = 0.82;
-          let dataUrl = '';
-          let finalCanvas: HTMLCanvasElement | null = null;
-
-          for (let attempt = 0; attempt < 4; attempt++) {
-            let { width, height } = img;
-            if (width > maxDim || height > maxDim) {
-              if (width >= height) {
-                height = Math.max(1, Math.round((height * maxDim) / width));
-                width = maxDim;
-              } else {
-                width = Math.max(1, Math.round((width * maxDim) / height));
-                height = maxDim;
-              }
-            }
-            const canvas = document.createElement('canvas');
-            canvas.width = width;
-            canvas.height = height;
-            const ctx = canvas.getContext('2d');
-            if (!ctx) {
-              resolve({ blob: file, dataUrl: rawDataUrl });
-              return;
-            }
-            ctx.drawImage(img, 0, 0, width, height);
-            dataUrl = canvas.toDataURL('image/jpeg', quality);
-            finalCanvas = canvas;
-            if (dataUrl.length <= 1_600_000) break;
-            maxDim = Math.round(maxDim * 0.72);
-            quality = Math.max(0.5, quality - 0.12);
-          }
-
-          if (!finalCanvas) {
-            resolve({ blob: file, dataUrl: rawDataUrl });
-            return;
-          }
-          finalCanvas.toBlob(
-            (blob) => {
-              resolve({ blob: blob || file, dataUrl });
-            },
-            'image/jpeg',
-            quality
-          );
-        };
-        img.src = rawDataUrl;
-      };
-      reader.readAsDataURL(file);
-    });
-
   const readFileAsDataUrl = (file: File): Promise<string> =>
     new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onerror = () => reject(new Error('Failed to read file'));
       reader.onload = () => resolve(String(reader.result || ''));
       reader.readAsDataURL(file);
+    });
+
+  const dataUrlToBlob = (dataUrl: string, fallbackMime = 'image/jpeg'): Blob | null => {
+    try {
+      const commaIdx = dataUrl.indexOf(',');
+      if (commaIdx === -1) return null;
+      const header = dataUrl.slice(0, commaIdx);
+      const base64 = dataUrl.slice(commaIdx + 1);
+      const mimeMatch = header.match(/^data:([^;]+)/i);
+      const mime = mimeMatch?.[1]?.toLowerCase() || fallbackMime;
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return new Blob([bytes], { type: mime });
+    } catch {
+      return null;
+    }
+  };
+
+  const isCanvasSolidBlack = (ctx: CanvasRenderingContext2D, width: number, height: number): boolean => {
+    try {
+      const steps = 7;
+      for (let gy = 0; gy < steps; gy++) {
+        const y = Math.min(height - 1, Math.max(0, Math.floor(((gy + 0.5) * height) / steps)));
+        for (let gx = 0; gx < steps; gx++) {
+          const x = Math.min(width - 1, Math.max(0, Math.floor(((gx + 0.5) * width) / steps)));
+          const px = ctx.getImageData(x, y, 1, 1).data;
+          if (px[0] > 0 || px[1] > 0 || px[2] > 0) {
+            return false;
+          }
+        }
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const compressImageWithOptions = async (
+    file: File,
+    opts: { initialMaxDim: number; initialQuality: number; targetDataUrlLength: number; minQuality: number; maxFallbackRawLength: number }
+  ): Promise<{ blob: Blob; dataUrl: string }> => {
+    const fallbackToRaw = async () => {
+      const rawDataUrl = await readFileAsDataUrl(file);
+      if (rawDataUrl.startsWith('data:image/') && rawDataUrl.length <= opts.maxFallbackRawLength) {
+        return { blob: file, dataUrl: rawDataUrl };
+      }
+      throw new Error('Unsupported or corrupted image file. Please try JPG, PNG, or WebP.');
+    };
+
+    // Prefer createImageBitmap (native EXIF orientation + low mobile RAM) then ObjectURL + img.decode()
+    let bitmap: ImageBitmap | null = null;
+    let imgEl: HTMLImageElement | null = null;
+    let objectUrl: string | null = null;
+
+    try {
+      if (typeof createImageBitmap === 'function') {
+        try {
+          bitmap = await createImageBitmap(file);
+        } catch {
+          bitmap = null;
+        }
+      }
+
+      if (!bitmap) {
+        objectUrl = URL.createObjectURL(file);
+        imgEl = await new Promise<HTMLImageElement>((resolve, reject) => {
+          const img = new Image();
+          img.onload = async () => {
+            try {
+              if (typeof img.decode === 'function') {
+                await img.decode().catch(() => {});
+              }
+            } catch {
+              // ignore decode errors if image already loaded
+            }
+            resolve(img);
+          };
+          img.onerror = () => reject(new Error('Image load failed'));
+          img.src = objectUrl!;
+        });
+      }
+
+      const source = bitmap || imgEl;
+      const srcWidth = bitmap ? bitmap.width : imgEl?.naturalWidth || imgEl?.width || 0;
+      const srcHeight = bitmap ? bitmap.height : imgEl?.naturalHeight || imgEl?.height || 0;
+      if (!source || srcWidth <= 0 || srcHeight <= 0) {
+        return await fallbackToRaw();
+      }
+
+      let maxDim = opts.initialMaxDim;
+      let quality = opts.initialQuality;
+      let dataUrl = '';
+      let finalCanvas: HTMLCanvasElement | null = null;
+      let finalCtx: CanvasRenderingContext2D | null = null;
+
+      for (let attempt = 0; attempt < 4; attempt++) {
+        let width = srcWidth;
+        let height = srcHeight;
+        if (width > maxDim || height > maxDim) {
+          if (width >= height) {
+            height = Math.max(1, Math.round((height * maxDim) / width));
+            width = maxDim;
+          } else {
+            width = Math.max(1, Math.round((width * maxDim) / height));
+            height = maxDim;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d', { alpha: false }) || canvas.getContext('2d');
+        if (!ctx) {
+          return await fallbackToRaw();
+        }
+        // Always paint solid white before drawing so transparent PNG/WebP images never turn black in JPEG
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, width, height);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(source, 0, 0, width, height);
+
+        dataUrl = canvas.toDataURL('image/jpeg', quality);
+        finalCanvas = canvas;
+        finalCtx = ctx;
+        if (dataUrl.length <= opts.targetDataUrlLength) break;
+        maxDim = Math.round(maxDim * 0.72);
+        quality = Math.max(opts.minQuality, quality - 0.12);
+      }
+
+      if (!finalCanvas || !finalCtx || !dataUrl.startsWith('data:image/')) {
+        return await fallbackToRaw();
+      }
+
+      // Guard against silent mobile GPU black-frame canvas failures
+      if (isCanvasSolidBlack(finalCtx, finalCanvas.width, finalCanvas.height)) {
+        const rawDataUrl = await readFileAsDataUrl(file).catch(() => '');
+        if (rawDataUrl.startsWith('data:image/') && rawDataUrl.length <= opts.maxFallbackRawLength) {
+          return { blob: file, dataUrl: rawDataUrl };
+        }
+      }
+
+      const blob = await new Promise<Blob | null>((resolve) => {
+        finalCanvas!.toBlob((b) => resolve(b), 'image/jpeg', quality);
+      });
+      const safeBlob = blob || dataUrlToBlob(dataUrl, 'image/jpeg') || file;
+      return { blob: safeBlob, dataUrl };
+    } catch {
+      return await fallbackToRaw();
+    } finally {
+      if (bitmap && typeof bitmap.close === 'function') {
+        try {
+          bitmap.close();
+        } catch {
+          // ignore
+        }
+      }
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    }
+  };
+
+  const compressImageToBlob = (file: File): Promise<{ blob: Blob; dataUrl: string }> =>
+    compressImageWithOptions(file, {
+      initialMaxDim: 1280,
+      initialQuality: 0.84,
+      targetDataUrlLength: 1_200_000,
+      minQuality: 0.52,
+      maxFallbackRawLength: 2_800_000,
     });
 
   const inferUploadMimeType = (blob: Blob): string => {
@@ -5188,7 +5336,7 @@ export default function App() {
   const uploadMediaToCloud = async (
     blob: Blob,
     folder: 'posts' | 'messages' | 'voice' | 'avatars'
-  ): Promise<{ url: string; mediaType: 'image' | 'video' | 'audio'; provider?: 'r2' | 'supabase' } | null> => {
+  ): Promise<{ url: string; mediaType: 'image' | 'video' | 'audio'; provider?: 'r2' | 'supabase' | 'local' } | null> => {
     const headers: Record<string, string> = {
       'Content-Type': inferUploadMimeType(blob),
       'X-Media-Folder': folder,
@@ -5199,7 +5347,7 @@ export default function App() {
     }
     const res = await fetch('/api/media/upload', {
       method: 'POST',
-      credentials: 'same-origin',
+      credentials: 'include',
       headers,
       body: blob,
     });
@@ -5208,10 +5356,14 @@ export default function App() {
       throw new Error(data.error || `Upload failed (${res.status})`);
     }
     if (data.uploaded && typeof data.url === 'string') {
+      const provider =
+        data.provider === 'r2' || data.provider === 'supabase' || data.provider === 'local'
+          ? (data.provider as 'r2' | 'supabase' | 'local')
+          : undefined;
       return {
         url: data.url,
         mediaType: (data.mediaType as 'image' | 'video' | 'audio') || 'image',
-        provider: data.provider === 'r2' || data.provider === 'supabase' ? data.provider : undefined,
+        provider,
       };
     }
     return null;
@@ -5220,7 +5372,7 @@ export default function App() {
   const tryUploadMediaToCloud = async (
     blob: Blob,
     folder: 'posts' | 'messages' | 'voice' | 'avatars'
-  ): Promise<{ url: string; mediaType: 'image' | 'video' | 'audio'; provider?: 'r2' | 'supabase' } | null> => {
+  ): Promise<{ url: string; mediaType: 'image' | 'video' | 'audio'; provider?: 'r2' | 'supabase' | 'local' } | null> => {
     try {
       return await uploadMediaToCloud(blob, folder);
     } catch {
@@ -5229,67 +5381,12 @@ export default function App() {
   };
 
   const compressAvatarToBlob = (file: File): Promise<{ blob: Blob; dataUrl: string }> =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(new Error('Failed to read selected photo'));
-      reader.onload = () => {
-        const rawDataUrl = String(reader.result || '');
-        const img = new Image();
-        img.onerror = () => {
-          if (rawDataUrl.startsWith('data:image/') && rawDataUrl.length <= 800_000) {
-            resolve({ blob: file, dataUrl: rawDataUrl });
-          } else {
-            reject(new Error('Unsupported photo format. Please choose JPG, PNG, or WebP.'));
-          }
-        };
-        img.onload = () => {
-          let maxDim = 512;
-          let quality = 0.85;
-          let dataUrl = '';
-          let finalCanvas: HTMLCanvasElement | null = null;
-
-          for (let attempt = 0; attempt < 4; attempt++) {
-            let { width, height } = img;
-            if (width > maxDim || height > maxDim) {
-              if (width >= height) {
-                height = Math.max(1, Math.round((height * maxDim) / width));
-                width = maxDim;
-              } else {
-                width = Math.max(1, Math.round((width * maxDim) / height));
-                height = maxDim;
-              }
-            }
-            const canvas = document.createElement('canvas');
-            canvas.width = width;
-            canvas.height = height;
-            const ctx = canvas.getContext('2d');
-            if (!ctx) {
-              resolve({ blob: file, dataUrl: rawDataUrl });
-              return;
-            }
-            ctx.drawImage(img, 0, 0, width, height);
-            dataUrl = canvas.toDataURL('image/jpeg', quality);
-            finalCanvas = canvas;
-            if (dataUrl.length <= 240_000) break;
-            maxDim = Math.round(maxDim * 0.75);
-            quality = Math.max(0.55, quality - 0.1);
-          }
-
-          if (!finalCanvas) {
-            resolve({ blob: file, dataUrl: rawDataUrl });
-            return;
-          }
-          finalCanvas.toBlob(
-            (blob) => {
-              resolve({ blob: blob || file, dataUrl });
-            },
-            'image/jpeg',
-            quality
-          );
-        };
-        img.src = rawDataUrl;
-      };
-      reader.readAsDataURL(file);
+    compressImageWithOptions(file, {
+      initialMaxDim: 512,
+      initialQuality: 0.85,
+      targetDataUrlLength: 240_000,
+      minQuality: 0.55,
+      maxFallbackRawLength: 800_000,
     });
 
   const applyLocalAvatarUpdate = (nextAvatar: string | undefined) => {
@@ -6106,8 +6203,12 @@ export default function App() {
       if (isImageFile(file)) {
         const { blob, dataUrl } = await compressImageToBlob(file);
         const cloud = await tryUploadMediaToCloud(blob, 'messages');
+        const useCloudUrl =
+          cloud &&
+          (cloud.provider === 'r2' || cloud.provider === 'supabase') &&
+          Boolean(cloud.url);
         setMsgMediaType('image');
-        setMsgMediaUrl(cloud ? cloud.url : dataUrl);
+        setMsgMediaUrl(useCloudUrl ? cloud.url : dataUrl);
       } else if (isVideoFile(file)) {
         if (file.size <= 60 * 1024 * 1024) {
           const cloud = await tryUploadMediaToCloud(file, 'messages');
@@ -6860,9 +6961,24 @@ export default function App() {
 
   const handleSaveEditedPhoto = () => {
     const canvas = canvasRef.current;
-    if (canvas) {
-      const dataUrl = canvas.toDataURL('image/png');
-      setMsgMediaUrl(dataUrl);
+    if (canvas && canvas.width > 0 && canvas.height > 0) {
+      try {
+        const outCanvas = document.createElement('canvas');
+        outCanvas.width = canvas.width;
+        outCanvas.height = canvas.height;
+        const outCtx = outCanvas.getContext('2d');
+        if (outCtx) {
+          outCtx.fillStyle = '#ffffff';
+          outCtx.fillRect(0, 0, outCanvas.width, outCanvas.height);
+          outCtx.drawImage(canvas, 0, 0);
+          const dataUrl = outCanvas.toDataURL('image/jpeg', 0.88);
+          if (dataUrl && dataUrl.startsWith('data:image/')) {
+            setMsgMediaUrl(dataUrl);
+          }
+        }
+      } catch {
+        // Keep existing msgMediaUrl if canvas was tainted by cross-origin image
+      }
     }
     setIsPhotoEditorOpen(false);
   };
@@ -9910,6 +10026,7 @@ export default function App() {
             <UserDashboardPanels
               section={activeTab as UserDashboardTabId}
               currentUser={currentUser}
+              authToken={authToken}
               avatarUrl={getUserAvatar(currentUser)}
               isCustomAvatar={isCustomAvatar(getUserAvatar(currentUser))}
               dashboard={{ ...userDashboardData, userId: currentUser.id }}
@@ -11041,19 +11158,16 @@ export default function App() {
                           }`}
                         >
                           {((m.mediaType as string) === 'image' || String(m.mediaType).toLowerCase() === 'image' || String(m.mediaType).toLowerCase() === 'photo' || Boolean(m.mediaUrl && !m.mediaType && (m.mediaUrl.startsWith('data:image/') || m.mediaUrl.match(/\.(png|jpg|jpeg|webp|gif)$/i)))) && m.mediaUrl && (
-                            <button
-                              type="button"
-                              onClick={() =>
+                            <ChatImageMessage
+                              src={m.mediaUrl}
+                              alt="Chat Photo"
+                              onZoom={(resolvedSrc) =>
                                 setZoomedImage({
-                                  src: m.mediaUrl!,
-                                  caption: m.text || `${m.sender} • ${m.time}`
+                                  src: resolvedSrc,
+                                  caption: m.text || `${m.sender} • ${m.time}`,
                                 })
                               }
-                              className="block rounded overflow-hidden cursor-zoom-in bg-black/5 dark:bg-white/5 p-1 max-w-full"
-                              title="Tap to zoom picture"
-                            >
-                              <img src={m.mediaUrl} alt="Chat Photo" className="max-h-60 max-w-full rounded-xl object-contain bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800/60 block mx-auto p-1" />
-                            </button>
+                            />
                           )}
                           {m.mediaType === 'video' && m.mediaUrl && <ChatVideoPlayer src={m.mediaUrl} compact />}
                           {m.mediaType === 'audio' && m.mediaUrl && (
@@ -11433,8 +11547,8 @@ export default function App() {
                   {msgMediaUrl && msgMediaType === 'image' && (
                     <div className="flex items-center justify-between p-2 bg-white dark:bg-emerald-900/80 rounded-xl text-xs border border-emerald-300 dark:border-emerald-700">
                       <div className="flex items-center gap-2">
-                        <img src={msgMediaUrl} alt="" className="w-8 h-8 rounded object-cover" />
-                        <span className="text-emerald-800 dark:text-emerald-200">Attached Image</span>
+                        <img src={msgMediaUrl} alt="Attached preview" className="w-10 h-10 rounded-lg object-cover bg-white border border-emerald-300 dark:border-emerald-600" />
+                        <span className="text-emerald-800 dark:text-emerald-200 font-medium">Attached Image</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <button

@@ -1283,7 +1283,7 @@ export function sanitizeMediaUrl(url: unknown): string | undefined {
   }
   if (
     trimmed.length <= 4000000 &&
-    /^data:image\/(png|jpeg|jpg|webp|gif|avif|heic);base64,[A-Za-z0-9+/=]+$/.test(trimmed)
+    /^data:image\/(png|jpeg|jpg|webp|gif|avif|heic|heif|bmp)(;charset=[a-zA-Z0-9._-]+)?;base64,[A-Za-z0-9+/=]+$/i.test(trimmed)
   ) {
     return trimmed;
   }

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ZoomIn, ZoomOut, RotateCcw, X } from 'lucide-react';
+import { ZoomIn, ZoomOut, RotateCcw, X, ImageOff, RefreshCw, Loader2 } from 'lucide-react';
+import { resolveR2ImageProxyUrl } from './ChatImageMessage';
 
 interface ImageZoomModalProps {
   src: string;
@@ -11,12 +12,27 @@ export const ImageZoomModal: React.FC<ImageZoomModalProps> = ({ src, caption, on
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
+  const [activeSrc, setActiveSrc] = useState(src);
+  const [triedProxy, setTriedProxy] = useState(false);
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [hasError, setHasError] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
 
   const dragStartRef = useRef({ x: 0, y: 0 });
   const offsetStartRef = useRef({ x: 0, y: 0 });
   const pinchStartDistRef = useRef<number | null>(null);
   const pinchStartScaleRef = useRef(1);
   const lastTapRef = useRef(0);
+
+  useEffect(() => {
+    setActiveSrc(src);
+    setTriedProxy(false);
+    setIsLoaded(false);
+    setHasError(false);
+    setRetryCount(0);
+    setScale(1);
+    setOffset({ x: 0, y: 0 });
+  }, [src]);
 
   const clampScale = (val: number) => Math.min(4.5, Math.max(0.5, Number(val.toFixed(2))));
 
@@ -126,6 +142,33 @@ export const ImageZoomModal: React.FC<ImageZoomModalProps> = ({ src, caption, on
     });
   };
 
+  const handleImageError = () => {
+    if (!triedProxy) {
+      const proxyUrl = resolveR2ImageProxyUrl(activeSrc);
+      if (proxyUrl && proxyUrl !== activeSrc) {
+        setTriedProxy(true);
+        setActiveSrc(proxyUrl);
+        return;
+      }
+    }
+    setHasError(true);
+    setIsLoaded(true);
+  };
+
+  const handleRetry = () => {
+    const next = retryCount + 1;
+    setRetryCount(next);
+    setHasError(false);
+    setIsLoaded(false);
+    if (activeSrc.startsWith('data:') || activeSrc.startsWith('blob:')) {
+      setActiveSrc(src);
+    } else {
+      const clean = activeSrc.split('&_retry=')[0].split('?_retry=')[0];
+      const sep = clean.includes('?') ? '&' : '?';
+      setActiveSrc(`${clean}${sep}_retry=${next}`);
+    }
+  };
+
   return (
     <div
       className="fixed inset-0 z-[70] bg-black/95 flex flex-col select-none"
@@ -185,7 +228,7 @@ export const ImageZoomModal: React.FC<ImageZoomModalProps> = ({ src, caption, on
 
       {/* Zoomable / Pannable Image Stage */}
       <div
-        className={`flex-1 flex items-center justify-center overflow-hidden touch-none p-2 ${
+        className={`relative flex-1 flex items-center justify-center overflow-hidden touch-none p-2 ${
           scale > 1 ? (isDragging ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-zoom-in'
         }`}
         onWheel={handleWheel}
@@ -200,23 +243,51 @@ export const ImageZoomModal: React.FC<ImageZoomModalProps> = ({ src, caption, on
           if (e.target === e.currentTarget && scale <= 1) onClose();
         }}
       >
-        <img
-          src={src}
-          alt={caption || 'Zoomed image'}
-          draggable={false}
-          onDoubleClick={() => {
-            if (scale > 1.1) {
-              handleReset();
-            } else {
-              setScale(2.25);
-            }
-          }}
-          style={{
-            transform: `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})`,
-            transition: isDragging ? 'none' : 'transform 120ms ease-out',
-          }}
-          className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
-        />
+        {hasError ? (
+          <div className="flex flex-col items-center gap-3 rounded-2xl bg-slate-900 border border-slate-700 px-6 py-6 text-center">
+            <ImageOff className="w-8 h-8 text-slate-300" />
+            <p className="text-xs font-semibold text-slate-200">Unable to load this image.</p>
+            <button
+              type="button"
+              onClick={handleRetry}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs transition"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Retry
+            </button>
+          </div>
+        ) : (
+          <>
+            {!isLoaded && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <Loader2 className="w-7 h-7 animate-spin text-emerald-400" />
+              </div>
+            )}
+            <img
+              src={activeSrc}
+              alt={caption || 'Zoomed image'}
+              draggable={false}
+              onLoad={() => {
+                setIsLoaded(true);
+                setHasError(false);
+              }}
+              onError={handleImageError}
+              onDoubleClick={() => {
+                if (scale > 1.1) {
+                  handleReset();
+                } else {
+                  setScale(2.25);
+                }
+              }}
+              style={{
+                transform: `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})`,
+                transition: isDragging ? 'none' : 'transform 120ms ease-out',
+              }}
+              className={`max-w-full max-h-full object-contain rounded-lg shadow-2xl bg-white ${
+                isLoaded ? 'opacity-100' : 'opacity-0'
+              }`}
+            />
+          </>
+        )}
       </div>
 
       <div className="px-3 py-2 text-center text-[10px] text-emerald-300/80 bg-slate-950/80 border-t border-emerald-900/60 shrink-0">

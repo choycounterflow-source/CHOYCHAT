@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
+import { SemaphoreOtpBox } from './SemaphoreOtpBox';
 import {
   Award,
   BadgeCheck,
@@ -227,6 +228,7 @@ interface UserDashboardSectionProps {
   onDashboardUpdated?: (next: UserDashboardData) => void;
   choyProgramsConfig?: ChoyProgramsConfig;
   onOpenAdminChoySetup?: (tab: AdminChoySetupTab) => void;
+  authToken?: string | null;
 }
 
 export function buildAdminProfileCopyText(
@@ -356,6 +358,7 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
   onDashboardUpdated,
   choyProgramsConfig,
   onOpenAdminChoySetup,
+  authToken,
 }) => {
   const [nameInput, setNameInput] = useState(currentUser.name);
   const [nameSaving, setNameSaving] = useState(false);
@@ -371,6 +374,30 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
   const [newWithdrawalPin, setNewWithdrawalPin] = useState('');
   const [confirmWithdrawalPin, setConfirmWithdrawalPin] = useState('');
   const [showChangeWithdrawPin, setShowChangeWithdrawPin] = useState(false);
+
+  const [withdrawOtpToken, setWithdrawOtpToken] = useState<string | null>(null);
+  const [withdrawOtpRequired, setWithdrawOtpRequired] = useState(false);
+  const [withdrawOtpReset, setWithdrawOtpReset] = useState(0);
+
+  const [subOtpToken, setSubOtpToken] = useState<string | null>(null);
+  const [subOtpRequired, setSubOtpRequired] = useState(false);
+  const [subOtpReset, setSubOtpReset] = useState(0);
+
+  const handleWithdrawOtpStatus = useCallback(
+    ({ configured, verifiedToken }: { configured: boolean; verifiedToken: string | null }) => {
+      setWithdrawOtpRequired(configured);
+      setWithdrawOtpToken(verifiedToken);
+    },
+    []
+  );
+
+  const handleSubOtpStatus = useCallback(
+    ({ configured, verifiedToken }: { configured: boolean; verifiedToken: string | null }) => {
+      setSubOtpRequired(configured);
+      setSubOtpToken(verifiedToken);
+    },
+    []
+  );
 
   const [trialPlan, setTrialPlan] = useState<'choy_pro_monthly' | 'choy_pro_annual' | 'vip_supporter'>('choy_pro_monthly');
   const [trialPayMethod, setTrialPayMethod] = useState<'stripe_card' | 'gcash'>('stripe_card');
@@ -1361,6 +1388,15 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
             </div>
           </div>
 
+          <SemaphoreOtpBox
+            purpose="withdrawal"
+            authToken={authToken}
+            defaultPhone={withdrawAccountNumber || currentUser.phone || ''}
+            label="Semaphore SMS OTP (Required for Cash-Out Withdrawal)"
+            resetTrigger={withdrawOtpReset}
+            onStatusChange={handleWithdrawOtpStatus}
+          />
+
           <button
             type="button"
             disabled={
@@ -1369,7 +1405,8 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
               !withdrawReceiverName.trim() ||
               !withdrawAccountNumber.trim() ||
               !withdrawPin ||
-              Number(withdrawAmount) <= 0
+              Number(withdrawAmount) <= 0 ||
+              (withdrawOtpRequired && !withdrawOtpToken)
             }
             onClick={async () => {
               const ok = await onDashboardAction({
@@ -1380,9 +1417,12 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                 withdrawalNumber: withdrawAccountNumber.trim(),
                 withdrawalPin: withdrawPin,
                 note: walletNote.trim(),
+                otpToken: withdrawOtpToken || undefined,
               });
               if (ok) {
                 setWithdrawPin('');
+                setWithdrawOtpToken(null);
+                setWithdrawOtpReset((n) => n + 1);
               }
             }}
             className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black inline-flex items-center justify-center gap-2 shadow transition disabled:opacity-50"
@@ -1976,13 +2016,22 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
             </div>
           </div>
 
+          <SemaphoreOtpBox
+            purpose="subscription"
+            authToken={authToken}
+            defaultPhone={trialGcashNum || currentUser.phone || ''}
+            label="Semaphore SMS OTP (Required for Subscriptions & Paid Plans)"
+            resetTrigger={subOtpReset}
+            onStatusChange={handleSubOtpStatus}
+          />
+
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
             <p className="text-[11px] text-emerald-800 dark:text-emerald-200">
               Due today is <strong>₱0.00</strong>. After 30 days, your chosen plan auto-deducts unless you cancel before trial ends.
             </p>
             <button
               type="button"
-              disabled={isBusy}
+              disabled={isBusy || (subOtpRequired && !subOtpToken)}
               onClick={async () => {
                 const paymentLabel =
                   trialPayMethod === 'stripe_card'
@@ -1994,7 +2043,12 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                   plan: trialPlan,
                   paymentMethod: trialPayMethod,
                   paymentLabel,
+                  otpToken: subOtpToken || undefined,
                 });
+                if (ok) {
+                  setSubOtpToken(null);
+                  setSubOtpReset((n) => n + 1);
+                }
                 if (ok && trialPayMethod === 'gcash' && typeof window !== 'undefined') {
                   const ua = navigator.userAgent || '';
                   if (/Android/i.test(ua)) {
@@ -2087,32 +2141,42 @@ export const UserDashboardPanels: React.FC<UserDashboardSectionProps> = ({
                   <div className="grid grid-cols-2 gap-2">
                     <button
                       type="button"
-                      disabled={isBusy || (!proCfg.enabled && currentUser.role !== 'admin')}
-                      onClick={() =>
-                        void onDashboardAction({
+                      disabled={isBusy || (!proCfg.enabled && currentUser.role !== 'admin') || (subOtpRequired && !subOtpToken)}
+                      onClick={async () => {
+                        const ok = await onDashboardAction({
                           action: 'update_subscription',
                           plan: p.id,
                           paymentMethod: 'wallet',
                           subAction: 'subscribe',
                           promoCode: promoCodeInput.trim() || undefined,
-                        })
-                      }
+                          otpToken: subOtpToken || undefined,
+                        });
+                        if (ok) {
+                          setSubOtpToken(null);
+                          setSubOtpReset((n) => n + 1);
+                        }
+                      }}
                       className="py-2 px-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[11px] font-black transition disabled:opacity-50"
                     >
                       Pay Wallet ({p.priceLabel.split(' ')[0]})
                     </button>
                     <button
                       type="button"
-                      disabled={isBusy || (!proCfg.enabled && currentUser.role !== 'admin')}
-                      onClick={() =>
-                        void onDashboardAction({
+                      disabled={isBusy || (!proCfg.enabled && currentUser.role !== 'admin') || (subOtpRequired && !subOtpToken)}
+                      onClick={async () => {
+                        const ok = await onDashboardAction({
                           action: 'update_subscription',
                           plan: p.id,
                           paymentMethod: 'choy_wallet',
                           subAction: 'subscribe',
                           promoCode: promoCodeInput.trim() || undefined,
-                        })
-                      }
+                          otpToken: subOtpToken || undefined,
+                        });
+                        if (ok) {
+                          setSubOtpToken(null);
+                          setSubOtpReset((n) => n + 1);
+                        }
+                      }}
                       className="py-2 px-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-[11px] font-black transition disabled:opacity-50"
                     >
                       Pay {p.choyLabel}

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { SemaphoreOtpBox } from './SemaphoreOtpBox';
 import {
   Building2,
   Check,
@@ -339,6 +340,9 @@ export const PaymentTerminalPanel: React.FC<PaymentTerminalPanelProps> = ({
   const [rejectReasonMap, setRejectReasonMap] = useState<Record<string, string>>({});
 
   const receiptFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [paymentOtpToken, setPaymentOtpToken] = useState<string | null>(null);
+  const [paymentOtpRequired, setPaymentOtpRequired] = useState(false);
+  const [paymentOtpReset, setPaymentOtpReset] = useState(0);
 
   useEffect(() => {
     if (initialView === 'admin' && !isAdmin) {
@@ -611,6 +615,10 @@ export const PaymentTerminalPanel: React.FC<PaymentTerminalPanelProps> = ({
       setErrorMsg('Enter your payment Reference Number or upload your payment screenshot before submitting.');
       return;
     }
+    if (paymentOtpRequired && !paymentOtpToken) {
+      setErrorMsg('Please complete Semaphore SMS OTP verification before submitting your payment.');
+      return;
+    }
 
     setSubmittingCharge(true);
     try {
@@ -627,6 +635,7 @@ export const PaymentTerminalPanel: React.FC<PaymentTerminalPanelProps> = ({
           customerContact: customerContact.trim() || currentUser.phone || '',
           note: note.trim(),
           receiptImageUrl: receiptImageUrl || undefined,
+          otpToken: paymentOtpToken || undefined,
         }),
       });
       const data = await res.json();
@@ -640,6 +649,8 @@ export const PaymentTerminalPanel: React.FC<PaymentTerminalPanelProps> = ({
       setPayerReference('');
       setNote('');
       setReceiptImageUrl('');
+      setPaymentOtpToken(null);
+      setPaymentOtpReset((n) => n + 1);
       if (created.channel === 'gcash') {
         handleCopyText('gcash_direct', cleanGcashDigits);
         setNotice(
@@ -1408,10 +1419,22 @@ export const PaymentTerminalPanel: React.FC<PaymentTerminalPanelProps> = ({
                     )}
                   </div>
 
+                  <SemaphoreOtpBox
+                    purpose="payment"
+                    authToken={authToken}
+                    defaultPhone={customerContact || currentUser.phone || ''}
+                    label="Semaphore SMS OTP (Payment Verification)"
+                    resetTrigger={paymentOtpReset}
+                    onStatusChange={({ configured, verifiedToken }) => {
+                      setPaymentOtpRequired(configured);
+                      setPaymentOtpToken(verifiedToken);
+                    }}
+                  />
+
                   {/* Submit Button */}
                   <button
                     type="submit"
-                    disabled={submittingCharge || parsedAmount <= 0}
+                    disabled={submittingCharge || parsedAmount <= 0 || (paymentOtpRequired && !paymentOtpToken)}
                     className="w-full py-3.5 px-5 rounded-xl bg-[#FF5A1F] hover:bg-[#e54f18] text-white font-extrabold text-sm shadow-md flex items-center justify-center gap-2 transition disabled:opacity-50"
                   >
                     {submittingCharge ? (

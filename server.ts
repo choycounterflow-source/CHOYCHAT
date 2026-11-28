@@ -1155,10 +1155,13 @@ app.post(
       if (preferR2) {
         try {
           const result = await uploadToR2Storage(req.body, contentType, folder);
+          const safeR2Url = rewriteBrokenR2MediaUrl(result.url) || result.url;
           return res.status(201).json({
             uploaded: true,
             configured: true,
             ...result,
+            url: safeR2Url,
+            proxyUrl: `/api/media/r2/${result.path}`,
           });
         } catch (r2Err: unknown) {
           const msg = r2Err instanceof Error ? r2Err.message : '';
@@ -3259,6 +3262,10 @@ app.post('/api/choy/user-dashboard/action', requireAuth, async (req: AuthedReque
       if (dash.walletBalance < amount) {
         return res.status(400).json({ error: 'Insufficient Wallet balance.' });
       }
+      const withdrawOtpCheck = verifyAndConsumePaymentOtp(user.id, 'withdrawal', req.body?.otpToken);
+      if (!withdrawOtpCheck.ok) {
+        return res.status(403).json({ error: withdrawOtpCheck.error });
+      }
       const balanceBefore = dash.walletBalance;
       dash.walletBalance = Math.round((dash.walletBalance - amount) * 100) / 100;
       const reqId = `wd_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`;
@@ -3525,6 +3532,10 @@ app.post('/api/choy/user-dashboard/action', requireAuth, async (req: AuthedReque
             error: 'Please enter your Stripe Card holder/last-4 or GCash number to start your free trial.',
           });
         }
+        const trialOtpCheck = verifyAndConsumePaymentOtp(user.id, 'subscription', req.body?.otpToken);
+        if (!trialOtpCheck.ok) {
+          return res.status(403).json({ error: trialOtpCheck.error });
+        }
         const trialEndIso = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
         dash.subscriptionPlan = trialPlan;
         dash.subscriptionStatus = 'trialing';
@@ -3571,6 +3582,10 @@ app.post('/api/choy/user-dashboard/action', requireAuth, async (req: AuthedReque
       const planMeta = planTable[plan];
 
       if (plan !== 'free') {
+        const subOtpCheck = verifyAndConsumePaymentOtp(user.id, 'subscription', req.body?.otpToken);
+        if (!subOtpCheck.ok) {
+          return res.status(403).json({ error: subOtpCheck.error });
+        }
         if (paymentMethod === 'wallet') {
           const promoRes = resolvePromoDiscount(programsCfg.promos, req.body?.promoCode, 'subscription', planMeta.php);
           if (promoRes.error) return res.status(400).json({ error: promoRes.error });
@@ -8212,6 +8227,10 @@ app.post('/api/choy/payment-terminal/charge', requireAuth, async (req: AuthedReq
         error: 'Please enter your payment Reference Number or upload a payment receipt screenshot.',
       });
     }
+    const paymentOtpCheck = verifyAndConsumePaymentOtp(user.id, 'payment', req.body?.otpToken);
+    if (!paymentOtpCheck.ok) {
+      return res.status(403).json({ error: paymentOtpCheck.error });
+    }
 
     const now = new Date().toISOString();
     const refSuffix = crypto.randomBytes(2).toString('hex').toUpperCase();
@@ -8706,6 +8725,10 @@ app.post('/api/choy/dtr/subscription', requireAuth, async (req: AuthedRequest, r
       return res.status(400).json({
         error: 'Please fill up your Card or GCash payment details before starting your 30-day free trial.',
       });
+    }
+    const dtrOtpCheck = verifyAndConsumePaymentOtp(user.id, 'dtr_subscription', req.body?.otpToken);
+    if (!dtrOtpCheck.ok) {
+      return res.status(403).json({ error: dtrOtpCheck.error });
     }
 
     const dash = await store.getUserDashboard(user.id);
@@ -9232,6 +9255,22 @@ app.get('/api/admin/project-code/env-guide', requireAuth, requireAdmin, async (_
         purpose:
           'AES-256 encryption key para i-encrypt ang tinuod nga pangalan ug sensitive KYC details sa database.',
       },
+      {
+        key: 'SEMAPHORE_API_KEY',
+        category: 'Semaphore SMS OTP (Subscriptions & Payments)',
+        sample: 'Your Semaphore API key from semaphore.co (Server Secret)',
+        isSet: Boolean((process.env.SEMAPHORE_API_KEY || '').trim()),
+        purpose:
+          'Server-side Semaphore SMS OTP key nga mo-send og 6-digit SMS verification code para sa Subscriptions, Employee DTR Trial, Payment Terminal, ug Withdrawals (dili gamiton sa Create Account).',
+      },
+      {
+        key: 'SEMAPHORE_SENDER_NAME',
+        category: 'Semaphore SMS OTP (Subscriptions & Payments)',
+        sample: 'SEMAPHORE (optional approved sender name)',
+        isSet: Boolean((process.env.SEMAPHORE_SENDER_NAME || '').trim()),
+        purpose:
+          'Optional approved Semaphore Sender Name (default kay SEMAPHORE kung blanko).',
+      },
     ];
 
     return res.json({
@@ -9242,6 +9281,314 @@ app.get('/api/admin/project-code/env-guide', requireAuth, requireAdmin, async (_
   } catch (err: unknown) {
     return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load env guide.' });
   }
+});
+
+// ============================================================================
+// SEMAPHORE SMS OTP (SUBSCRIPTIONS, PAYMENTS & WITHDRAWALS — NO CREATE-ACCOUNT OTP)
+// ============================================================================
+type PaymentOtpPurpose = 'subscription' | 'dtr_subscription' | 'payment' | 'withdrawal';
+const ALLOWED_OTP_PURPOSES = new Set<PaymentOtpPurpose>([
+  'subscription',
+  'dtr_subscription',
+  'payment',
+  'withdrawal',
+]);
+
+interface PendingOtpRecord {
+  userId: string;
+  purpose: PaymentOtpPurpose;
+  phone: string;
+  codeHashHex: string;
+  expiresAt: number;
+  attempts: number;
+  lastSentAt: number;
+}
+
+interface VerifiedOtpTokenRecord {
+  userId: string;
+  purpose: PaymentOtpPurpose;
+  phone: string;
+  expiresAt: number;
+}
+
+const OTP_HMAC_KEY = crypto.randomBytes(32);
+const pendingOtpStore = new Map<string, PendingOtpRecord>();
+const verifiedOtpTokens = new Map<string, VerifiedOtpTokenRecord>();
+const otpSendHistoryByUser = new Map<string, number[]>();
+
+const OTP_EXPIRY_MS = 5 * 60 * 1000;
+const OTP_COOLDOWN_MS = 45 * 1000;
+const OTP_TOKEN_TTL_MS = 10 * 60 * 1000;
+const OTP_MAX_ATTEMPTS = 5;
+const OTP_RATE_WINDOW_MS = 15 * 60 * 1000;
+const OTP_MAX_SENDS_PER_WINDOW = 6;
+
+function isSemaphoreConfigured(): boolean {
+  return Boolean((process.env.SEMAPHORE_API_KEY || '').trim());
+}
+
+function normalizePhoneForSemaphore(raw: string): string | null {
+  const digits = String(raw || '').replace(/[^0-9]/g, '');
+  if (!digits) return null;
+  // Normalize Philippine numbers (+639XXXXXXXXX / 639XXXXXXXXX / 9XXXXXXXXX -> 09XXXXXXXXX)
+  if (digits.length === 12 && digits.startsWith('639')) {
+    return `0${digits.slice(2)}`;
+  }
+  if (digits.length === 11 && digits.startsWith('09')) {
+    return digits;
+  }
+  if (digits.length === 10 && digits.startsWith('9')) {
+    return `0${digits}`;
+  }
+  if (digits.length >= 10 && digits.length <= 15) {
+    return digits;
+  }
+  return null;
+}
+
+function maskPhoneNumber(phone: string): string {
+  if (phone.length <= 6) return phone;
+  return `${phone.slice(0, 4)}****${phone.slice(-3)}`;
+}
+
+function hashOtpCode(userId: string, purpose: PaymentOtpPurpose, phone: string, code: string): string {
+  return crypto
+    .createHmac('sha256', OTP_HMAC_KEY)
+    .update(`${userId}|${purpose}|${phone}|${code}`)
+    .digest('hex');
+}
+
+function pruneExpiredOtpEntries(): void {
+  const now = Date.now();
+  for (const [k, rec] of pendingOtpStore.entries()) {
+    if (rec.expiresAt <= now) pendingOtpStore.delete(k);
+  }
+  for (const [k, tok] of verifiedOtpTokens.entries()) {
+    if (tok.expiresAt <= now) verifiedOtpTokens.delete(k);
+  }
+}
+
+function verifyAndConsumePaymentOtp(
+  userId: string,
+  purpose: PaymentOtpPurpose,
+  rawToken: unknown
+): { ok: true; skipped?: boolean } | { ok: false; error: string } {
+  pruneExpiredOtpEntries();
+  if (!isSemaphoreConfigured()) {
+    return { ok: true, skipped: true };
+  }
+  const token = typeof rawToken === 'string' ? rawToken.trim() : '';
+  if (!token) {
+    return {
+      ok: false,
+      error: 'Please complete Semaphore SMS OTP verification first before proceeding.',
+    };
+  }
+  const rec = verifiedOtpTokens.get(token);
+  if (!rec || rec.expiresAt <= Date.now()) {
+    verifiedOtpTokens.delete(token);
+    return {
+      ok: false,
+      error: 'Your SMS OTP verification expired. Please request and verify a new OTP code.',
+    };
+  }
+  if (rec.userId !== userId || rec.purpose !== purpose) {
+    return {
+      ok: false,
+      error: 'SMS OTP token does not match this transaction. Please verify a fresh OTP code.',
+    };
+  }
+  verifiedOtpTokens.delete(token);
+  return { ok: true };
+}
+
+app.get('/api/otp/status', requireAuth, (req: AuthedRequest, res: Response) => {
+  const user = req.choyUser!;
+  return res.json({
+    ok: true,
+    provider: 'semaphore',
+    configured: isSemaphoreConfigured(),
+    senderNameConfigured: Boolean((process.env.SEMAPHORE_SENDER_NAME || '').trim()),
+    defaultPhone: user.phone || '',
+  });
+});
+
+app.post('/api/otp/send', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    if (!verifyCookieCsrf(req)) {
+      return res.status(403).json({ error: 'Invalid request origin.' });
+    }
+    pruneExpiredOtpEntries();
+    const user = req.choyUser!;
+    const apiKey = (process.env.SEMAPHORE_API_KEY || '').trim();
+    if (!apiKey) {
+      return res.status(503).json({
+        error: 'SEMAPHORE_API_KEY is not configured yet on the server. Add it in Environment Variables / Secrets.',
+      });
+    }
+
+    const rawPurpose = String(req.body?.purpose || '').trim() as PaymentOtpPurpose;
+    if (!ALLOWED_OTP_PURPOSES.has(rawPurpose)) {
+      return res.status(400).json({ error: 'Invalid OTP purpose.' });
+    }
+
+    const normalizedPhone = normalizePhoneForSemaphore(String(req.body?.phone || user.phone || ''));
+    if (!normalizedPhone) {
+      return res.status(400).json({
+        error: 'Enter a valid Philippine mobile number (e.g., 09171234567).',
+      });
+    }
+
+    const now = Date.now();
+    const pendingKey = `${user.id}:${rawPurpose}`;
+    const existing = pendingOtpStore.get(pendingKey);
+    if (existing && now - existing.lastSentAt < OTP_COOLDOWN_MS) {
+      const retryAfterSeconds = Math.ceil((OTP_COOLDOWN_MS - (now - existing.lastSentAt)) / 1000);
+      return res.status(429).json({
+        error: `Please wait ${retryAfterSeconds}s before requesting another SMS OTP.`,
+        retryAfterSeconds,
+      });
+    }
+
+    const prevHistory = (otpSendHistoryByUser.get(user.id) || []).filter((ts) => now - ts < OTP_RATE_WINDOW_MS);
+    if (prevHistory.length >= OTP_MAX_SENDS_PER_WINDOW) {
+      return res.status(429).json({
+        error: 'Too many OTP requests in the last 15 minutes. Please wait a few minutes and try again.',
+      });
+    }
+
+    const code = String(crypto.randomInt(100000, 1000000));
+    const purposeTitles: Record<PaymentOtpPurpose, string> = {
+      subscription: 'Choy Subscription',
+      dtr_subscription: 'Employee DTR Subscription',
+      payment: 'Choy Payment',
+      withdrawal: 'Choy Cash-Out Withdrawal',
+    };
+
+    const form = new URLSearchParams();
+    form.set('apikey', apiKey);
+    form.set('number', normalizedPhone);
+    form.set(
+      'message',
+      `Your ${purposeTitles[rawPurpose]} OTP is {otp}. Valid for 5 mins. Never share this code.`
+    );
+    form.set('code', code);
+    const senderName = (process.env.SEMAPHORE_SENDER_NAME || '').trim();
+    if (senderName) {
+      form.set('sendername', senderName);
+    }
+
+    const smsRes = await fetch('https://api.semaphore.co/api/v4/otp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form.toString(),
+    });
+    const smsText = await smsRes.text();
+    if (!smsRes.ok) {
+      let detail = `Semaphore SMS error (HTTP ${smsRes.status}).`;
+      try {
+        const parsed = JSON.parse(smsText);
+        if (typeof parsed === 'string') detail = parsed;
+        else if (parsed?.message) detail = String(parsed.message);
+        else if (Array.isArray(parsed) && parsed[0]?.message) detail = String(parsed[0].message);
+        else if (parsed && typeof parsed === 'object') {
+          const firstVal = Object.values(parsed)[0];
+          if (Array.isArray(firstVal) && firstVal[0]) detail = String(firstVal[0]);
+          else if (typeof firstVal === 'string') detail = firstVal;
+        }
+      } catch {
+        // keep generic detail
+      }
+      return res.status(502).json({ error: `Semaphore could not send OTP: ${detail}` });
+    }
+
+    pendingOtpStore.set(pendingKey, {
+      userId: user.id,
+      purpose: rawPurpose,
+      phone: normalizedPhone,
+      codeHashHex: hashOtpCode(user.id, rawPurpose, normalizedPhone, code),
+      expiresAt: now + OTP_EXPIRY_MS,
+      attempts: 0,
+      lastSentAt: now,
+    });
+    otpSendHistoryByUser.set(user.id, [...prevHistory, now]);
+
+    return res.json({
+      ok: true,
+      maskedPhone: maskPhoneNumber(normalizedPhone),
+      expiresInSeconds: Math.floor(OTP_EXPIRY_MS / 1000),
+      cooldownSeconds: Math.floor(OTP_COOLDOWN_MS / 1000),
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({
+      error: err instanceof Error ? err.message : 'Failed to send Semaphore SMS OTP.',
+    });
+  }
+});
+
+app.post('/api/otp/verify', requireAuth, (req: AuthedRequest, res: Response) => {
+  if (!verifyCookieCsrf(req)) {
+    return res.status(403).json({ error: 'Invalid request origin.' });
+  }
+  pruneExpiredOtpEntries();
+  const user = req.choyUser!;
+  const rawPurpose = String(req.body?.purpose || '').trim() as PaymentOtpPurpose;
+  if (!ALLOWED_OTP_PURPOSES.has(rawPurpose)) {
+    return res.status(400).json({ error: 'Invalid OTP purpose.' });
+  }
+  const code = String(req.body?.code || '').replace(/[^0-9]/g, '').trim();
+  if (code.length !== 6) {
+    return res.status(400).json({ error: 'Enter the 6-digit SMS OTP code.' });
+  }
+
+  const pendingKey = `${user.id}:${rawPurpose}`;
+  const rec = pendingOtpStore.get(pendingKey);
+  if (!rec || rec.expiresAt <= Date.now()) {
+    pendingOtpStore.delete(pendingKey);
+    return res.status(400).json({ error: 'OTP expired or not requested yet. Tap Send SMS OTP again.' });
+  }
+
+  const submittedPhone = normalizePhoneForSemaphore(String(req.body?.phone || rec.phone));
+  if (!submittedPhone || submittedPhone !== rec.phone) {
+    return res.status(400).json({ error: 'Mobile number changed. Request a new SMS OTP for this number.' });
+  }
+
+  if (rec.attempts >= OTP_MAX_ATTEMPTS) {
+    pendingOtpStore.delete(pendingKey);
+    return res.status(429).json({ error: 'Too many wrong attempts. Please request a new SMS OTP.' });
+  }
+
+  const candidateHash = Buffer.from(hashOtpCode(user.id, rawPurpose, rec.phone, code), 'hex');
+  const expectedHash = Buffer.from(rec.codeHashHex, 'hex');
+  const matched =
+    candidateHash.length === expectedHash.length && crypto.timingSafeEqual(candidateHash, expectedHash);
+
+  if (!matched) {
+    rec.attempts += 1;
+    if (rec.attempts >= OTP_MAX_ATTEMPTS) {
+      pendingOtpStore.delete(pendingKey);
+      return res.status(400).json({ error: 'Too many wrong attempts. Request a new SMS OTP.' });
+    }
+    return res.status(400).json({
+      error: `Incorrect OTP code. ${OTP_MAX_ATTEMPTS - rec.attempts} attempt(s) remaining.`,
+    });
+  }
+
+  pendingOtpStore.delete(pendingKey);
+  const otpToken = `otp_${crypto.randomBytes(24).toString('hex')}`;
+  verifiedOtpTokens.set(otpToken, {
+    userId: user.id,
+    purpose: rawPurpose,
+    phone: rec.phone,
+    expiresAt: Date.now() + OTP_TOKEN_TTL_MS,
+  });
+
+  return res.json({
+    ok: true,
+    otpToken,
+    maskedPhone: maskPhoneNumber(rec.phone),
+    expiresInSeconds: Math.floor(OTP_TOKEN_TTL_MS / 1000),
+  });
 });
 
 startServer();

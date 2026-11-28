@@ -16,6 +16,7 @@ import {
   X,
 } from 'lucide-react';
 import type { UserDashboardData } from './UserDashboardPanels';
+import { SemaphoreOtpBox } from './SemaphoreOtpBox';
 
 export interface DtrSubscriptionState {
   plan: 'starter' | 'pro' | 'enterprise';
@@ -184,6 +185,9 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
   const [paymentDetails, setPaymentDetails] = useState<string>('');
   const [startingTrial, setStartingTrial] = useState(false);
   const [cancellingSub, setCancellingSub] = useState(false);
+  const [dtrOtpToken, setDtrOtpToken] = useState<string | null>(null);
+  const [dtrOtpRequired, setDtrOtpRequired] = useState(false);
+  const [dtrOtpReset, setDtrOtpReset] = useState(0);
 
   // Add Employee Form
   const [newName, setNewName] = useState('');
@@ -317,6 +321,10 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
       );
       return;
     }
+    if (dtrOtpRequired && !dtrOtpToken) {
+      setErrorMsg('Please complete Semaphore SMS OTP verification first before starting your DTR subscription.');
+      return;
+    }
     setStartingTrial(true);
     try {
       const res = await fetch('/api/choy/dtr/subscription', {
@@ -327,12 +335,15 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
           plan: chosenPlan,
           paymentMethod,
           paymentDetails: paymentDetails.trim(),
+          otpToken: dtrOtpToken || undefined,
         }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Failed to activate 30-day free trial.');
       setSubscription(data.dtrSubscription || null);
       setShowPlanModalView(false);
+      setDtrOtpToken(null);
+      setDtrOtpReset((n) => n + 1);
       if (data.ownDashboard && onOwnDashboardUpdatedRef.current) {
         onOwnDashboardUpdatedRef.current(data.ownDashboard);
       }
@@ -727,9 +738,20 @@ export const EmployeeDtrPanel: React.FC<EmployeeDtrPanelProps> = ({
               <strong>You can cancel anytime — no payment needed if you cancel before trial ends.</strong>
             </div>
 
+            <SemaphoreOtpBox
+              purpose="dtr_subscription"
+              authToken={authToken}
+              label="Semaphore SMS OTP (Required for Employee DTR Subscription)"
+              resetTrigger={dtrOtpReset}
+              onStatusChange={({ configured, verifiedToken }) => {
+                setDtrOtpRequired(configured);
+                setDtrOtpToken(verifiedToken);
+              }}
+            />
+
             <button
               type="submit"
-              disabled={startingTrial}
+              disabled={startingTrial || (dtrOtpRequired && !dtrOtpToken)}
               className="w-full py-3 rounded-xl bg-[#FF5A1F] hover:bg-[#e54f18] text-white font-extrabold text-sm flex items-center justify-center gap-2 shadow disabled:opacity-50"
             >
               {startingTrial ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
